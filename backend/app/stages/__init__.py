@@ -1,16 +1,21 @@
 """阶段作业处理器：集中注册到作业队列。
 
-M0 只实现 S5（逐格出图）以打通最小闭环；S1/S3/S4 在 M1、S6/S7 在 M2/M3 补齐。
+已实现：S1 结构规划、S3 分页分格、S4 分镜提示词、S5 逐格出图、S6 分页合成。
+待补：S2 正文（酒馆扩展桥）、S7 整册导出。
 """
 
 from __future__ import annotations
 
 from .. import jobs
-from . import s5_image
+from . import s1_structure, s3_script, s4_prompt, s5_image, s6_compose
 
 
 def register_all() -> None:
+    jobs.register(s1_structure.KIND, s1_structure.handle)
+    jobs.register(s3_script.KIND, s3_script.handle)
+    jobs.register(s4_prompt.KIND, s4_prompt.handle)
     jobs.register(s5_image.KIND, s5_image.handle)
+    jobs.register(s6_compose.KIND, s6_compose.handle)
 
 
 __all__ = ["register_all"]

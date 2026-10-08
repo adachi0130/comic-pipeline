@@ -176,6 +176,15 @@ class LLMProvider(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class StageModel(Base):
+    """阶段 → LLM 供应商绑定：S1/S3/S4 可各用不同供应商与模型。"""
+
+    __tablename__ = "stage_models"
+
+    stage: Mapped[str] = mapped_column(String(8), primary_key=True)   # S1 / S3 / S4
+    provider_id: Mapped[int] = mapped_column(ForeignKey("llm_providers.id"))
+
+
 class LLMCall(Base):
     """每次 LLM 调用的原始留痕，换供应商后可横向对比。"""
 

@@ -1,0 +1,9 @@
+.comic-bridge-settings .cb-hint {
+  font-size: 0.85em;
+  opacity: 0.75;
+  margin-top: 4px;
+}
+.comic-bridge-settings label {
+  display: block;
+  margin: 6px 0;
+}

@@ -21,9 +21,11 @@ from . import jobs
 from .config import BACKEND_DIR, get_settings
 from .db import init_db
 from .api.routes import artifacts as artifacts_routes
+from .api.routes import bridge as bridge_routes
 from .api.routes import comfy as comfy_routes
 from .api.routes import jobs as jobs_routes
 from .api.routes import meta as meta_routes
+from .api.routes import pipeline as pipeline_routes
 from .api.routes import projects as projects_routes
 from .api.routes import providers as providers_routes
 from .comfy.tunnel import SshTunnel
@@ -88,11 +90,21 @@ app.include_router(artifacts_routes.router, prefix="/api")
 app.include_router(providers_routes.router, prefix="/api")
 app.include_router(comfy_routes.router, prefix="/api")
 app.include_router(jobs_routes.router, prefix="/api")
+app.include_router(pipeline_routes.router, prefix="/api")
+app.include_router(bridge_routes.router, prefix="/api")
 
 
 @app.get("/api/health")
 def health() -> dict:
     return {"ok": True, "app": settings.app_name}
+
+
+@app.get("/")
+def root():
+    """根路径跳转到自研前端。"""
+    from fastapi.responses import RedirectResponse
+
+    return RedirectResponse("/ui/")
 
 
 # 静态资源（若目录已有内容才挂载，避免空目录报错）

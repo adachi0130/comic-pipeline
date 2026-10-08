@@ -32,23 +32,13 @@ def list_jobs(
     return [_brief(j) for j in session.scalars(stmt).all()]
 
 
-@router.get("/jobs/{job_id}")
-def get_job(job_id: int, session: Session = Depends(get_session)) -> dict:
-    j = session.get(Job, job_id)
-    if j is None:
-        raise HTTPException(404, "作业不存在")
-    return _full(j)
-
-
-@router.post("/jobs/{job_id}/cancel")
-def cancel_job(job_id: int) -> dict:
-    ok = jobq.request_cancel(job_id)
-    return {"ok": ok}
-
-
 @router.get("/jobs/events")
 async def events(project_id: int | None = None) -> StreamingResponse:
-    """SSE：每 1 秒推送一次活跃作业状态。"""
+    """SSE：每 1 秒推送一次活跃作业状态。
+
+    注意：此路由必须声明在 ``/jobs/{job_id}`` **之前**，否则会被后者吞掉
+    （job_id="events" 无法解析为 int → 422）。
+    """
 
     async def gen():
         last_snapshot = ""
@@ -70,6 +60,20 @@ async def events(project_id: int | None = None) -> StreamingResponse:
             await asyncio.sleep(1.0)
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@router.get("/jobs/{job_id}")
+def get_job(job_id: int, session: Session = Depends(get_session)) -> dict:
+    j = session.get(Job, job_id)
+    if j is None:
+        raise HTTPException(404, "作业不存在")
+    return _full(j)
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: int) -> dict:
+    ok = jobq.request_cancel(job_id)
+    return {"ok": ok}
 
 
 def _brief(j: Job) -> dict:

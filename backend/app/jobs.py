@@ -57,6 +57,29 @@ def shutdown() -> None:
 
 def enqueue(kind: str, *, project_id: int | None = None, stage: str = "", payload: dict | None = None) -> Job:
     """建一条作业记录并立刻丢给调度器执行。"""
+    job_id = _create(kind, project_id=project_id, stage=stage, payload=payload)
+
+    if _scheduler is None:
+        # 未启动调度器（如脚本内直接调用）：同步执行，方便调试与测试
+        _run(job_id)
+    else:
+        _scheduler.add_job(_run, args=[job_id], id=f"job-{job_id}")
+    return _get(job_id)
+
+
+def enqueue_deferred(
+    kind: str, *, project_id: int | None = None, stage: str = "", payload: dict | None = None
+) -> Job:
+    """只建一条 QUEUED 作业记录，**不交给调度器**。
+
+    用于必须由外部消费者领取的作业（如 S2 正文——由酒馆扩展轮询 claim 后执行）。
+    若走 enqueue，调度器会因找不到处理器而立刻把作业判失败。
+    """
+    job_id = _create(kind, project_id=project_id, stage=stage, payload=payload)
+    return _get(job_id)
+
+
+def _create(kind: str, *, project_id: int | None, stage: str, payload: dict | None) -> int:
     session = SessionLocal()
     try:
         job = Job(
@@ -69,16 +92,9 @@ def enqueue(kind: str, *, project_id: int | None = None, stage: str = "", payloa
         session.add(job)
         session.commit()
         session.refresh(job)
-        job_id = job.id
+        return job.id
     finally:
         session.close()
-
-    if _scheduler is None:
-        # 未启动调度器（如脚本内直接调用）：同步执行，方便调试与测试
-        _run(job_id)
-    else:
-        _scheduler.add_job(_run, args=[job_id], id=f"job-{job_id}")
-    return _get(job_id)
 
 
 def _get(job_id: int) -> Job:
