@@ -1,0 +1,89 @@
+# AI 漫画自动化生产线（MVP）
+
+只写故事大纲，逐阶段产出漫画：**结构规划 → 正文 → 分格脚本 → 分镜提示词 → 逐格出图 → 分页合成 → 导出**，
+每个阶段后面设一道人工审查门（也可切「全自动」一键跑完）。
+
+- **大脑**：本项目自研后端（FastAPI + SQLite + 作业队列 + 版本化/血缘）。
+- **笔杆（S2 正文）**：SillyTavern 扩展桥，正文跑酒馆完整管线（角色卡 + 世界书 + 预设 + Prompt Manager）。
+- **画笔（S6 拼页）**：Manga Editor Desu（69 版式模板 + 气泡 + 网点/集中线/运动线），经同源 iframe + 注入桥驱动。
+- **出图（S5）**：后端直接调 ComfyUI（仙宫云经 SSH 隧道，本机 ComfyUI 可作备用），只操作你现有 Anima 文生图工作流的参数。
+
+## 目录结构
+
+```
+backend/
+  app/
+    config.py         配置：路径 / ComfyUI / 隧道 / 页面规格 / 工作流参数映射
+    models.py         SQLAlchemy 模型（artifacts 版本化、血缘、模板、技法、供应商、作业…）
+    artifacts.py      版本化 + 血缘 + 失效传播（“只重跑受影响部分”）
+    schemas.py        阶段产物契约（S1/S3/S4 的 pydantic 模型）
+    llm/client.py     供应商无关 LLM 客户端（任意 OpenAI 兼容）+ 校验 + 重试 + 留痕
+    comfy/            ComfyUI 客户端 / 工作流参数自动映射 / SSH 隧道 / 出图服务
+    med/              PageComposer 抽象 + Manga Editor Desu 适配器
+    stages/           S1..S7 作业处理器（M0 已实现 S5）
+    api/routes/       REST + SSE
+  prompts/            S1/S3/S4 提示词（M1 交付）
+  scripts/            build_template_menu.py / parse_med_templates.mjs / fetch_editor.*
+  static/
+    editor/           vendor 的 Manga Editor Desu（不入 git，按 EDITOR_VERSION.md 拉取）
+    ui/               自研前端（M1）+ editor_bridge/（MED 驱动桥 + 人工验证页）
+extensions/comic-bridge/   SillyTavern 扩展（M1 交付）
+config/
+  workflows/anima_t2i.json      你的 Anima 文生图工作流（API 格式，需自备）
+  workflow_params.yaml          工作流参数映射表（脚本自动初猜后可手改）
+tests/                          离线自测 + MED 桥冒烟测试
+```
+
+## 快速开始
+
+```bash
+# 1. 依赖
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install -r requirements.txt
+.venv/Scripts/python.exe -m pip install playwright pillow
+.venv/Scripts/python.exe -m playwright install chromium
+
+# 2. 拉取 Manga Editor Desu（约 99MB，不入 git）
+bash backend/scripts/fetch_editor.sh      # 或 powershell -File backend/scripts/fetch_editor.ps1
+
+# 3. 生成 69 个模板菜单（需要上一步的 editor 里的模板 JS）
+.venv/Scripts/python.exe backend/scripts/build_template_menu.py \
+    --vertical  backend/static/editor/js/svg/manga-panels-image-vertical.js \
+    --landscape backend/static/editor/js/svg/manga-panels-image-landscape.js
+
+# 4. 起后端
+cd backend && ../.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8770
+#   - 业务接口    http://127.0.0.1:8770/api/*
+#   - MED 工作台  http://127.0.0.1:8770/editor/
+#   - 桥人工验证  http://127.0.0.1:8770/ui/editor_bridge/index.html
+```
+
+## 自测
+
+```bash
+.venv/Scripts/python.exe tests/test_workflow_mapping.py   # 工作流参数映射 + LoRA 链/旁路
+.venv/Scripts/python.exe tests/test_artifacts.py          # 版本化 + 血缘 + 失效传播
+.venv/Scripts/python.exe tests/test_med_bridge.py         # MED 桥端到端（无头）
+```
+
+## M0 最小闭环（已验证）
+
+1. **读工作流 → 自动映射**：把 Anima 工作流导出为 API 格式放到 `config/workflows/anima_t2i.json`，然后
+   `POST /api/comfy/mapping/guess` 自动生成 `config/workflow_params.yaml`（正/负提示词、seed、尺寸、checkpoint、LoRA 链、输出节点）。
+2. **拉 LoRA 列表**：`GET /api/comfy/assets` → 出图后端上的 LoRA / checkpoint / 采样器候选（来自 `/object_info`）。
+3. **出几格**：`POST /api/projects/{id}/panels/{panel_ref}/generate` 入队 S5 出图，`GET /api/jobs/events` 看进度。
+4. **MED 拼第一页**：桥把模板 SVG `loadSVGPlusReset` 装上，按阅读顺序落提示词、`putImageInFrame` 贴图，`canvas2DataURL` 导出整页 PNG。
+
+## 实施进度
+
+- ✅ **M0**：后端骨架 + 版本化/血缘 + LLM 层 + ComfyUI 客户端与参数映射 + 作业队列 + 模板菜单 + MED 桥（已端到端验证）
+- ⏳ **M1**：S1/S3/S4 提示词与契约 + comic-bridge 扩展 + G1–G4 审查界面（含全自动/人工总开关）
+- ⏳ **M2**：S5 前端参数面板（LoRA 开关/批量张数/挑图）+ 桥全量（技法叠加）+ G5/G6 + 无头自动驾驶 + 返工
+- ⏳ **M3**：S7 PDF/CBZ 导出 + 整册预览 + 容器一键关机 + 破格 PS 回填
+
+## 关键约束（已核实）
+
+- **Manga Editor Desu 无自动化 API**（无 postMessage / URL 参数 / 全局导出对象）。我们用同源 iframe + 注入 `med_bridge.js`（运行在 MED 全局作用域）调用其顶层函数；版本锁定见 `backend/static/EDITOR_VERSION.md`，升级前跑 `tests/test_med_bridge.py`。
+- **MED 没有内置简体中文字体**（只有日文 Noto Sans JP）。桥的 `setupCJKFonts()` 用 MED 自带字体管理器以 `local()` 方式注册系统字体（微软雅黑），不改 MED 源码。
+- **MED 自身不能改 LoRA 权重**、缺 `%prompt%` 时静默失败，故**出图放在后端**，MED 只负责排版/嵌字/技法/导出。
+- **git 仅本地**（无远程）。
