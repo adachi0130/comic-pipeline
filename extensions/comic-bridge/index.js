@@ -12,8 +12,10 @@
  * 免构建：直接用 ES module，import 酒馆自己的模块。
  */
 
-import { getContext } from '../../../extensions.js';
-import { eventSource, event_types } from '../../../script.js';
+// 第三方扩展位于 /scripts/extensions/third-party/<name>/，比内置扩展深一层，
+// 故相对路径要多退一级：script.js 在站点根，extensions.js 在 /scripts/。
+import { getContext } from '../../../../scripts/extensions.js';
+import { eventSource, event_types } from '../../../../script.js';
 
 const DEFAULT_BACKEND = 'http://127.0.0.1:8770';
 const POLL_INTERVAL_MS = 3000;

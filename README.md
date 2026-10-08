@@ -77,9 +77,34 @@ cd backend && ../.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0
 ## 实施进度
 
 - ✅ **M0**：后端骨架 + 版本化/血缘 + LLM 层 + ComfyUI 客户端与参数映射 + 作业队列 + 模板菜单 + MED 桥（已端到端验证）
-- ⏳ **M1**：S1/S3/S4 提示词与契约 + comic-bridge 扩展 + G1–G4 审查界面（含全自动/人工总开关）
-- ⏳ **M2**：S5 前端参数面板（LoRA 开关/批量张数/挑图）+ 桥全量（技法叠加）+ G5/G6 + 无头自动驾驶 + 返工
-- ⏳ **M3**：S7 PDF/CBZ 导出 + 整册预览 + 容器一键关机 + 破格 PS 回填
+- ✅ **M1**：S1/S3/S4 阶段与提示词资产 + comic-bridge 扩展 + 前端 UI + 阶段编排与双粒度审查门（已端到端验证）
+- ✅ **M2**：S5 出图（LoRA 三级解析/可关角色 LoRA/批量张数/出图工作台挑图）+ 技法叠加（集中线/运动线）+ 无头自动驾驶（已端到端验证）
+- ✅ **M3**：S7 PDF/CBZ 导出 + 整册预览入口（已端到端验证）
+- ⏳ 后续：S2 正文分段持久化与"场→页"映射精化、无头跑酒馆（免开标签页）、出版级一致性调优
+
+## 已验证的关键链路（本机实测）
+
+| 链路 | 验证方式 | 结果 |
+|---|---|---|
+| MED 桥装模板/落词/贴图/导出 | `tests/test_med_bridge.py`（无头） | 装 3 格 → 落词 3/3 → 贴图 → 导出 PNG ✅ |
+| MED 集中线/运动线叠加 | 无头调 `applyMangaTone` | 两者均 `ok`，导出图明显变化 ✅ |
+| 工作流参数映射 + LoRA 链/旁路 | `tests/test_workflow_mapping.py` | 全通过 ✅ |
+| 版本化 + 血缘 + 失效传播 | `tests/test_artifacts.py` | 改上游 → 下游标 stale ✅ |
+| 分页合成（S6） | 真实服务 + 桥 | 3 格成页并落盘 ✅ |
+| 整册导出（S7） | 真实服务 | PDF + CBZ 均生成 ✅ |
+| **酒馆正文桥（S2）** | 无头浏览器打开酒馆、触发扩展 | 后端收到正文产物；捕获到酒馆发出的 **21,441 字符** prompt，其中同时含**角色卡**、**世界书**、我们的引导词 ✅ |
+
+## 酒馆扩展（S2）安装与启用
+
+1. 把 `extensions/comic-bridge/` 复制到 `<SillyTavern>/data/default-user/extensions/comic-bridge/`；
+2. 酒馆重启后，在「扩展」面板里打开开关（或写 `data/default-user/settings.json` 的
+   `extension_settings.comicBridge = {"enabled": true, "backend": "http://127.0.0.1:8770"}`）；
+3. 后端入队正文请求（`POST /api/projects/{id}/prose/request`）→ 扩展轮询领取 → 酒馆原生生成 →
+   正文回传后端置「待审」。
+4. 生成期间酒馆标签页需保持打开；后端已对 `http://localhost:8000` 放行 CORS。
+
+> 自测用 `tools/mock_llm.py` 起本地 OpenAI 兼容 mock（支持流式），可无额度验证整条 S2 链路。
+
 
 ## 关键约束（已核实）
 
