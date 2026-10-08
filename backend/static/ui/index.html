@@ -93,6 +93,7 @@ pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:10
     <div class="nav">
       <button data-tab="projects" class="active">项目</button>
       <button data-tab="pipeline">流水线 S1–S7</button>
+      <button data-tab="workbench">出图工作台</button>
       <button data-tab="candidates">候选图 / 审查</button>
       <button data-tab="settings">设置</button>
     </div>
@@ -174,6 +175,22 @@ pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:10
       <div class="card">
         <h2>作业进度 <span class="mut" style="font-size:12px;font-weight:400">（SSE 实时）</span></h2>
         <div id="jobs"><div class="empty">暂无作业</div></div>
+      </div>
+    </section>
+
+    <!-- 出图工作台 -->
+    <section id="tab-workbench" class="hidden">
+      <div class="card">
+        <h2>出图工作台 <span class="mut" style="font-size:12px;font-weight:400">逐格改词 / 勾选 LoRA / 调批量张数 / 挑图</span></h2>
+        <div class="row">
+          <button class="sm" id="wb-reload">刷新格列表</button>
+          <label class="mut" style="font-size:12.5px">每格批量张数</label>
+          <input id="wb-count" type="number" value="4" min="1" max="8" style="width:70px">
+          <label class="mut" style="font-size:12.5px"><input type="checkbox" id="wb-all-first" checked style="width:auto"> 自动模式取首张</label>
+          <div class="spacer"></div>
+          <span class="pill" id="wb-info">—</span>
+        </div>
+        <div id="wb-list" style="margin-top:14px"><div class="empty">点“刷新格列表”加载（需先跑 S3/S4）</div></div>
       </div>
     </section>
 

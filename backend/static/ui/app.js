@@ -35,18 +35,109 @@ const statusPill = (s) => {
   return `<span class="pill ${cls}">${label}</span>`;
 };
 
+// ---------- 出图工作台 ----------
+$('#wb-reload').addEventListener('click', loadWorkbench);
+
+async function loadWorkbench() {
+  if (!state.projectId) return toast('先选择项目', 'err');
+  const box = $('#wb-list');
+  try {
+    const prompts = await api(`/api/projects/${state.projectId}/artifacts?kind=panel_prompt`);
+    if (!prompts.length) { box.innerHTML = '<div class="empty">还没有 S4 提示词产物（先跑 S3、S4）</div>'; $('#wb-info').textContent = '0 格'; return; }
+    // 拉取可用 LoRA 列表（失败不阻塞）
+    let loraOpts = '';
+    try { const r = await api('/api/comfy/assets?backend=cloud'); loraOpts = (r.loras || []).join('\n'); } catch { /* ComfyUI 未启动 */ }
+
+    box.innerHTML = prompts.map((p) => `
+      <div class="card" data-ref="${esc(p.ref)}" style="margin-bottom:12px">
+        <div class="row"><b>${esc(p.ref)}</b> ${statusPill(p.status)}
+          <div class="spacer"></div>
+          <label class="mut" style="font-size:12px">张数</label>
+          <input class="wb-count" type="number" value="${$('#wb-count').value}" min="1" max="8" style="width:64px">
+          <button class="sm wb-save">保存提示词</button>
+          <button class="primary sm wb-gen">出图</button>
+        </div>
+        <div style="margin-top:8px"><label class="mut">正向</label>
+          <textarea class="wb-pos">${esc((p.payload || {}).prompt_pos || '')}</textarea></div>
+        <div style="margin-top:6px"><label class="mut">负向</label>
+          <textarea class="wb-neg">${esc((p.payload || {}).prompt_neg || '')}</textarea></div>
+        <div class="row" style="margin-top:6px"><label class="mut" style="font-size:12px">
+            <input type="checkbox" class="wb-uselora" style="width:auto" ${(p.payload || {}).loras?.length ? 'checked' : ''}> 使用 LoRA</label>
+          <input class="wb-lora" placeholder="lora 文件名" value="${esc(((p.payload || {}).loras || [{}])[0].name || '')}" list="lora-list">
+          <label class="mut" style="font-size:12px">权重</label>
+          <input class="wb-loraw" type="number" step="0.05" value="${((p.payload || {}).loras || [{}])[0].weight ?? 0.8}" style="width:74px">
+        </div>
+        <div class="wb-cands" style="margin-top:10px"></div>
+      </div>`).join('');
+    // 全局 datalist（LoRA 候选）
+    const dl = document.createElement('datalist'); dl.id = 'lora-list';
+    dl.innerHTML = loraOpts.split('\n').filter(Boolean).map((l) => `<option value="${esc(l)}">`).join('');
+    document.body.appendChild(dl);
+    $('#wb-info').textContent = `${prompts.length} 格`;
+    bindWorkbench(prompts);
+    for (const p of prompts) await renderWbCands(p);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function bindWorkbench(prompts) {
+  $$('#wb-list .card').forEach((card) => {
+    const ref = card.dataset.ref;
+    card.querySelector('.wb-save').addEventListener('click', async () => {
+      const pos = card.querySelector('.wb-pos').value;
+      const neg = card.querySelector('.wb-neg').value;
+      const useLora = card.querySelector('.wb-uselora').checked;
+      const lname = card.querySelector('.wb-lora').value.trim();
+      const lw = +card.querySelector('.wb-loraw').value;
+      const art = prompts.find((p) => p.ref === ref);
+      // 写一个新版本提示词产物（触发下游失效传播）
+      await api(`/api/artifacts/${art.id}/payload`, { method: 'PATCH', body: JSON.stringify({
+        prompt_pos: pos, prompt_neg: neg,
+        loras: useLora && lname ? [{ name: lname, weight: lw }] : [] }) });
+      toast(`${ref} 提示词已保存（下游标记需重跑）`, 'ok'); refreshGates();
+    });
+    card.querySelector('.wb-gen').addEventListener('click', async () => {
+      const count = +card.querySelector('.wb-count').value || 4;
+      const r = await api(`/api/projects/${state.projectId}/panels/${encodeURIComponent(ref)}/generate`,
+        { method: 'POST', body: JSON.stringify({ count }) });
+      toast(`${ref} 出图已入队 #${r.job_id}（${count} 张）`);
+    });
+  });
+}
+
+async function renderWbCands(promptArt) {
+  const card = document.querySelector(`#wb-list .card[data-ref="${CSS.escape(promptArt.ref)}"]`);
+  if (!card) return;
+  const box = card.querySelector('.wb-cands');
+  const imgs = await api(`/api/projects/${state.projectId}/artifacts?kind=image&ref_prefix=${encodeURIComponent(promptArt.ref)}`);
+  if (!imgs.length) { box.innerHTML = '<div class="empty" style="font-size:12px">还没有候选图，点“出图”</div>'; return; }
+  const a = await api('/api/artifacts/' + imgs[0].id);
+  const cands = (a.payload && a.payload.candidates) || [];
+  const sel = a.payload && a.payload.selected_index;
+  box.innerHTML = `<div class="candgrid">${cands.map((c, i) => `
+    <div class="cand ${i === sel ? 'sel' : ''}" data-art="${a.id}" data-idx="${i}">
+      <img src="/api/artifacts/${a.id}/candidate/${i}" loading="lazy">
+      <div class="lbl"><span>#${i + 1}</span>${i === sel ? '<span style="color:var(--ok)">已选</span>' : ''}</div>
+    </div>`).join('')}</div>`;
+  box.querySelectorAll('.cand').forEach((el) => el.addEventListener('click', async () => {
+    await api(`/api/artifacts/${el.dataset.art}/select`, { method: 'POST', body: JSON.stringify({ index: +el.dataset.idx }) });
+    toast('已采用', 'ok'); renderWbCands(promptArt); refreshGates();
+  }));
+}
+
 // ---------- Tab ----------
 $$('.nav button[data-tab]').forEach((b) => b.addEventListener('click', () => {
   $$('.nav button[data-tab]').forEach((x) => x.classList.remove('active'));
   b.classList.add('active');
   const tab = b.dataset.tab;
-  ['projects', 'pipeline', 'candidates', 'settings'].forEach((t) =>
+  ['projects', 'pipeline', 'workbench', 'candidates', 'settings'].forEach((t) =>
     $('#tab-' + t).classList.toggle('hidden', t !== tab));
   const titles = { projects: ['项目', '选择或新建一部漫画'], pipeline: ['流水线 S1–S7', '按阶段推进，每阶段后可审查'],
+    workbench: ['出图工作台', '逐格改词 / 勾选 LoRA / 调批量张数 / 挑图'],
     candidates: ['候选图 / 审查', '人工挑图；自动模式取首张'], settings: ['设置', 'LLM 供应商 / ComfyUI / 阶段绑定'] };
   $('#view-title').textContent = titles[tab][0];
   $('#view-sub').textContent = titles[tab][1];
   if (tab === 'settings') { loadProviders(); loadStageBinding(); }
+  if (tab === 'workbench') loadWorkbench();
 }));
 
 // ---------- 健康 ----------
