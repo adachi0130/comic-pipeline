@@ -1,0 +1,123 @@
+"""S4 分镜提示词：每页分格 → 每格正/负向提示词 + LoRA 绑定。
+
+作业 payload: {"project_id": 1, "page_ref": "page:3"}  （不传则处理全部已通过的页）
+前置：该页 PAGE_SCRIPT 产物存在。
+
+产出：为该页每一格写 ``PANEL_PROMPT`` 产物（ref="panel:{页}.{格}"），
+供 S5 直接出图。
+"""
+
+from __future__ import annotations
+
+import json
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ..artifacts import all_current, create, current, set_status
+from ..llm import LLMClient, LLMLogContext
+from ..models import ArtifactKind, ArtifactStatus, Character, Job, LoraSelection, Project, Technique
+from ..schemas import PagePrompts
+from . import promptlib
+
+KIND = "s4_prompt"
+
+
+def _characters(session: Session, project_id: int) -> str:
+    rows = session.scalars(select(Character).where(Character.project_id == project_id)).all()
+    data = {
+        c.name: {
+            "prompt_block": c.prompt_block,
+            "lora_name": c.lora_name,
+            "lora_weight": c.lora_weight,
+            "use_lora": c.use_lora,
+        }
+        for c in rows
+    }
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _project_loras(session: Session, project_id: int) -> list[dict]:
+    rows = session.scalars(
+        select(LoraSelection)
+        .where(LoraSelection.project_id == project_id, LoraSelection.scope == "project",
+               LoraSelection.enabled.is_(True))
+        .order_by(LoraSelection.order_index)
+    ).all()
+    return [{"name": r.lora_name, "weight": r.weight} for r in rows]
+
+
+def _techniques(session: Session) -> str:
+    rows = session.scalars(select(Technique).where(Technique.enabled.is_(True))).all()
+    return json.dumps({t.name: t.prompt_block for t in rows}, ensure_ascii=False)
+
+
+def handle(session: Session, job: Job) -> dict:
+    payload = job.payload or {}
+    project_id = int(payload.get("project_id") or job.project_id or 0)
+    project = session.get(Project, project_id)
+    if project is None:
+        raise ValueError(f"项目不存在：{project_id}")
+
+    if payload.get("page_ref"):
+        pages = [current(session, project_id, ArtifactKind.PAGE_SCRIPT.value, payload["page_ref"])]
+        pages = [p for p in pages if p is not None]
+    else:
+        pages = [
+            p
+            for p in all_current(session, project_id, ArtifactKind.PAGE_SCRIPT.value)
+            if p.status in (ArtifactStatus.APPROVED.value, ArtifactStatus.REVIEW.value)
+        ]
+    if not pages:
+        raise ValueError("没有可处理的分页脚本（先跑 S3）")
+
+    provider, cfg = promptlib.resolve_provider(session, "S4")
+    client = LLMClient(cfg)
+    system, user_tpl = promptlib.load_prompt("s4_prompt")
+    chars = _characters(session, project_id)
+    techs = _techniques(session)
+    default_loras = _project_loras(session, project_id)
+
+    log = LLMLogContext(session=session, stage="S4", project_id=project_id, provider_id=provider.id)
+    out = []
+    for page in pages:
+        geom = (page.payload or {}).get("geometry") or {}
+        user = promptlib.render(
+            user_tpl,
+            {
+                "PAGE_SCRIPT_JSON": json.dumps(page.payload, ensure_ascii=False),
+                "CHARACTERS_JSON": chars,
+                "TECHNIQUES_JSON": techs,
+                "PANEL_GEOMETRY_JSON": json.dumps(geom, ensure_ascii=False),
+            },
+        )
+        prompts: PagePrompts = client.structured(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            PagePrompts,
+            log=log,
+        )
+
+        for item in prompts.panels:
+            loras = item.loras or default_loras
+            art = create(
+                session,
+                project_id=project_id,
+                kind=ArtifactKind.PANEL_PROMPT.value,
+                ref=item.panel_ref,
+                payload={
+                    "prompt_pos": item.prompt_pos,
+                    "prompt_neg": item.prompt_neg,
+                    "loras": loras,
+                    "seed": item.seed,
+                    "width": item.width,
+                    "height": item.height,
+                },
+                inputs=[page],
+                status=ArtifactStatus.REVIEW.value,
+            )
+            if project.review_mode == "auto":
+                set_status(session, art, ArtifactStatus.APPROVED.value)
+            out.append(item.panel_ref)
+
+    session.commit()
+    return {"panels": out}

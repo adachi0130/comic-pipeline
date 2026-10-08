@@ -90,6 +90,41 @@ def downstream(artifact_id: int, session: Session = Depends(get_session)) -> lis
     return [_brief(d) for d in A.downstream(session, a)]
 
 
+@router.get("/artifacts/{artifact_id}/candidate/{index}")
+def candidate_image(artifact_id: int, index: int, session: Session = Depends(get_session)):
+    """内联返回某个候选图（供前端 <img> 直接展示）。"""
+    from pathlib import Path
+
+    from fastapi.responses import FileResponse
+
+    a = session.get(Artifact, artifact_id)
+    if a is None:
+        raise HTTPException(404, "产物不存在")
+    cands = (a.payload or {}).get("candidates") or []
+    if not (0 <= index < len(cands)):
+        raise HTTPException(404, "候选不存在")
+    p = Path(cands[index]["path"])
+    if not p.exists():
+        raise HTTPException(404, "候选文件缺失")
+    return FileResponse(str(p))
+
+
+@router.get("/artifacts/{artifact_id}/file")
+def artifact_file(artifact_id: int, session: Session = Depends(get_session)):
+    """内联返回产物落盘文件（如 S6 的整页 PNG）。"""
+    from pathlib import Path
+
+    from fastapi.responses import FileResponse
+
+    a = session.get(Artifact, artifact_id)
+    if a is None or not a.path:
+        raise HTTPException(404, "产物或文件不存在")
+    p = Path(a.path)
+    if not p.exists():
+        raise HTTPException(404, "文件缺失")
+    return FileResponse(str(p))
+
+
 def _brief(a: Artifact) -> dict:
     return {
         "id": a.id,

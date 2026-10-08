@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 漫画生产线</title>
+<style>
+:root{
+  --bg:#0f1115;--bg2:#151922;--card:#1a1f29;--line:#262d39;--line2:#323b4a;
+  --ink:#e9ecf1;--muted:#8b95a7;--accent:#5b8cff;--accent2:#7c5cff;
+  --ok:#35d0a0;--warn:#ffb454;--err:#ff6b6b;--stale:#c084fc;
+  --r:10px;--shadow:0 4px 24px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:14px/1.65 "Inter","Segoe UI","Microsoft YaHei",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none}
+button{font:inherit;cursor:pointer;border-radius:var(--r);border:1px solid var(--line2);
+  background:var(--card);color:var(--ink);padding:7px 14px;transition:.15s}
+button:hover{border-color:var(--accent);transform:translateY(-1px)}
+button.primary{background:linear-gradient(135deg,var(--accent),var(--accent2));border:0;color:#fff;font-weight:600}
+button.ghost{background:transparent}
+button.sm{padding:4px 10px;font-size:12.5px}
+input,select,textarea{font:inherit;background:#0b0e13;color:var(--ink);border:1px solid var(--line2);
+  border-radius:8px;padding:7px 10px;width:100%}
+textarea{resize:vertical;min-height:70px}
+.app{display:grid;grid-template-columns:248px 1fr;min-height:100vh}
+/* 侧栏 */
+.side{background:var(--bg2);border-right:1px solid var(--line);padding:16px 14px;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{display:flex;align-items:center;gap:10px;margin-bottom:18px}
+.brand .dot{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,var(--accent),var(--accent2))}
+.brand b{font-size:15px;letter-spacing:.02em}
+.brand span{display:block;font-size:11px;color:var(--muted)}
+.nav{display:flex;flex-direction:column;gap:3px;margin:6px 0 16px}
+.nav button{text-align:left;background:transparent;border:0;padding:8px 10px;border-radius:8px;color:var(--muted)}
+.nav button.active{background:var(--card);color:var(--ink)}
+.nav button:hover{color:var(--ink);transform:none}
+.sidetitle{font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:var(--muted);margin:16px 0 8px}
+/* 主区 */
+.main{padding:22px 26px 60px;max-width:1180px}
+.head{display:flex;align-items:flex-end;gap:14px;margin-bottom:20px;flex-wrap:wrap}
+.head h1{font-size:22px;margin:0}
+.head .sub{color:var(--muted);font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:var(--shadow);margin-bottom:16px}
+.card h2{font-size:15px;margin:0 0 12px;display:flex;align-items:center;gap:8px}
+.card h2 .step{font-size:11px;background:var(--bg2);border:1px solid var(--line2);border-radius:6px;padding:1px 7px;color:var(--muted)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.spacer{flex:1}
+.pill{font-size:11.5px;border:1px solid var(--line2);border-radius:999px;padding:2px 10px;color:var(--muted)}
+.pill.ok{color:var(--ok);border-color:var(--ok)}
+.pill.warn{color:var(--warn);border-color:var(--warn)}
+.pill.err{color:var(--err);border-color:var(--err)}
+.pill.stale{color:var(--stale);border-color:var(--stale)}
+.pill.run{color:var(--accent);border-color:var(--accent)}
+.switch{display:flex;align-items:center;gap:8px;background:var(--bg2);border:1px solid var(--line2);border-radius:999px;padding:5px 12px}
+.switch input{width:auto}
+/* 项目列表 */
+.plist{display:grid;gap:8px}
+.pitem{display:flex;align-items:center;gap:12px;background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:10px 14px}
+.pitem:hover{border-color:var(--accent)}
+.pitem b{font-size:14px}
+.pitem .meta{color:var(--muted);font-size:12px}
+/* 表格 */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+tr:last-child td{border-bottom:0}
+/* 作业 */
+.job{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px}
+.job:last-child{border-bottom:0}
+.bar{flex:1;height:6px;background:var(--bg2);border-radius:999px;overflow:hidden}
+.bar > i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));width:0}
+.empty{color:var(--muted);font-size:13px;padding:10px 0}
+pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;overflow:auto;max-height:280px}
+.mut{color:var(--muted)}
+.candgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px}
+.cand{border:2px solid var(--line2);border-radius:10px;overflow:hidden;background:#0b0e13;cursor:pointer}
+.cand.sel{border-color:var(--ok)}
+.cand img{width:100%;display:block;aspect-ratio:3/4;object-fit:cover}
+.cand .lbl{font-size:11px;padding:4px 6px;color:var(--muted);display:flex;justify-content:space-between}
+.hidden{display:none}
+.toast{position:fixed;right:18px;bottom:18px;background:var(--card);border:1px solid var(--line2);border-left:3px solid var(--accent);
+  border-radius:10px;padding:10px 14px;box-shadow:var(--shadow);max-width:340px;font-size:13px;z-index:50}
+.toast.err{border-left-color:var(--err)}
+.toast.ok{border-left-color:var(--ok)}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand"><div class="dot"></div><div><b>AI 漫画生产线</b><span>大纲 → 成书</span></div></div>
+    <div class="nav">
+      <button data-tab="projects" class="active">项目</button>
+      <button data-tab="pipeline">流水线 S1–S7</button>
+      <button data-tab="candidates">候选图 / 审查</button>
+      <button data-tab="settings">设置</button>
+    </div>
+    <div class="sidetitle">当前项目</div>
+    <div id="cur-proj" class="mut" style="font-size:12.5px">未选择</div>
+    <div class="sidetitle">快捷入口</div>
+    <div class="nav">
+      <button onclick="window.open('/editor/','_blank')">打开 MED 编辑器 ↗</button>
+      <button onclick="window.open('/ui/editor_bridge/index.html','_blank')">MED 桥自检 ↗</button>
+      <button onclick="window.open('http://localhost:8000','_blank')">酒馆 ↗</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="head">
+      <div><h1 id="view-title">项目</h1><div class="sub" id="view-sub">选择或新建一部漫画</div></div>
+      <div class="spacer"></div>
+      <div class="pill" id="health">后端：检测中</div>
+      <div class="switch">
+        <span class="mut" style="font-size:12.5px">全自动</span>
+        <input type="checkbox" id="automode" title="开=所有门自动通过；关=到门停住等人工审查">
+      </div>
+    </div>
+
+    <!-- 项目 -->
+    <section id="tab-projects">
+      <div class="card">
+        <h2>新建漫画</h2>
+        <div class="grid2">
+          <div><label class="mut">标题</label><input id="np-title" placeholder="如：废墟上的机械少女"></div>
+          <div><label class="mut">目标页数（10–20）</label><input id="np-pages" type="number" value="16" min="1"></div>
+        </div>
+        <div style="margin-top:10px"><label class="mut">故事大纲</label>
+          <textarea id="np-outline" placeholder="写几百字的大纲即可，AI 会扩写成漫画。"></textarea></div>
+        <div class="row" style="margin-top:10px"><button class="primary" id="btn-new">创建项目</button></div>
+      </div>
+      <div class="card"><h2>我的项目</h2><div class="plist" id="plist"><div class="empty">还没有项目</div></div></div>
+    </section>
+
+    <!-- 流水线 -->
+    <section id="tab-pipeline" class="hidden">
+      <div class="card">
+        <h2><span class="step">S1</span>结构规划 <span class="mut" style="font-size:12px;font-weight:400">大纲 → 章/场（含页预算）</span></h2>
+        <div class="row"><button class="primary" id="run-S1">运行 S1</button>
+          <button class="sm" id="gate-S1">查看产物</button><span class="pill" id="st-S1">未开始</span></div>
+      </div>
+      <div class="card">
+        <h2><span class="step">S2</span>正文扩写 <span class="mut" style="font-size:12px;font-weight:400">经酒馆扩展桥，走角色卡/世界书</span></h2>
+        <div class="grid2">
+          <div><label class="mut">场 ID</label><input id="s2-scene" type="number" value="1"></div>
+          <div><label class="mut">引导词（可空）</label><input id="s2-instr" placeholder="如：这场要突出机械少女的疏离感"></div>
+        </div>
+        <div class="row" style="margin-top:10px"><button class="primary" id="run-S2">请求酒馆生成正文</button>
+          <span class="pill" id="st-S2">未开始</span>
+          <span class="mut" style="font-size:12px">需酒馆标签页打开、扩展启用</span></div>
+      </div>
+      <div class="card">
+        <h2><span class="step">S3</span>分页分格 <span class="mut" style="font-size:12px;font-weight:400">AI 按当页内容自选 69 模板之一</span></h2>
+        <div class="row"><label class="mut">场 ID</label><input id="s3-scene" type="number" value="1" style="width:80px">
+          <label class="mut">页预算</label><input id="s3-budget" type="number" value="3" style="width:80px">
+          <button class="primary" id="run-S3">运行 S3</button><span class="pill" id="st-S3">未开始</span></div>
+      </div>
+      <div class="card">
+        <h2><span class="step">S4</span>分镜提示词 <span class="mut" style="font-size:12px;font-weight:400">每格正/负向 + LoRA 绑定</span></h2>
+        <div class="row"><label class="mut">页 ref</label><input id="s4-page" placeholder="page:1" style="width:120px">
+          <button class="primary" id="run-S4">运行 S4</button><span class="pill" id="st-S4">未开始</span></div>
+      </div>
+      <div class="card">
+        <h2><span class="step">S5</span>逐格出图 &amp; <span class="step">S6</span>分页合成</h2>
+        <div class="row">
+          <label class="mut">格 ref</label><input id="s5-panel" placeholder="panel:1.1" style="width:130px">
+          <label class="mut">候选张数</label><input id="s5-count" type="number" value="4" min="1" max="8" style="width:70px">
+          <button class="primary" id="run-S5">出图</button>
+          <label class="mut">页 ref</label><input id="s6-page" placeholder="page:1" style="width:120px">
+          <button class="primary" id="run-S6">合成整页</button>
+        </div>
+        <div class="row" style="margin-top:8px"><span class="pill" id="st-S5">未开始</span><span class="pill" id="st-S6">未开始</span></div>
+      </div>
+      <div class="card">
+        <h2>作业进度 <span class="mut" style="font-size:12px;font-weight:400">（SSE 实时）</span></h2>
+        <div id="jobs"><div class="empty">暂无作业</div></div>
+      </div>
+    </section>
+
+    <!-- 候选图 -->
+    <section id="tab-candidates" class="hidden">
+      <div class="card">
+        <h2>候选图与审查 <span class="mut" style="font-size:12px;font-weight:400">点选采用；自动模式下默认取首张</span></h2>
+        <div class="row"><button class="sm" id="reload-art">刷新产物</button>
+          <label class="mut" style="font-size:12.5px">类型</label>
+          <select id="art-kind" style="width:190px">
+            <option value="image">图像（S5 候选）</option>
+            <option value="page_script">分页脚本（S3）</option>
+            <option value="panel_prompt">提示词（S4）</option>
+            <option value="page_image">整页（S6）</option>
+            <option value="structure">结构（S1）</option>
+            <option value="prose">正文（S2）</option>
+          </select></div>
+        <div id="artbox" style="margin-top:12px"><div class="empty">点“刷新产物”加载</div></div>
+      </div>
+    </section>
+
+    <!-- 设置 -->
+    <section id="tab-settings" class="hidden">
+      <div class="card">
+        <h2>LLM 供应商 <span class="mut" style="font-size:12px;font-weight:400">任意 OpenAI 兼容，按阶段可选</span></h2>
+        <div class="grid2">
+          <div><label class="mut">名称</label><input id="pv-name" placeholder="deepseek / dashscope / kimi …"></div>
+          <div><label class="mut">base_url</label><input id="pv-url" placeholder="https://api.deepseek.com/v1"></div>
+          <div><label class="mut">模型</label><input id="pv-model" placeholder="deepseek-chat"></div>
+          <div><label class="mut">api_key</label><input id="pv-key" type="password" placeholder="sk-..."></div>
+        </div>
+        <div class="row" style="margin-top:10px"><button class="primary" id="btn-addpv">添加供应商</button>
+          <button class="sm" id="btn-reloadpv">刷新</button></div>
+        <div id="pvlist" style="margin-top:12px"><div class="empty">尚未配置</div></div>
+      </div>
+      <div class="card">
+        <h2>ComfyUI 与 LoRA</h2>
+        <div class="row"><label class="mut">后端</label>
+          <select id="cf-backend" style="width:150px"><option value="cloud">仙宫云（隧道）</option><option value="local">本机 ComfyUI</option></select>
+          <button class="sm" id="cf-assets">拉取 LoRA / checkpoint</button>
+          <button class="sm" id="cf-guess">自动映射工作流参数</button>
+          <span class="pill" id="cf-state">—</span></div>
+        <div style="margin-top:10px"><pre id="cf-out" class="hidden"></pre></div>
+      </div>
+      <div class="card">
+        <h2>阶段 → 供应商绑定</h2>
+        <div class="grid2" id="stagelist"></div>
+      </div>
+    </section>
+  </main>
+</div>
+<script type="module" src="/ui/app.js"></script>
+</body>
+</html>
