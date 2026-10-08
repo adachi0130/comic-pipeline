@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from .. import jobs
-from . import s1_structure, s3_script, s4_prompt, s5_image, s6_compose
+from . import s1_structure, s3_script, s4_prompt, s5_image, s6_compose, s7_book
 
 
 def register_all() -> None:
@@ -16,6 +16,7 @@ def register_all() -> None:
     jobs.register(s4_prompt.KIND, s4_prompt.handle)
     jobs.register(s5_image.KIND, s5_image.handle)
     jobs.register(s6_compose.KIND, s6_compose.handle)
+    jobs.register(s7_book.KIND, s7_book.handle)
 
 
 __all__ = ["register_all"]

@@ -90,6 +90,30 @@ def downstream(artifact_id: int, session: Session = Depends(get_session)) -> lis
     return [_brief(d) for d in A.downstream(session, a)]
 
 
+@router.patch("/artifacts/{artifact_id}/payload")
+def update_payload(artifact_id: int, body: dict, session: Session = Depends(get_session)) -> dict:
+    """在线编辑产物负载：写一个**新版本**（保留旧版），并触发下游失效传播。
+
+    用于“改提示词/改台词”这类人工修改——不覆盖历史，下游自动标 stale。
+    """
+    a = session.get(Artifact, artifact_id)
+    if a is None:
+        raise HTTPException(404, "产物不存在")
+    merged = {**(a.payload or {}), **body}
+    new = A.create(
+        session,
+        project_id=a.project_id,
+        kind=a.kind,
+        ref=a.ref,
+        payload=merged,
+        path=a.path,
+        status=ArtifactStatus.REVIEW.value,
+    )
+    session.commit()
+    session.refresh(new)
+    return _full(new)
+
+
 @router.get("/artifacts/{artifact_id}/candidate/{index}")
 def candidate_image(artifact_id: int, index: int, session: Session = Depends(get_session)):
     """内联返回某个候选图（供前端 <img> 直接展示）。"""

@@ -151,25 +151,44 @@
       return { ok: true, order };
     },
 
-    /** 叠加网点/集中线/运动线（尽力而为；MED 这些生成器由 UI 参数驱动，失败即报不支持）。 */
+    /**
+     * 叠加网点/集中线/运动线。
+     *
+     * MED 这些生成器不是纯函数：它们读侧栏控件的值、并用 ``getLastObject()`` 决定落到哪。
+     * 正确做法是走 ``applyMangaTone(MODE)``——它会先构建控件（带默认值）再生成。
+     * 若目标格存在，先把它置顶，让生成器把网点落进该格；否则作为自由对象落在画布上。
+     * 失败不抛异常，返回 ``{ok:false,error}``，由上层记为 warning（可改为人工在 UI 里叠加）。
+     */
     addTone(kind, opts) {
-      const map = {
-        focus: "focusLineStart",
-        speed: "drawTempCanvasSpeedlines",
-      };
-      const fnName = map[kind];
-      if (!fnName) return { ok: false, error: "未知技法：" + kind };
-      let fn = null;
+      const modeMap = { focus: "FocusingLine", speed: "SpeedLine", tone: "Tone" };
+      const mode = modeMap[kind];
+      if (!mode) return { ok: false, error: "未知技法：" + kind };
+
+      const o = opts || {};
+      // 目标格置顶，使生成器把它当作“当前对象”
+      if (o.panel_order) {
+        try {
+          const ordered = orderedPanels(o.rightToLeft !== false);
+          const item = ordered[o.panel_order - 1];
+          const panel = item && (item.panel || item);
+          if (panel && typeof canvas.bringToFront === "function") canvas.bringToFront(panel);
+        } catch (e) {
+          /* 忽略：不置顶也能生成，只是可能落成自由对象 */
+        }
+      }
+
+      let apply = null;
       try {
         // eslint-disable-next-line no-eval
-        fn = eval("typeof " + fnName + ' === "function" ? ' + fnName + " : null");
+        apply = eval('typeof applyMangaTone === "function" ? applyMangaTone : null');
       } catch (e) {
-        fn = null;
+        apply = null;
       }
-      if (!fn) return { ok: false, error: "当前 MED 版本未暴露 " + fnName + "（需人工在 UI 中选择）" };
+      if (!apply) return { ok: false, error: "当前 MED 版本未暴露 applyMangaTone" };
+
       try {
-        fn(opts || {});
-        return { ok: true };
+        apply(mode);
+        return { ok: true, mode };
       } catch (e) {
         return { ok: false, error: String(e) };
       }

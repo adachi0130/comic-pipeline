@@ -140,7 +140,7 @@ class MedComposer:
     def add_tone(self, op: ToneOp) -> dict:
         return self._page.evaluate(
             "({kind, opts}) => window.__MED.addTone(kind, opts)",
-            {"kind": op.kind, "opts": op.options},
+            {"kind": op.kind, "opts": {**op.options, "panel_order": op.panel_order, "rightToLeft": True}},
         )
 
     def export_png_dataurl(self, multiplier: int = 1) -> str:

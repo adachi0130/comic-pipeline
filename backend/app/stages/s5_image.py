@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..artifacts import create, set_status
@@ -27,6 +28,47 @@ from ..models import ArtifactKind, ArtifactStatus, Job, Project
 from .select import select_index
 
 KIND = "s5_image"
+
+
+def resolve_loras(
+    session: Session, project_id: int, panel_ref: str, character_names: list[str]
+) -> list[dict]:
+    """解析该格最终使用的 LoRA 列表。
+
+    合并顺序（去重，后者覆盖前者权重）：
+    1. 出场角色的 LoRA（use_lora=True 才加；**一键关掉角色 LoRA 就传 use_lora=False**）
+    2. 项目默认 LoRA（scope=project）
+    3. 单格覆盖 LoRA（scope=panel, panel_ref 匹配）
+    """
+    from ..models import Character, LoraSelection
+
+    result: dict[str, dict] = {}
+
+    if character_names:
+        chars = session.scalars(
+            select(Character).where(
+                Character.project_id == project_id, Character.name.in_(character_names)
+            )
+        ).all()
+        for c in chars:
+            if c.use_lora and c.lora_name:
+                result[c.lora_name] = {"name": c.lora_name, "weight": c.lora_weight}
+
+    rows = session.scalars(
+        select(LoraSelection)
+        .where(
+            LoraSelection.project_id == project_id,
+            LoraSelection.enabled.is_(True),
+            LoraSelection.scope.in_(("project", "panel")),
+        )
+        .order_by(LoraSelection.scope, LoraSelection.order_index)
+    ).all()
+    for r in rows:
+        if r.scope == "panel" and r.panel_ref != panel_ref:
+            continue
+        result[r.lora_name] = {"name": r.lora_name, "weight": r.weight}
+
+    return list(result.values())
 
 
 def handle(session: Session, job: Job) -> dict:
@@ -42,12 +84,33 @@ def handle(session: Session, job: Job) -> dict:
     if project is None:
         raise ValueError(f"项目不存在：{project_id}")
 
+    # 提示词若未随 payload 带来，就从该格的 S4 产物取
+    prompt_pos = payload.get("prompt_pos")
+    prompt_neg = payload.get("prompt_neg")
+    if prompt_pos is None or prompt_neg is None:
+        from ..artifacts import current
+        from ..models import ArtifactKind
+
+        par = current(session, project_id, ArtifactKind.PANEL_PROMPT.value, panel_ref)
+        if par is not None:
+            prompt_pos = prompt_pos if prompt_pos is not None else par.payload.get("prompt_pos", "")
+            prompt_neg = prompt_neg if prompt_neg is not None else par.payload.get("prompt_neg", "")
+            if not payload.get("loras") and par.payload.get("loras"):
+                payload = {**payload, "loras": par.payload["loras"]}
+    prompt_pos = prompt_pos or ""
+    prompt_neg = prompt_neg or ""
+
     count = int(payload.get("count") or project.candidates_per_panel or 4)
     params = dict(payload.get("params") or project.gen_params or {})
 
+    # LoRA：优先用 payload.loras；否则按“项目默认 + 单格覆盖”解析（含角色 LoRA 开关）
+    loras = payload.get("loras")
+    if loras is None:
+        loras = resolve_loras(session, project_id, panel_ref, payload.get("character_names") or [])
+
     req = GenRequest(
-        prompt_pos=str(payload.get("prompt_pos") or ""),
-        prompt_neg=str(payload.get("prompt_neg") or ""),
+        prompt_pos=prompt_pos,
+        prompt_neg=prompt_neg,
         seed=payload.get("seed"),
         steps=params.get("steps"),
         cfg=params.get("cfg"),
@@ -57,7 +120,7 @@ def handle(session: Session, job: Job) -> dict:
         height=params.get("height"),
         ckpt_name=params.get("ckpt_name"),
         denoise=params.get("denoise"),
-        loras=list(payload.get("loras") or []),
+        loras=list(loras),
         count=count,
     )
 

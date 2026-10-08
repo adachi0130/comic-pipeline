@@ -21,6 +21,7 @@ from . import jobs
 from .config import BACKEND_DIR, get_settings
 from .db import init_db
 from .api.routes import artifacts as artifacts_routes
+from .api.routes import assets as assets_routes
 from .api.routes import bridge as bridge_routes
 from .api.routes import comfy as comfy_routes
 from .api.routes import jobs as jobs_routes
@@ -92,6 +93,7 @@ app.include_router(comfy_routes.router, prefix="/api")
 app.include_router(jobs_routes.router, prefix="/api")
 app.include_router(pipeline_routes.router, prefix="/api")
 app.include_router(bridge_routes.router, prefix="/api")
+app.include_router(assets_routes.router, prefix="/api")
 
 
 @app.get("/api/health")
