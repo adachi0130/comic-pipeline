@@ -1,0 +1,42 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- 数据与产物（不入库）---
+data/
+*.db
+*.sqlite
+*.sqlite3
+backend/static/out/
+backend/static/tmp/
+outputs/
+
+# --- 密钥 ---
+.env
+*.key
+secrets.json
+
+# --- 模型 / LoRA 大文件 ---
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+
+# --- vendor 的第三方编辑器（99MB，按 pin 版本用脚本拉取，不入 git）---
+backend/static/editor/
+
+# --- Node（仅前端工具链需要时）---
+node_modules/
+dist/
+
+# --- 编辑器 / 系统 ---
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

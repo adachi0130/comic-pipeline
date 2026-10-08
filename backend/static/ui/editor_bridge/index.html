@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>分页合成工作台 · Manga Editor Desu（同源桥）</title>
+<style>
+  :root{--bg:#14161a;--panel:#1c1f26;--line:#2b3038;--ink:#e8eaee;--muted:#8b93a1;--accent:#4c8dff;--ok:#3ecf8e;--warn:#ffb454;--err:#ff6b6b}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  .top{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+  .top h1{font-size:15px;margin:0;font-weight:600}
+  .badge{font-size:12px;padding:2px 8px;border-radius:10px;border:1px solid var(--line);color:var(--muted)}
+  .badge.ok{color:var(--ok);border-color:var(--ok)}
+  .badge.err{color:var(--err);border-color:var(--err)}
+  .badge.warn{color:var(--warn);border-color:var(--warn)}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--line);background:#171a20}
+  button{background:#242a33;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:6px 12px;cursor:pointer;font-size:13px}
+  button:hover{border-color:var(--accent);color:#fff}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  select,input{background:#0f1115;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:5px 8px;font-size:13px}
+  .layout{display:grid;grid-template-columns:1fr 320px;height:calc(100vh - 104px)}
+  .frame-wrap{position:relative;background:#0b0d10}
+  iframe{width:100%;height:100%;border:0;background:#fff}
+  .side{border-left:1px solid var(--line);background:var(--panel);overflow:auto;padding:12px}
+  .side h3{font-size:13px;margin:14px 0 6px;color:var(--muted);font-weight:600}
+  pre{background:#0f1115;border:1px solid var(--line);border-radius:6px;padding:8px;font-size:11.5px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow:auto}
+  .hint{color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>分页合成工作台</h1>
+  <span class="badge" id="bridge-state">桥：加载中…</span>
+  <span class="badge" id="med-state">MED：加载中…</span>
+  <span class="hint" style="margin-left:auto">同源 iframe + 注入桥 · 自研后端驱动 Manga Editor Desu</span>
+</div>
+
+<div class="row">
+  <label>模板
+    <select id="tpl"></select>
+  </label>
+  <button class="primary" id="btn-install">装模板</button>
+  <button id="btn-order">读阅读顺序</button>
+  <button id="btn-sample">套示例提示词</button>
+  <button id="btn-export">导出 PNG</button>
+  <span class="hint" id="msg"></span>
+</div>
+
+<div class="layout">
+  <div class="frame-wrap">
+    <iframe id="med" src="/editor/" title="Manga Editor Desu"></iframe>
+  </div>
+  <div class="side">
+    <h3>桥状态</h3>
+    <pre id="out-bridge">—</pre>
+    <h3>模板格数</h3>
+    <pre id="out-order">—</pre>
+    <h3>导出预览</h3>
+    <img id="preview" alt="导出预览" style="width:100%;border:1px solid var(--line);border-radius:6px;display:none">
+    <p class="hint">此页仅用于人工验证桥是否可用（装模板 / 落提示词 / 导出）。正式拼页由后端 PageComposer 通过同一桥完成。</p>
+  </div>
+</div>
+
+<script type="module">
+const frame = document.getElementById('med');
+const $ = (id) => document.getElementById(id);
+let bridgeSrc = null;
+
+const setMsg = (t, cls) => { const e = $('msg'); e.textContent = t || ''; e.style.color = cls === 'err' ? '#ff6b6b' : cls === 'ok' ? '#3ecf8e' : '#8b93a1'; };
+const setBadge = (id, text, cls) => { const e = $(id); e.textContent = text; e.className = 'badge' + (cls ? ' ' + cls : ''); };
+
+async function loadBridge() {
+  bridgeSrc = await (await fetch('/ui/editor_bridge/med_bridge.js')).text();
+}
+
+async function injectBridge() {
+  const doc = frame.contentDocument;
+  if (!doc) return false;
+  if (frame.contentWindow.__MED) return true;
+  const s = doc.createElement('script');
+  s.textContent = bridgeSrc;
+  doc.body.appendChild(s);
+  return !!frame.contentWindow.__MED;
+}
+
+async function ensure() {
+  if (!bridgeSrc) await loadBridge();
+  const ok = await injectBridge();
+  if (!ok) { setBadge('bridge-state', '桥：注入失败', 'err'); return null; }
+  const r = frame.contentWindow.__MED.ready();
+  if (r.ok) setBadge('bridge-state', '桥：就绪', 'ok');
+  else setBadge('bridge-state', '桥：缺 ' + r.missing.join(','), 'warn');
+  $('out-bridge').textContent = JSON.stringify(r, null, 2);
+  return frame.contentWindow.__MED;
+}
+
+function med() { return frame.contentWindow.__MED; }
+
+async function loadTemplates() {
+  try {
+    const m = await (await fetch('/api/meta')).json();
+    const sel = $('tpl');
+    sel.innerHTML = '';
+    const groups = {};
+    for (const t of m.templates) (groups[t.dir] ||= []).push(t);
+    for (const [dir, list] of Object.entries(groups)) {
+      const og = document.createElement('optgroup');
+      og.label = dir === 'vertical' ? '竖版' : '横版';
+      for (const t of list) {
+        const o = document.createElement('option');
+        o.value = t.id;
+        o.textContent = `${t.id} · ${t.panels_count}格 · ${t.layout_desc}`;
+        og.appendChild(o);
+      }
+      sel.appendChild(og);
+    }
+    setMsg(m.templates.length ? '' : '模板表为空，请先跑 build_template_menu.py。', m.templates.length ? '' : 'err');
+  } catch (e) { setMsg('拉模板失败：' + e.message, 'err'); }
+}
+
+frame.addEventListener('load', async () => {
+  setBadge('med-state', 'MED：已加载', 'ok');
+  await ensure();
+});
+
+$('btn-install').addEventListener('click', async () => {
+  const api = await ensure(); if (!api) return;
+  const id = $('tpl').value;
+  const t = await (await fetch('/api/templates/' + encodeURIComponent(id))).json();
+  if (!t.svg) { setMsg('模板 SVG 缺失：' + id, 'err'); return; }
+  setMsg('装模板中…');
+  const r = await api.installTemplate(t.svg, t.dir === 'landscape');
+  setMsg(r.ok ? `已装 ${r.panels} 格` : '装模板未确认到格', r.ok ? 'ok' : 'err');
+});
+
+$('btn-order').addEventListener('click', async () => {
+  const api = await ensure(); if (!api) return;
+  const o = api.readingOrder(true);
+  $('out-order').textContent = JSON.stringify(o, null, 2);
+});
+
+$('btn-sample').addEventListener('click', async () => {
+  const api = await ensure(); if (!api) return;
+  const o = api.readingOrder(true);
+  const prompts = o.map((_, i) => `masterpiece, best quality, manga panel ${i + 1}, dramatic scene, monochrome`);
+  const r = api.applyPrompts(prompts, { rightToLeft: true, append: false });
+  setMsg(`已落提示词 ${r.applied}/${r.total}`, 'ok');
+});
+
+$('btn-export').addEventListener('click', async () => {
+  const api = await ensure(); if (!api) return;
+  const url = api.exportPNG(1);
+  $('preview').src = url;
+  $('preview').style.display = 'block';
+  setMsg('已导出，见右侧预览', 'ok');
+});
+
+loadTemplates();
+</script>
+</body>
+</html>

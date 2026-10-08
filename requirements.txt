@@ -1,0 +1,23 @@
+# 编排与后端
+fastapi>=0.115
+uvicorn[standard]>=0.32
+sqlalchemy>=2.0
+alembic>=1.13
+pydantic>=2.9
+pydantic-settings>=2.5
+
+# HTTP / LLM（供应商无关，OpenAI 兼容协议）
+httpx>=0.27
+
+# 持久作业队列
+apscheduler>=3.10
+
+# 仙宫云 SSH 隧道（paramiko 建 -L 8188）
+paramiko>=3.4
+
+# 配置与模板
+pyyaml>=6.0
+jinja2>=3.1
+
+# 导出（M3）
+img2pdf>=0.5
