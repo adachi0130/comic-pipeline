@@ -4,6 +4,8 @@
 - ``guess_mapping`` 能按 class_type 找到正/负提示词、采样、尺寸、checkpoint、LoRA 链、输出节点
 - ``apply`` 能写入提示词/seed/尺寸
 - LoRA 串联能扩展槽位；``loras=[]`` 能整条旁路
+- ``%prompt%`` 占位符模式；LoRA 堆加载（rgthree）模式的识别与写入
+- UI 格式 → API 格式转换
 
 运行：``.venv/Scripts/python.exe tests/test_workflow_mapping.py``
 """
@@ -15,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
+from app.comfy.ui_convert import is_ui_format, ui_to_api  # noqa: E402
 from app.comfy.workflow import apply, guess_mapping, is_api_format  # noqa: E402
 
 FIXTURE = {
@@ -127,10 +130,119 @@ def test_lora_multi() -> None:
     print("  [ok] 多 LoRA 串联：复用+新增槽位并重连链路")
 
 
+# LoRA 堆加载（rgthree 的 Lora Loader Stack）夹具
+STACK_FIXTURE = {
+    "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "base.safetensors"}},
+    "22": {
+        "class_type": "Lora Loader Stack (rgthree)",
+        "inputs": {
+            "model": ["1", 0], "clip": ["1", 1],
+            "lora_01": "None", "strength_01": 1.0,
+            "lora_02": "None", "strength_02": 1.0,
+            "lora_03": "None", "strength_03": 1.0,
+            "lora_04": "None", "strength_04": 1.0,
+        },
+    },
+    "3": {"class_type": "CLIPTextEncode", "inputs": {"text": "%prompt%", "clip": ["22", 1]}},
+    "4": {"class_type": "CLIPTextEncode", "inputs": {"text": "%negative%", "clip": ["22", 1]}},
+    "5": {"class_type": "EmptyLatentImage", "inputs": {"width": 832, "height": 1216, "batch_size": 1}},
+    "6": {
+        "class_type": "KSampler",
+        "inputs": {
+            "seed": 0, "steps": 28, "cfg": 7.0, "sampler_name": "euler", "scheduler": "normal",
+            "denoise": 1.0, "model": ["22", 0], "positive": ["3", 0], "negative": ["4", 0],
+            "latent_image": ["5", 0],
+        },
+    },
+    "8": {"class_type": "SaveImage", "inputs": {"filename_prefix": "anima", "images": ["6", 0]}},
+}
+
+
+def test_placeholder_detection() -> None:
+    p = guess_mapping(STACK_FIXTURE)
+    assert p.prompt_placeholder == "%prompt%", p.prompt_placeholder
+    assert p.negative_placeholder == "%negative%", p.negative_placeholder
+    print("  [ok] 识别 %prompt% / %negative% 占位符模式")
+
+
+def test_lora_stacker() -> None:
+    p = guess_mapping(STACK_FIXTURE)
+    st = p.lora_stacker
+    assert st is not None and st.node_id == "22", st
+    assert [s.name_input for s in st.slots] == ["lora_01", "lora_02", "lora_03", "lora_04"], st.slots
+    assert st.empty_token == "None"
+
+    out = apply(
+        STACK_FIXTURE, p,
+        {"prompt_pos": "1girl, city", "prompt_neg": "lowres"},
+        loras=[
+            {"name": r"风格\style.safetensors", "weight": 0.7},
+            {"name": r"角色\hero.safetensors", "weight": 1.1},
+        ],
+    )
+    inp = out["22"]["inputs"]
+    # 占位符被整体替换
+    assert out["3"]["inputs"]["text"] == "1girl, city"
+    assert out["4"]["inputs"]["text"] == "lowres"
+    # 前两个槽写入，后两个槽空置
+    assert inp["lora_01"] == r"风格\style.safetensors" and inp["strength_01"] == 0.7
+    assert inp["lora_02"] == r"角色\hero.safetensors" and inp["strength_02"] == 1.1
+    assert inp["lora_03"] == "None" and inp["lora_04"] == "None"
+    assert STACK_FIXTURE["22"]["inputs"]["lora_01"] == "None", "原工作流不应被就地修改"
+    print("  [ok] LoRA 堆加载：按槽写入 + 空槽回填 None + 占位符替换")
+
+
+def test_ui_to_api() -> None:
+    ui_wf = {
+        "nodes": [
+            {"id": 1, "type": "CheckpointLoaderSimple", "widgets_values": ["base.safetensors"]},
+            {"id": 2, "type": "EmptyLatentImage", "widgets_values": [1024, 1536, 1]},
+            {
+                "id": 3, "type": "KSampler",
+                "widgets_values": [123, "randomize", 26, 6, "euler", "karras", 1],
+                "inputs": [{"name": "model", "link": 10}],
+            },
+            {"id": 4, "type": "SaveImage", "widgets_values": ["ComfyUI"],
+             "inputs": [{"name": "images", "link": 11}]},
+        ],
+        "links": [
+            [10, 1, 0, 3, 0, "MODEL"],
+            [11, 3, 0, 4, 0, "IMAGE"],
+        ],
+    }
+    assert is_ui_format(ui_wf)
+    object_info = {
+        "CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": (["base.safetensors"],)}}},
+        "EmptyLatentImage": {"input": {"required": {"width": ("INT", {}), "height": ("INT", {}), "batch_size": ("INT", {})}}},
+        "KSampler": {"input": {"required": {
+            "model": ("MODEL",), "seed": ("INT", {}), "steps": ("INT", {}), "cfg": ("FLOAT", {}),
+            "sampler_name": (["euler"],), "scheduler": (["normal"],), "denoise": ("FLOAT", {}),
+        }}},
+        "SaveImage": {"input": {"required": {"images": ("IMAGE",), "filename_prefix": ("STRING", {})}}},
+    }
+    api, warnings = ui_to_api(ui_wf, object_info)
+    assert warnings == [], warnings
+    # seed 后的 control_after_generate 被跳过，后面的值不串位
+    assert api["3"]["inputs"]["seed"] == 123
+    assert api["3"]["inputs"]["steps"] == 26
+    assert api["3"]["inputs"]["cfg"] == 6
+    assert api["3"]["inputs"]["sampler_name"] == "euler"
+    assert api["3"]["inputs"]["scheduler"] == "karras"
+    assert api["3"]["inputs"]["denoise"] == 1
+    assert api["3"]["inputs"]["model"] == ["1", 0], api["3"]["inputs"]
+    assert api["1"]["inputs"]["ckpt_name"] == "base.safetensors"
+    assert api["4"]["inputs"]["filename_prefix"] == "ComfyUI"
+    assert is_api_format(api), "转换结果应被识别为 API 格式"
+    print("  [ok] UI 格式 → API 格式：控件对位、seed 后 JS 控件跳过、连线保留")
+
+
 if __name__ == "__main__":
     print("工作流参数映射自测：")
     test_guess_mapping()
     test_apply_values()
     test_lora_bypass()
     test_lora_multi()
+    test_placeholder_detection()
+    test_lora_stacker()
+    test_ui_to_api()
     print("全部通过 ✅")

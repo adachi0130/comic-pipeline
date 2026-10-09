@@ -1,6 +1,8 @@
 """出图服务：把“一次出图请求”落到 ComfyUI 并取回图片字节。
 
 供作业处理器（S5）与接口层复用。这里不碰数据库，只做纯出图。
+
+后端地址、当前工作流、参数映射都来自 ``comfy.store``（前端可改、落盘持久）。
 """
 
 from __future__ import annotations
@@ -8,27 +10,67 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..config import WorkflowParams, get_settings, load_workflow_params
+from ..config import (
+    WorkflowParams,
+    get_settings,
+    load_workflow_params,
+)
+from . import store
 from .client import ComfyClient, GeneratedImage
-from .workflow import apply, load_workflow
+from .workflow import apply
 
 _params_cache: WorkflowParams | None = None
+_params_cache_key: str = ""
+
+
+def get_comfy_config():
+    """当前出图后端配置（每次读盘，保证前端改完立即生效）。"""
+    return store.load_comfy_config()
 
 
 def get_client() -> ComfyClient:
+    """按配置返回活动后端客户端（cloud=仙宫云 / local=本机）。"""
     s = get_settings()
-    return ComfyClient(s.comfy_base_url, timeout_s=s.comfy_timeout_s)
+    cfg = get_comfy_config()
+    return ComfyClient(
+        cfg.active_url() or s.comfy_base_url,
+        timeout_s=s.comfy_timeout_s,
+        api_key=cfg.active_api_key(),
+    )
 
 
 def get_local_client() -> ComfyClient:
     s = get_settings()
-    return ComfyClient(s.comfy_local_fallback_url, timeout_s=s.comfy_timeout_s)
+    cfg = get_comfy_config()
+    return ComfyClient(cfg.local_url or s.comfy_local_fallback_url, timeout_s=s.comfy_timeout_s)
 
 
-def get_workflow_params(*, refresh: bool = False) -> WorkflowParams:
-    global _params_cache
-    if _params_cache is None or refresh:
-        _params_cache = load_workflow_params()
+def get_workflow(*, name: str | None = None):
+    """读取当前工作流（API 格式）。``name`` 为空时用配置里的活动工作流。"""
+    cfg = get_comfy_config()
+    wf_name = name or cfg.workflow_name
+    if not wf_name:
+        # 还没有选中任何工作流：直接给一句人话，而不是“文件不存在 xxx.json”
+        from .workflow import WorkflowError
+
+        raise WorkflowError(
+            "还没有选中工作流。请到「出图 → 出图设置 → ② 工作流」导入一个工作流并「设为当前」。"
+        )
+    return store.load_workflow_json(wf_name)
+
+
+def get_workflow_params(*, refresh: bool = False, name: str | None = None) -> WorkflowParams:
+    """读取当前工作流的参数映射（按工作流名缓存）。"""
+    global _params_cache, _params_cache_key
+    cfg = get_comfy_config()
+    wf_name = name or cfg.workflow_name
+    key = wf_name or "__legacy__"
+    if _params_cache is None or refresh or _params_cache_key != key:
+        if wf_name:
+            _params_cache = store.load_params(wf_name)
+        else:
+            _params_cache = load_workflow_params()
+        _params_cache_key = key
     return _params_cache
 
 
@@ -54,15 +96,17 @@ class GenRequest:
 
 def generate(req: GenRequest, *, client: ComfyClient | None = None) -> list[GeneratedImage]:
     """按请求出图，返回所有候选图的字节。"""
-    s = get_settings()
     client = client or get_client()
     params = get_workflow_params()
-    if not params.bindings:
+    if not params.bindings and not params.prompt_placeholder:
         raise RuntimeError(
-            "工作流参数映射为空。请先运行 scripts/inspect_workflow.py 生成 config/workflow_params.yaml"
+            "工作流参数映射为空，也没有 %prompt% 占位符。请到「出图 → 出图设置」里选中工作流并「自动映射」。"
         )
-    wf = load_workflow(s.workflow_path)
+    wf = get_workflow()
 
+    # 默认参数兜底：用户在前端配的 default_params 先垫底，单格显式值覆盖之
+    cfg = get_comfy_config()
+    merged = {**(cfg.default_params or {})}
     values: dict = {
         "prompt_pos": req.prompt_pos,
         "prompt_neg": req.prompt_neg,
@@ -76,13 +120,13 @@ def generate(req: GenRequest, *, client: ComfyClient | None = None) -> list[Gene
         "ckpt_name": req.ckpt_name,
         "denoise": req.denoise,
     }
-    values = {k: v for k, v in values.items() if v is not None}
-    values.update(req.extra_values or {})
+    merged.update({k: v for k, v in values.items() if v is not None})
+    merged.update(req.extra_values or {})
 
     results: list[GeneratedImage] = []
     for _ in range(max(1, req.count)):
         # seed=-1 时让 ComfyUI 随机；每张确保不同
-        applied = apply(wf, params, values, req.loras)
+        applied = apply(wf, params, merged, req.loras)
         prompt_id = client.queue_prompt(applied)
         entry = client.wait_for(
             prompt_id,

@@ -3,21 +3,26 @@
 职责：
 1. ``guess_mapping`` —— 读一份 API 格式工作流，按 ``class_type`` 自动初猜
    “参数 → 节点/字段”，产出一张可人工修改的映射表。
-2. ``apply``        —— 往工作流副本里写入参数值与 LoRA 链（支持多 LoRA 串联、
-   全部关闭时旁路 LoRA），返回可直接 POST 给 ComfyUI 的 API 工作流。
+2. ``apply``        —— 往工作流副本里写入参数值、替换占位符、挂载 LoRA
+   （支持“多 LoraLoader 串联”与“LoRA 堆加载节点”两种写法），
+   返回可直接 POST 给 ComfyUI 的 API 工作流。
 
-这里刻意不引入“多工作流注册表”：整套流程只服务一份 Anima 文生图工作流，
-换工作流只改映射表（YAML），不动代码。
+支持两种参数注入方式（可共存）：
+- **占位符**：工作流里写着 ``%prompt%`` / ``%negative%``（沿用 MED 的写法），整体替换；
+- **字段映射**：把 ``CLIPTextEncode.text`` 这类具体节点字段按映射表写入。
+
+换工作流只改映射表/配置，不动代码。
 """
 
 from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 from typing import Any
 
-from ..config import LoraSlot, ParamBinding, WorkflowParams
+from ..config import LoraSlot, LoraStackSlot, LoraStacker, ParamBinding, WorkflowParams
 
 # KSampler 家族（取第一个作为采样参数来源）
 SAMPLER_CLASSES = ("KSampler", "KSamplerAdvanced", "KSamplerSelect")
@@ -25,6 +30,25 @@ LATENT_CLASSES = ("EmptyLatentImage", "EmptySD3LatentImage", "EmptyLatentImagePr
 CKPT_CLASSES = ("CheckpointLoaderSimple", "CheckpointLoader", "UNETLoader")
 LORA_CLASSES = ("LoraLoader", "LoraLoaderModelOnly")
 OUTPUT_CLASSES = ("SaveImage", "PreviewImage", "SaveImageWebsocket")
+
+# 已知的“LoRA 堆加载”节点：一个节点内并排 N 个槽。
+# rgthree 的 `Lora Loader Stack (rgthree)` 输入形如 lora_01 + strength_01（'None' 为空槽）。
+LORA_STACKER_HINT = (
+    "lora loader stack",
+    "lora stack",
+    "lorastack",
+    "power lora loader",
+    "lora堆",
+)
+
+# 槽名匹配：lora_01 / lora_1 / lora_name_1 / lora1 ...
+_STACK_NAME_RE = re.compile(r"^(?:lora|lora_name|lora_loader)_?0*(\d+)$", re.IGNORECASE)
+# 对应的权重名：strength_01 / strength_1 / weight_1 ...
+_STACK_STRENGTH_RE = re.compile(r"^(?:strength|weight|model_weight|strength_model)_?0*(\d+)$", re.IGNORECASE)
+
+# MED 的占位符写法（见编辑器的 comfyui-util.js）
+PLACEHOLDER_PROMPT = "%prompt%"
+PLACEHOLDER_NEGATIVE = "%negative%"
 
 
 class WorkflowError(RuntimeError):
@@ -64,8 +88,57 @@ def _link_target(wf: dict[str, Any], link: Any) -> tuple[str, dict] | None:
     return nid, node
 
 
+def detect_lora_stacker(wf: dict[str, Any]) -> LoraStacker | None:
+    """找出 LoRA **堆加载**节点（一个节点里并排 N 个槽），如 rgthree 的 LoRA Loader Stack。
+
+    判定：节点里有 ``lora_01`` 这类槽名，且不是普通 ``LoraLoader``。
+    """
+    for nid, node in wf.items():
+        inputs = node.get("inputs") or {}
+        pairs: dict[int, dict[str, str]] = {}
+        for key in inputs:
+            m = _STACK_NAME_RE.match(str(key))
+            if not m:
+                continue
+            pairs.setdefault(int(m.group(1)), {})["name_input"] = str(key)
+        for key in inputs:
+            m = _STACK_STRENGTH_RE.match(str(key))
+            if not m:
+                continue
+            pairs.setdefault(int(m.group(1)), {})["strength_input"] = str(key)
+        if not pairs:
+            continue
+        # 填上缺失的权重名（按槽号推默认写法）
+        slots: list[LoraStackSlot] = []
+        for idx in sorted(pairs):
+            p = pairs[idx]
+            if "name_input" not in p:
+                continue
+            slots.append(
+                LoraStackSlot(
+                    name_input=p["name_input"],
+                    strength_input=p.get("strength_input", ""),
+                )
+            )
+        if not slots:
+            continue
+        empty = "None"
+        for s in slots:
+            v = inputs.get(s.name_input)
+            if isinstance(v, str) and v.strip() == "":
+                empty = ""
+                break
+        return LoraStacker(
+            node_id=str(nid),
+            class_type=str(node.get("class_type") or ""),
+            slots=slots,
+            empty_token=empty,
+        )
+    return None
+
+
 def guess_mapping(wf: dict[str, Any]) -> WorkflowParams:
-    """按 class_type 自动初猜参数映射。"""
+    """按 class_type 自动初猜参数映射，并识别占位符 / LoRA 堆加载。"""
     if not is_api_format(wf):
         raise WorkflowError(
             "工作流不是 ComfyUI API 格式（顶层应为 {node_id: {class_type, inputs}}）。"
@@ -135,8 +208,15 @@ def guess_mapping(wf: dict[str, Any]) -> WorkflowParams:
             bindings["ckpt_name"] = ParamBinding(node_id=str(nid), input_name="ckpt_name")
             break
 
-    # ---- LoRA 链 ----
+    # ---- LoRA：优先识别堆加载节点，其次是多 LoraLoader 串联 ----
+    stacker = detect_lora_stacker(wf)
     lora_slots = _detect_lora_chain(wf)
+
+    # ---- 占位符：工作流里写了 %prompt% / %negative% 就记为占位符模式 ----
+    if _contains_value(wf, PLACEHOLDER_PROMPT):
+        params.prompt_placeholder = PLACEHOLDER_PROMPT
+    if _contains_value(wf, PLACEHOLDER_NEGATIVE):
+        params.negative_placeholder = PLACEHOLDER_NEGATIVE
 
     # ---- 输出节点 ----
     for nid, _ in _nodes_by_class(wf, OUTPUT_CLASSES):
@@ -144,8 +224,23 @@ def guess_mapping(wf: dict[str, Any]) -> WorkflowParams:
 
     params.bindings = bindings
     params.lora_slots = lora_slots
+    params.lora_stacker = stacker
     params.output_node_ids = output_ids
     return params
+
+
+def _contains_value(wf: dict[str, Any], needle: str) -> bool:
+    """工作流里是否有任意字符串字段包含 ``needle``（占位符探测）。"""
+    def walk(obj: Any) -> bool:
+        if isinstance(obj, str):
+            return needle in obj
+        if isinstance(obj, dict):
+            return any(walk(v) for v in obj.values())
+        if isinstance(obj, list):
+            return any(walk(v) for v in obj)
+        return False
+
+    return walk(wf)
 
 
 def _detect_lora_chain(wf: dict[str, Any]) -> list[LoraSlot]:
@@ -317,6 +412,51 @@ def apply_loras(wf: dict[str, Any], loras: list[dict[str, Any]], slots: list[Lor
             wf[nid]["inputs"][name] = [tail, 1]
 
 
+def apply_lora_stacker(
+    wf: dict[str, Any], loras: list[dict[str, Any]], stacker: LoraStacker
+) -> None:
+    """就地把 LoRA 写进「堆加载」节点：第 i 个 LoRA -> 第 i 个槽，空槽填 ``empty_token``。
+
+    数量超过槽位时只取前 N 个（并在调用方提示）。
+    """
+    node = wf.get(str(stacker.node_id))
+    if node is None:
+        raise WorkflowError(f"LoRA 堆加载节点不存在：{stacker.node_id}")
+    inputs = node.setdefault("inputs", {})
+    for i, slot in enumerate(stacker.slots):
+        if i < len(loras):
+            lora = loras[i]
+            inputs[slot.name_input] = lora["name"]
+            if slot.strength_input:
+                inputs[slot.strength_input] = lora.get("weight", 0.8)
+        else:
+            inputs[slot.name_input] = stacker.empty_token
+            if slot.strength_input:
+                inputs[slot.strength_input] = 0
+
+
+def _replace_placeholders(obj: Any, mapping: dict[str, str]) -> None:
+    """把 ``%prompt%`` / ``%negative%`` 这类占位符整体替换成实际文本（就地）。"""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(v, str):
+                for token, text in mapping.items():
+                    if token and token in v:
+                        v = v.replace(token, text)
+                obj[k] = v
+            else:
+                _replace_placeholders(v, mapping)
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            if isinstance(v, str):
+                for token, text in mapping.items():
+                    if token and token in v:
+                        v = v.replace(token, text)
+                obj[i] = v
+            else:
+                _replace_placeholders(v, mapping)
+
+
 def apply(
     wf: dict[str, Any],
     params: WorkflowParams,
@@ -327,8 +467,24 @@ def apply(
 
     ``values`` 键用统一词汇：prompt_pos / prompt_neg / seed / steps / cfg /
     sampler / scheduler / width / height / ckpt_name / denoise。
+
+    注入顺序：
+    1. 占位符替换（``%prompt%`` / ``%negative%``）；
+    2. 字段映射写入（覆盖同名输入）；
+    3. LoRA：优先堆加载节点，其次多 LoraLoader 串联。
     """
     out = copy.deepcopy(wf)
+
+    # 1. 占位符
+    repl: dict[str, str] = {}
+    if params.prompt_placeholder and "prompt_pos" in values and values["prompt_pos"] is not None:
+        repl[params.prompt_placeholder] = str(values["prompt_pos"])
+    if params.negative_placeholder and "prompt_neg" in values and values["prompt_neg"] is not None:
+        repl[params.negative_placeholder] = str(values["prompt_neg"])
+    if repl:
+        _replace_placeholders(out, repl)
+
+    # 2. 字段映射
     for key, binding in params.bindings.items():
         if key not in values:
             continue
@@ -341,5 +497,10 @@ def apply(
         node.setdefault("inputs", {})
         node["inputs"][binding.input_name] = _coerce(val, binding.value_type)
 
-    apply_loras(out, loras or [], params.lora_slots)
+    # 3. LoRA
+    if params.lora_stacker is not None:
+        apply_lora_stacker(out, loras or [], params.lora_stacker)
+    else:
+        apply_loras(out, loras or [], params.lora_slots)
     return out
+

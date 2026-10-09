@@ -33,21 +33,44 @@ class GeneratedImage:
 
 
 class ComfyClient:
-    def __init__(self, base_url: str, *, timeout_s: float = 30.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_s: float = 30.0,
+        api_key: str = "",
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
+        self.api_key = (api_key or "").strip()
+
+    # ---------------- 内部 ----------------
+    def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
+        """统一请求头。云端（仙宫云等）需要鉴权时带 ``Authorization: Bearer``。"""
+        h = dict(extra or {})
+        if self.api_key:
+            h["Authorization"] = f"Bearer {self.api_key}"
+        return h
+
+    def _get(self, path: str, **kw: Any) -> httpx.Response:
+        kw["headers"] = self._headers(kw.get("headers"))
+        return httpx.get(f"{self.base_url}{path}", **kw)
+
+    def _post(self, path: str, **kw: Any) -> httpx.Response:
+        kw["headers"] = self._headers(kw.get("headers"))
+        return httpx.post(f"{self.base_url}{path}", **kw)
 
     # ---------------- 探测 ----------------
-    def ping(self) -> bool:
+    def ping(self, timeout_s: float = 5.0) -> bool:
         try:
-            r = httpx.get(f"{self.base_url}/system_stats", timeout=5.0)
+            r = self._get("/system_stats", timeout=timeout_s)
             return r.status_code == 200
         except httpx.HTTPError:
             return False
 
     def object_info(self) -> dict[str, Any]:
         try:
-            r = httpx.get(f"{self.base_url}/object_info", timeout=self.timeout_s)
+            r = self._get("/object_info", timeout=self.timeout_s)
             r.raise_for_status()
         except httpx.HTTPError as e:
             raise ComfyError(f"拉取 /object_info 失败：{e}") from e
@@ -90,7 +113,7 @@ class ComfyClient:
         cid = client_id or str(uuid.uuid4())
         body = {"prompt": workflow_api, "client_id": cid}
         try:
-            r = httpx.post(f"{self.base_url}/prompt", json=body, timeout=self.timeout_s)
+            r = self._post("/prompt", json=body, timeout=self.timeout_s)
         except httpx.HTTPError as e:
             raise ComfyError(f"入队失败：{e}") from e
         if r.status_code >= 400:
@@ -103,7 +126,7 @@ class ComfyClient:
 
     def history(self, prompt_id: str) -> dict[str, Any]:
         try:
-            r = httpx.get(f"{self.base_url}/history/{prompt_id}", timeout=self.timeout_s)
+            r = self._get(f"/history/{prompt_id}", timeout=self.timeout_s)
             r.raise_for_status()
         except httpx.HTTPError as e:
             raise ComfyError(f"取 history 失败：{e}") from e
@@ -122,7 +145,7 @@ class ComfyClient:
     def download_image(self, filename: str, subfolder: str = "", type_: str = "output") -> bytes:
         params = {"filename": filename, "subfolder": subfolder, "type": type_}
         try:
-            r = httpx.get(f"{self.base_url}/view", params=params, timeout=self.timeout_s)
+            r = self._get("/view", params=params, timeout=self.timeout_s)
             r.raise_for_status()
         except httpx.HTTPError as e:
             raise ComfyError(f"下载图片失败：{e}") from e
@@ -154,12 +177,12 @@ class ComfyClient:
     # ---------------- 队列控制 ----------------
     def interrupt(self) -> None:
         try:
-            httpx.post(f"{self.base_url}/interrupt", timeout=self.timeout_s)
+            self._post("/interrupt", timeout=self.timeout_s)
         except httpx.HTTPError:
             pass
 
     def delete_from_queue(self, prompt_id: str) -> None:
         try:
-            httpx.post(f"{self.base_url}/queue", json={"delete": [prompt_id]}, timeout=self.timeout_s)
+            self._post("/queue", json={"delete": [prompt_id]}, timeout=self.timeout_s)
         except httpx.HTTPError:
             pass

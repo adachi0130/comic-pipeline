@@ -154,6 +154,29 @@ class LoraSlot(BaseModel):
     strength_clip_input: str = "strength_clip"
 
 
+class LoraStackSlot(BaseModel):
+    """LoRA **堆加载**器里的一个槽位（名字 + 权重成对出现）。
+
+    例：rgthree 的 ``Lora Loader Stack (rgthree)`` 是 ``lora_01`` + ``strength_01``。
+    """
+
+    name_input: str
+    strength_input: str = ""
+
+
+class LoraStacker(BaseModel):
+    """LoRA 堆加载节点（一个节点里并排放 N 个 LoRA 槽）。
+
+    与 ``lora_slots``（多个 LoraLoader 首尾串联）二选一；两者都存在时**优先用堆加载**。
+    槽名填 ``empty_token``（如 rgthree 的 ``"None"``）表示该槽不启用。
+    """
+
+    node_id: str
+    class_type: str = ""
+    slots: list[LoraStackSlot] = Field(default_factory=list)
+    empty_token: str = "None"
+
+
 class WorkflowParams(BaseModel):
     """Anima 文生图工作流的参数映射表。
 
@@ -164,8 +187,13 @@ class WorkflowParams(BaseModel):
     # 参数名 -> 绑定；参数名用统一词汇：prompt_pos / prompt_neg / seed /
     # steps / cfg / sampler / scheduler / width / height / ckpt_name / denoise
     bindings: dict[str, ParamBinding] = Field(default_factory=dict)
-    # LoRA 槽列表（按串联顺序）
+    # LoRA 槽列表（多个 LoraLoader 串联，按顺序）
     lora_slots: list[LoraSlot] = Field(default_factory=list)
+    # LoRA 堆加载节点（如 rgthree Lora Loader Stack）；与 lora_slots 二选一
+    lora_stacker: LoraStacker | None = None
+    # MED 风格占位符：工作流里出现这个字符串就整体替换成提示词
+    prompt_placeholder: str = ""
+    negative_placeholder: str = ""
     # 输出节点 id（SaveImage/ PreviewImage）；取图时按它从 history 里过滤
     output_node_ids: list[str] = Field(default_factory=list)
 
