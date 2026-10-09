@@ -28,23 +28,21 @@ def meta(session: Session = Depends(get_session)) -> dict:
             "review_mode": s.default_review_mode,
             "select_strategy": s.default_select_strategy,
         },
+        # 阶段定义（前端据此渲染流水线的阶段顺序与说明）
+        "stages": [
+            {"id": "S1", "key": "prose", "name": "正文", "desc": "用酒馆写/续写小说，逐段审核"},
+            {"id": "S2", "key": "script", "name": "分页分格", "desc": "AI 按当页内容自选 69 模板之一"},
+            {"id": "S3", "key": "prompt", "name": "分镜提示词", "desc": "每格正/负向 + LoRA 绑定"},
+            {"id": "S4", "key": "image", "name": "逐格出图", "desc": "每格 N 张候选，人工挑或自动取首张"},
+            {"id": "S5", "key": "compose", "name": "分页合成", "desc": "按模板拼页 + 技法叠加"},
+            {"id": "S6", "key": "book", "name": "整册导出", "desc": "合成 PDF / CBZ"},
+        ],
         "templates": [
-            {
-                "id": t.id,
-                "dir": t.dir,
-                "panels_count": t.panels_count,
-                "layout_desc": t.layout_desc,
-            }
+            {"id": t.id, "dir": t.dir, "panels_count": t.panels_count, "layout_desc": t.layout_desc}
             for t in templates
         ],
         "techniques": [
-            {
-                "id": t.id,
-                "name": t.name,
-                "stage": t.stage,
-                "render_mode": t.render_mode,
-                "prompt_block": t.prompt_block,
-            }
+            {"id": t.id, "name": t.name, "stage": t.stage, "render_mode": t.render_mode, "prompt_block": t.prompt_block}
             for t in techniques
         ],
     }

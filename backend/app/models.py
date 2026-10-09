@@ -210,7 +210,7 @@ class Job(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
-    kind: Mapped[str] = mapped_column(String(32))     # s1_structure / s3_script / s5_image / s6_compose …
+    kind: Mapped[str] = mapped_column(String(32))     # prose / script / prompt / image / compose / book
     stage: Mapped[str] = mapped_column(String(16), default="")
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(16), default=JobStatus.QUEUED.value, index=True)

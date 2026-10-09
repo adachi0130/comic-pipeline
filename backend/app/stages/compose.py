@@ -1,10 +1,9 @@
-"""S6 分页合成：把一格格的成图按模板拼成一页漫画。
+"""S5 分页合成（原 S6）：把一格格的成图按模板拼成一页漫画。
 
-作业 payload: {"project_id": 1, "page_ref": "page:3"}
-前置：该页 PAGE_SCRIPT 产物存在；该页每格 IMAGE 产物已选定成图。
-
-产出：``PAGE_IMAGE`` 产物（ref="page:3"），path 指向导出的整页 PNG。
-驱动方式：走 ``PageComposer`` 抽象（当前实现是 Manga Editor Desu，经同源 iframe + 桥）。
+payload: {"project_id", "page_ref": "page:1"}
+前置：该页分格脚本（S2 产物）存在；该页每格 IMAGE 产物已选定成图。
+产出：``PAGE_IMAGE`` 产物（ref="page:1"），path 指向导出的整页 PNG。
+驱动方式：``PageComposer`` 抽象（当前实现是 Manga Editor Desu，经同源 iframe + 桥）。
 """
 
 from __future__ import annotations
@@ -18,11 +17,10 @@ from ..config import get_settings
 from ..models import ArtifactKind, ArtifactStatus, Job, Project, Template
 from . import select as select_mod
 
-KIND = "s6_compose"
+KIND = "compose"
 
 
 def _base_url() -> str:
-    # 后端自身地址：MED 由本服务托管在 /editor/
     return "http://127.0.0.1:8770"
 
 
@@ -54,7 +52,7 @@ def handle(session: Session, job: Job) -> dict:
     arts: list = []
 
     from ..med.base import PanelArt, ToneOp
-    from ..med.composer import MedComposer, _decode_dataurl
+    from ..med.composer import MedComposer
 
     for panel in (page_art.payload or {}).get("panels", []):
         order = int(panel["panel_order"])
@@ -70,7 +68,6 @@ def handle(session: Session, job: Job) -> dict:
             if idx is not None and 0 <= idx < len(cands):
                 arts.append(PanelArt(order=order, image_path=cands[idx]["path"], prompt=prompts[-1]))
 
-    # 技法叠加（集中线/运动线等由 MED 生成器尽力而为）
     tones: list[ToneOp] = []
     for panel in (page_art.payload or {}).get("panels", []):
         for name in panel.get("technique", []) or []:
@@ -82,7 +79,7 @@ def handle(session: Session, job: Job) -> dict:
     composer = MedComposer(_base_url())
     composer.open()
     try:
-        result, png_bytes = composer.compose(  # type: ignore[misc]
+        result, png_bytes = composer.compose(
             template_svg=svg,
             is_landscape=tpl.dir == "landscape",
             prompts=prompts,

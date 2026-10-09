@@ -54,22 +54,32 @@ async function claimTask() {
 /**
  * 执行一个任务：把引导词注入当前角色对话并触发生成。
  * 走完整管线：角色卡 + 世界书 + 预设 + Prompt Manager。
+ *
+ * mode='start'：用引导词（或大纲）作为用户消息开始写。
+ * mode='continue'：把“续写提示 + 已有小说尾部”作为用户消息，让酒馆接着往下写。
  */
 async function runTask(task) {
   const ctx = getContext();
   currentTask = task;
   chatLenBefore = ctx.chat.length;
 
-  const instruction = task.instruction || '请以小说形式扩写这一场，注重画面感，只输出正文。';
+  const mode = task.mode || 'start';
+  let message;
+  if (mode === 'continue') {
+    const hint = task.instruction || '请自然地接着往下写，保持文风与人称一致。';
+    const tail = task.context_tail || '';
+    message = tail
+      ? `【续写】以下是已写好的前文结尾（仅供你衔接，不要重复它）：\n……${tail}\n\n续写要求：${hint}`
+      : `【续写】${hint}`;
+  } else {
+    const base = task.instruction ? `写作要求：${task.instruction}` : '请根据设定开始写作。';
+    message = task.outline ? `故事大纲：${task.outline}\n\n${base}` : base;
+  }
 
-  // 用 /send 把引导词作为用户消息加入，再 /trigger 触发生成（结果落在聊天里，可见流式输出）
-  const quoted = instruction.replace(/"/g, '\\"');
+  const quoted = message.replace(/"/g, '\\"').replace(/\n/g, '\\n');
   await ctx.executeSlashCommandsWithOptions(`/send ${quoted}`);
-
-  // 触发一次正常生成；await=true 等它结束
   await ctx.executeSlashCommandsWithOptions('/trigger await=true');
 
-  // 正常情况下 GENERATION_ENDED 监听器会把结果回传；这里兜底：
   if (currentTask === task) {
     await reportResult(task, extractNewText());
   }

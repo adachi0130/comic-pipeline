@@ -67,9 +67,8 @@ def main() -> int:
         session.close()
 
     steps = [
-        ("s1_structure", "S1", {}),
-        ("s3_script", "S3", {"scene_id": args.scene, "page_budget": args.pages}),
-        ("s4_prompt", "S4", {}),
+        ("script", "S2", {"batch_pages": args.pages}),
+        ("prompt", "S3", {}),
     ]
     for kind, stage, payload in steps:
         print(f"[{stage}] 运行…")
@@ -85,11 +84,11 @@ def main() -> int:
         finally:
             session.close()
         for ref in refs:
-            print(f"[S5] 出图 {ref}…")
-            job = run_job("s5_image", args.project, "S5", {"project_id": args.project, "panel_ref": ref, "count": 1})
-            print(f"[S5] {ref} -> {job.status}")
+            print(f"[S4] 出图 {ref}…")
+            job = run_job("image", args.project, "S4", {"project_id": args.project, "panel_ref": ref, "count": 1})
+            print(f"[S4] {ref} -> {job.status}")
     else:
-        print("[S5] 已跳过")
+        print("[S4] 已跳过")
 
     # S6：逐页合成
     session = SessionLocal()
@@ -99,14 +98,14 @@ def main() -> int:
     finally:
         session.close()
     for ref in page_refs:
-        print(f"[S6] 合成 {ref}…")
-        job = run_job("s6_compose", args.project, "S6", {"project_id": args.project, "page_ref": ref})
-        print(f"[S6] {ref} -> {job.status} {job.result or job.error[:200]}")
+        print(f"[S5] 合成 {ref}…")
+        job = run_job("compose", args.project, "S5", {"project_id": args.project, "page_ref": ref})
+        print(f"[S5] {ref} -> {job.status} {job.result or job.error[:200]}")
 
     # S7：导出
-    print("[S7] 导出整册…")
-    job = run_job("s7_book", args.project, "S7", {"project_id": args.project, "format": args.format})
-    print(f"[S7] {job.status} — {job.result or job.error[:200]}")
+    print("[S6] 导出整册…")
+    job = run_job("book", args.project, "S6", {"project_id": args.project, "format": args.format})
+    print(f"[S6] {job.status} — {job.result or job.error[:200]}")
     return 0 if job.status == JobStatus.DONE.value else 1
 
 
