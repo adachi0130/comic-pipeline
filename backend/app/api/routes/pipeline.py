@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ... import artifacts as A
 from ... import jobs as jobq
 from ...db import get_session
-from ...models import ArtifactKind, ArtifactStatus, Project, StageModel
+from ...models import ArtifactKind, ArtifactStatus, Project, StageModel, Template
 
 router = APIRouter(tags=["pipeline"])
 
@@ -31,6 +32,88 @@ STAGE_ARTIFACTS = {
     "S5": (ArtifactKind.PAGE_IMAGE.value, "整页成图"),
     "S6": (ArtifactKind.BOOK.value, "成书导出"),
 }
+
+
+@router.get("/projects/{project_id}/pages/{page_ref}")
+def page_detail(project_id: int, page_ref: str, session: Session = Depends(get_session)) -> dict:
+    """S2 页详情：分格脚本 + 该模板几何 + 可用模板菜单 + 对应提示词。
+
+    前端用它渲染“详情”，并支持手改台词/动作、手动换模板、对单页重跑提示词。
+    """
+    art = A.current(session, project_id, ArtifactKind.PAGE_SCRIPT.value, page_ref)
+    if art is None:
+        raise HTTPException(404, f"没有该页的分格脚本：{page_ref}")
+    payload = art.payload or {}
+    tpl = session.get(Template, payload.get("template_id"))
+    prompts = []
+    page_no = page_ref.split(":", 1)[-1]
+    for p in payload.get("panels", []):
+        pref = f"panel:{page_no}.{p.get('panel_order')}"
+        pa = A.current(session, project_id, ArtifactKind.PANEL_PROMPT.value, pref)
+        prompts.append({"panel_ref": pref, "prompt": (pa.payload if pa else None), "status": (pa.status if pa else None)})
+    return {
+        "page_ref": page_ref,
+        "artifact_id": art.id,
+        "status": art.status,
+        "version": art.version,
+        "template_id": payload.get("template_id"),
+        "template": ({"id": tpl.id, "dir": tpl.dir, "panels_count": tpl.panels_count,
+                      "layout_desc": tpl.layout_desc, "geometry": tpl.geometry} if tpl else None),
+        "panels": payload.get("panels", []),
+        "prompts": prompts,
+    }
+
+
+@router.get("/templates")
+def list_templates(session: Session = Depends(get_session)) -> list[dict]:
+    """模板菜单（供手动选模板下拉）。"""
+    rows = session.scalars(select(Template).order_by(Template.dir, Template.panels_count, Template.id)).all()
+    return [{"id": r.id, "dir": r.dir, "panels_count": r.panels_count, "layout_desc": r.layout_desc} for r in rows]
+
+
+@router.post("/projects/{project_id}/pages/{page_ref}/template")
+def change_template(project_id: int, page_ref: str, body: dict, session: Session = Depends(get_session)) -> dict:
+    """手动换模板。若新模板格数与现有分格数不同，则**按新格数重建分格**
+    （保留前 min(N,M) 格内容，多出的格给出占位），保证与模板严格一致。"""
+    tpl_id = (body.get("template_id") or "").strip()
+    tpl = session.get(Template, tpl_id)
+    if tpl is None:
+        raise HTTPException(400, f"模板不存在：{tpl_id}")
+    art = A.current(session, project_id, ArtifactKind.PAGE_SCRIPT.value, page_ref)
+    if art is None:
+        raise HTTPException(404, f"没有该页的分格脚本：{page_ref}")
+
+    old_panels = list((art.payload or {}).get("panels", []))
+    n = tpl.panels_count
+    panels = []
+    for i in range(1, n + 1):
+        if i <= len(old_panels):
+            p = dict(old_panels[i - 1]); p["panel_order"] = i
+        else:
+            p = {"panel_order": i, "role": "medium", "shot": "medium", "characters": [],
+                 "action": "", "scene_desc": "", "dialogue": "", "bubble_type": "none", "technique": []}
+        panels.append(p)
+
+    new_payload = {**(art.payload or {}), "template_id": tpl.id, "panels": panels, "geometry": tpl.geometry}
+    new = A.create(session, project_id=project_id, kind=ArtifactKind.PAGE_SCRIPT.value, ref=page_ref,
+                   payload=new_payload, status=ArtifactStatus.REVIEW.value)
+    session.commit()
+    return {"ok": True, "artifact_id": new.id, "version": new.version,
+            "template_id": tpl.id, "panels_count": tpl.panels_count,
+            "note": f"已换为 {tpl.panels_count} 格模板；分格数已对齐"}
+
+
+@router.post("/projects/{project_id}/pages/{page_ref}/script")
+def update_page_script(project_id: int, page_ref: str, body: dict, session: Session = Depends(get_session)) -> dict:
+    """手改分格内容（台词/动作/景别/技法等），写新版本。"""
+    art = A.current(session, project_id, ArtifactKind.PAGE_SCRIPT.value, page_ref)
+    if art is None:
+        raise HTTPException(404, f"没有该页的分格脚本：{page_ref}")
+    merged = {**(art.payload or {}), **body}
+    new = A.create(session, project_id=project_id, kind=ArtifactKind.PAGE_SCRIPT.value, ref=page_ref,
+                   payload=merged, status=ArtifactStatus.REVIEW.value)
+    session.commit()
+    return {"ok": True, "artifact_id": new.id, "version": new.version}
 
 
 @router.post("/projects/{project_id}/run/{stage}")

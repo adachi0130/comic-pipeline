@@ -334,7 +334,10 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
           <div><label class="fld">api_key</label><input id="pv-key" type="password" placeholder="sk-..."></div>
         </div>
         <div class="row" style="margin-top:12px"><button class="primary" id="btn-addpv">添加供应商</button>
+          <button class="sm" id="btn-import-tv">从酒馆导入</button>
           <button class="sm" id="btn-reloadpv">刷新</button></div>
+        <div class="h2sub" style="margin-top:6px">S2 分页分格 / S3 分镜提示词 用的是这里的模型；
+          点「从酒馆导入」可直接套用你酒馆里正在用的端点与模型。</div>
         <div id="pvlist" style="margin-top:14px"><div class="empty">尚未配置</div></div>
       </div>
       <div class="card">
@@ -355,6 +358,6 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=12"></script>
+<script type="module" src="/ui/app.js?v=13"></script>
 </body>
 </html>

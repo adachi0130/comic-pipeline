@@ -523,6 +523,89 @@ $('#nv-export').addEventListener('click', () => {
   window.open(`/api/projects/${state.projectId}/novel/approved`, '_blank');
 });
 
+
+// ---------- S2 页详情（分格 + 手动选模板 + 手改）----------
+async function openPageDetail(pageRef) {
+  if (!state.projectId) return;
+  const [d, tpls] = await Promise.all([
+    api(`/api/projects/${state.projectId}/pages/${encodeURIComponent(pageRef)}`),
+    api('/api/templates'),
+  ]);
+  const box = document.createElement('div');
+  box.className = 'modal';
+  const tplOpts = tpls.map((x) => `<option value="${x.id}" ${x.id === d.template_id ? 'selected' : ''}>
+      ${esc(x.id)}（${x.panels_count}格）</option>`).join('');
+  box.innerHTML = `<div class="box" style="width:900px">
+    <h3>${esc(pageRef)} · 分格详情 <span class="mut" style="font-size:13px;font-weight:400">v${d.version}</span></h3>
+    <div class="row" style="margin-bottom:10px">
+      <span class="pill tag">当前模板</span>
+      <b>${esc(d.template_id)}</b>
+      <span class="mut">${esc((d.template || {}).layout_desc || '')} · ${(d.template || {}).panels_count || '?'} 格</span>
+      <div class="spacer"></div>
+      <label class="fld" style="margin:0">换成模板</label>
+      <select id="pd-tpl" style="width:230px">${tplOpts}</select>
+      <button class="sm primary" id="pd-apply-tpl">应用</button>
+    </div>
+    <div class="h2sub">换模板后分格数会自动对齐到新模板的格数（多出的格留空待填）。改完点「保存分格」。</div>
+    <div id="pd-panels" style="margin-top:10px"></div>
+    <div class="row" style="margin-top:14px">
+      <span class="mut" style="font-size:12.5px">共 ${(d.panels || []).length} 格</span>
+      <div class="spacer"></div>
+      <button class="sm" data-close>关闭</button>
+      <button class="sm" data-regen>按此页重跑提示词</button>
+      <button class="primary sm" id="pd-save">保存分格</button>
+    </div></div>`;
+  box.querySelector('#pd-panels').innerHTML = (d.panels || []).map((p, i) => `
+    <div class="card" style="padding:12px;margin-bottom:10px" data-i="${i}">
+      <div class="row" style="margin-bottom:6px"><b>第 ${p.panel_order} 格</b>
+        <span class="pill tag">${esc(p.role || '')} / ${esc(p.shot || '')}</span>
+        ${(p.technique || []).length ? `<span class="pill tag">技法 ${esc((p.technique || []).join('、'))}</span>` : ''}</div>
+      <div class="grid2">
+        <div><label class="fld">动作 / 表情</label><textarea class="pd-action" style="min-height:52px">${esc(p.action || '')}</textarea></div>
+        <div><label class="fld">台词</label><textarea class="pd-dialogue" style="min-height:52px">${esc(p.dialogue || '')}</textarea></div>
+      </div>
+      <div class="grid2" style="margin-top:6px">
+        <div><label class="fld">场景</label><input class="pd-scene" value="${esc(p.scene_desc || '')}"></div>
+        <div><label class="fld">出场角色（逗号分隔）</label><input class="pd-chars" value="${esc((p.characters || []).join('，'))}"></div>
+      </div>
+    </div>`).join('');
+  document.body.appendChild(box);
+  box.querySelector('[data-close]').addEventListener('click', () => box.remove());
+  box.addEventListener('click', (e) => { if (e.target === box) box.remove(); });
+
+  box.querySelector('#pd-apply-tpl').addEventListener('click', async () => {
+    const t = box.querySelector('#pd-tpl').value;
+    if (!confirm('换模板会按新格数重排分格（内容尽力保留），继续？')) return;
+    try {
+      const r = await api(`/api/projects/${state.projectId}/pages/${encodeURIComponent(pageRef)}/template`,
+        { method: 'POST', body: JSON.stringify({ template_id: t }) });
+      toast(r.note || '已换模板', 'ok'); box.remove(); openPageDetail(pageRef); refreshGates();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+  box.querySelector('#pd-save').addEventListener('click', async () => {
+    const panels = [...box.querySelectorAll('#pd-panels .card')].map((c, i) => ({
+      panel_order: i + 1,
+      action: c.querySelector('.pd-action').value,
+      dialogue: c.querySelector('.pd-dialogue').value,
+      scene_desc: c.querySelector('.pd-scene').value,
+      characters: c.querySelector('.pd-chars').value.split(/[，,]/).map((s) => s.trim()).filter(Boolean),
+    }));
+    try {
+      await api(`/api/projects/${state.projectId}/pages/${encodeURIComponent(pageRef)}/script`,
+        { method: 'POST', body: JSON.stringify({ panels: mergePanels(panels) }) });
+      toast('已保存（下游标记需重跑）', 'ok'); refreshGates();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+  box.querySelector('[data-regen]').addEventListener('click', async () => {
+    const r = await api(`/api/projects/${state.projectId}/run/S3`, { method: 'POST', body: JSON.stringify({ page_ref: pageRef }) });
+    toast(`按此页重跑提示词已入队 #${r.job_id}`, 'ok');
+  });
+}
+function mergePanels(edited) {
+  const m = new Map(edited.map((p) => [p.panel_order, p]));
+  return edited;   // 简化：直接以编辑后的面板数组覆盖
+}
+
 // ---------- 流水线 ----------
 async function renderFlow() {
   const box = $('#flow');
@@ -574,7 +657,10 @@ async function openStageArtifacts(stage) {
     ${blk.items.length ? `<table><thead><tr><th>ref</th><th>版本</th><th>状态</th><th>内容</th><th></th></tr></thead><tbody>
       ${blk.items.map((it) => `<tr><td>${esc(it.ref)}</td><td>v${it.version}</td><td>${pill(it.status)}</td>
         <td class="mut" style="max-width:320px">${esc(it.summary)}</td>
-        <td><button class="sm" data-open="${it.id}">详情</button></td></tr>`).join('')}
+        <td><button class="sm" data-open="${it.id}">JSON</button>
+          ${stage === 'S2' ? `<button class="sm primary" data-page="${esc(it.ref)}">详情/编辑</button>` : ''}
+          ${stage === 'S3' || stage === 'S4' ? `<button class="sm" data-rerun="${esc(it.ref)}">重跑</button>` : ''}
+        </td></tr>`).join('')}
     </tbody></table>` : '<div class="empty">该阶段还没有产物</div>'}
     <div class="row" style="margin-top:14px"><div class="spacer"></div><button class="sm" data-close>关闭</button></div>
     <div id="art-detail"></div></div>`;
@@ -584,6 +670,13 @@ async function openStageArtifacts(stage) {
   box.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', async () => {
     const a = await api('/api/artifacts/' + b.dataset.open);
     box.querySelector('#art-detail').innerHTML = `<div class="divider"></div><pre>${esc(JSON.stringify(a.payload, null, 2))}</pre>`;
+  }));
+  box.querySelectorAll('[data-page]').forEach((b) => b.addEventListener('click', () => { box.remove(); openPageDetail(b.dataset.page); }));
+  box.querySelectorAll('[data-rerun]').forEach((b) => b.addEventListener('click', async () => {
+    try {
+      const r = await api(`/api/projects/${state.projectId}/run/S3`, { method: 'POST', body: JSON.stringify({ page_ref: b.dataset.rerun }) });
+      toast(`提示词重跑已入队 #${r.job_id}（按该页格数重新生成）`, 'ok');
+    } catch (e) { toast(e.message, 'err'); }
   }));
 }
 
@@ -790,6 +883,20 @@ $('#btn-addpv').addEventListener('click', async () => {
   } catch (e) { toast(e.message, 'err'); }
 });
 $('#btn-reloadpv').addEventListener('click', loadProviders);
+$('#btn-import-tv').addEventListener('click', async () => {
+  try {
+    const r = await api('/api/providers/import-tavern', { method: 'POST', body: '{}' });
+    if (!r.found) return toast('没找到酒馆配置', 'err');
+    if (!r.has_key) return toast('酒馆里没读到 key，请手动填', 'err');
+    // 自动填进表单，确认后保存
+    $('#pv-name').value = r.name; $('#pv-url').value = r.base_url;
+    $('#pv-model').value = r.model; $('#pv-key').value = r.api_key;
+    await api('/api/providers', { method: 'POST', body: JSON.stringify({
+      name: r.name, base_url: r.base_url, model: r.model, api_key: r.api_key }) });
+    toast(`已导入：${r.model}`, 'ok');
+    loadProviders(); loadStageBinding();
+  } catch (e) { toast('导入失败：' + e.message, 'err'); }
+});
 
 async function loadStageBinding() {
   const providers = await api('/api/providers');

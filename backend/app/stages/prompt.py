@@ -96,6 +96,13 @@ def handle(session: Session, job: Job) -> dict:
             PagePrompts,
             log=log,
         )
+        # 格数适配校验：必须与分页脚本的 panels 一一对应
+        expected = len((page.payload or {}).get("panels", []))
+        if len(prompts.panels) != expected:
+            raise ValueError(
+                f"{page.ref} 需 {expected} 格提示词（按该页模板格数），模型给了 {len(prompts.panels)} 格"
+            )
+
         for item in prompts.panels:
             loras = item.loras or default_loras
             art = create(
