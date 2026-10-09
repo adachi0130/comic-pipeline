@@ -148,6 +148,11 @@ $('#automode').addEventListener('change', async () => {
 
 // ---------- 酒馆对话面板 ----------
 $('#tv-refresh').addEventListener('click', loadTavern);
+$('#tv-error-close').addEventListener('click', async () => {
+  state._errDismissed = $('#tv-error-text').textContent;   // 记住这条，别再弹回
+  $('#tv-error').classList.add('hidden');
+  try { await api('/api/tavern/live/clear', { method: 'POST' }); } catch { /* 忽略 */ }
+});
 $('#tv-send').addEventListener('click', sendToTavern);
 $('#tv-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendToTavern(); }
@@ -160,6 +165,7 @@ async function sendToTavern() {
   try {
     state.chatLenAtSend = state.chatLenNow ?? null;
     $('#tv-error').classList.add('hidden');
+    state._errDismissed = null;
     const r = await api(`/api/projects/${state.projectId}/tavern/send`, { method: 'POST', body: JSON.stringify({ text }) });
     $('#tv-input').value = '';
     toast(`已发给酒馆 #${r.job_id}，生成后回传为正文`, 'ok');
@@ -301,8 +307,14 @@ function renderTavern(d) {
     liveBox.classList.add('hidden');
   }
   if (live.error) {
-    errBox.classList.remove('hidden');
-    $('#tv-error-text').textContent = live.error;
+    // 用户已关闭过同一条错误就不再弹回
+    if (state._errDismissed !== live.error) {
+      errBox.classList.remove('hidden');
+      $('#tv-error-text').textContent = live.error;
+    }
+  } else {
+    errBox.classList.add('hidden');
+    state._errDismissed = null;
   }
 
   const msgs = (d.messages || []).filter((m) => !isNoise(m));

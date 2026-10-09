@@ -229,7 +229,25 @@ def push_mirror(body: dict, session: Session = Depends(get_session)) -> dict:
     # 之前这里是整体覆盖，导致 pushMirror（每 2.5s）把刚上报的失败信息冲掉，
     # 前端因此看不到任何错误——就是“没反应”的由来。
     payload = dict(row.payload or {})
+    source = (body.get("source") or "tab").strip()
+    now = datetime.now(timezone.utc)
+
+    # “桥优先”：只要常驻桥在推（30s 内见过 source=bridge），就忽略普通标签页的推送。
+    # 否则你手动打开的酒馆标签页会和桥两边互相覆盖，前端表现就是一直跳。
+    last_bridge = payload.get("bridge_seen_at")
+    if source == "bridge":
+        payload["bridge_seen_at"] = now.isoformat()
+    else:
+        if last_bridge:
+            try:
+                seen = datetime.fromisoformat(last_bridge)
+                if (now - seen).total_seconds() < 30:
+                    return {"ok": True, "skipped": "bridge-active"}
+            except ValueError:
+                pass
+
     payload.update({
+        "source": source,
         "context": body.get("context") or {},
         "messages": body.get("messages") or [],
         "receipt": body.get("receipt") or {},
@@ -239,6 +257,7 @@ def push_mirror(body: dict, session: Session = Depends(get_session)) -> dict:
     session.commit()
     return {
         "ok": True,
+        "source": source,
         "messages": len(payload["messages"]),
         "chats": len(payload["chats"]),
         "live_preserved": bool(payload.get("live")),
@@ -270,6 +289,20 @@ def bridge_stream(body: dict, session: Session = Depends(get_session)) -> dict:
     }
     row.payload = payload
     session.commit()
+    return {"ok": True}
+
+
+@router.post("/tavern/live/clear")
+def tavern_live_clear(session: Session = Depends(get_session)) -> dict:
+    """清掉流式/失败状态（前端“关闭”失败提示，或新一次发送前调用）。"""
+    from ...models import TavernMirror
+
+    row = session.get(TavernMirror, 1)
+    if row is not None:
+        p = dict(row.payload or {})
+        p["live"] = {}
+        row.payload = p
+        session.commit()
     return {"ok": True}
 
 
@@ -351,6 +384,14 @@ def tavern_send(project_id: int, body: dict, session: Session = Depends(get_sess
     text = (body.get("text") or "").strip()
     if not text:
         raise HTTPException(400, "消息不能为空")
+
+    # 新任务开始：清掉上一次的失败/流式状态，避免红框一直挂着
+    from ...models import TavernMirror
+    _row = session.get(TavernMirror, 1)
+    if _row is not None:
+        _p = dict(_row.payload or {})
+        _p["live"] = {}
+        _row.payload = _p
 
     job = jobq.enqueue_deferred(
         KIND,

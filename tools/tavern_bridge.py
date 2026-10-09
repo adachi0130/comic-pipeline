@@ -80,6 +80,8 @@ def main() -> int:
         browser = pw.chromium.launch(headless=not args.headful)
         ctx = browser.new_context(viewport={"width": 1280, "height": 800})
         page = ctx.new_page()
+        # 必须在任何页面脚本运行前注入，扩展加载时才能读到这个标记
+        page.add_init_script("window.__comicBridgeIsHeadless = true;")
         page.on("console", lambda m: print(f"[酒馆页] {m.type}: {m.text[:120]}", flush=True)
                 if ("comic-bridge" in m.text or m.type == "error") else None)
 
@@ -104,6 +106,44 @@ def main() -> int:
                         return s;
                     }"""
                 )
+                # 一次性落位：打开内容最多的真实会话。
+                # 先把目标会话写进角色卡的 chat 字段（内存）再选中，避免酒馆新建空会话。
+                settled = page.evaluate(
+                    """async () => {
+                        const ctx = window.SillyTavern?.getContext?.();
+                        if (!ctx) return { ok: false, why: 'no ctx' };
+                        try {
+                            const res = await fetch('/api/chats/recent', {
+                                method: 'POST', headers: ctx.getRequestHeaders(),
+                                body: JSON.stringify({ max: 30 }),
+                            });
+                            if (!res.ok) return { ok: false, why: 'recent ' + res.status };
+                            const list = (await res.json()) || [];
+                            const mine = list.filter((c) => (c.chat_items || 0) > 0)
+                                             .sort((a, b) => (b.chat_items || 0) - (a.chat_items || 0));
+                            if (!mine.length) return { ok: false, why: 'no chats with content' };
+                            const target = mine[0];
+                            const idx = (ctx.characters || []).findIndex((x) => x.avatar === target.avatar);
+                            if (idx < 0) return { ok: false, why: 'char not found' };
+                            const chatName = String(target.file_name || '').replace(/\.jsonl$/, '');
+                            // 关键：先改角色卡的 chat，再选中，酒馆就会直接加载既有会话
+                            ctx.characters[idx].chat = chatName;
+                            if (String(idx) !== String(ctx.characterId)) {
+                                await ctx.selectCharacterById(idx);
+                                await new Promise((r) => setTimeout(r, 1500));
+                            }
+                            const now = String(ctx.chatId || '').replace(/\.jsonl$/, '');
+                            if (now !== chatName) {
+                                await ctx.openCharacterChat(chatName);
+                                await new Promise((r) => setTimeout(r, 1200));
+                            }
+                            return { ok: true, character: ctx.characters[idx]?.name,
+                                     chat: String(ctx.chatId || ''), msgs: (ctx.chat || []).length };
+                        } catch (e) { return { ok: false, why: String(e) }; }
+                    }"""
+                )
+                print(f"落位：{settled}", flush=True)
+
                 if state and state.get("enabled"):
                     print(f"扩展已启用（backend={state.get('backend')}），开始常驻", flush=True)
                 else:

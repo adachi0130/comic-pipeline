@@ -203,7 +203,14 @@ async function pushMirror() {
   try {
     await api('/api/bridge/mirror', {
       method: 'POST',
-      body: JSON.stringify({ context: snapshotContext(), messages: snapshotMessages(), receipt: currentReceipt, chats: await fetchChatList() }),
+      body: JSON.stringify({
+        context: snapshotContext(),
+        messages: snapshotMessages(),
+        receipt: currentReceipt,
+        chats: await fetchChatList(),
+        // 标识推送来源：常驻桥 vs 你手动打开的标签页。后端只认一个来源，避免两边互相覆盖。
+        source: (window.__comicBridgeIsHeadless ? 'bridge' : 'tab'),
+      }),
     });
   } catch (e) { /* 后端没开时静默 */ }
 }
