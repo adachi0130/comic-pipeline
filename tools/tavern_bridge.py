@@ -43,14 +43,25 @@ def main() -> int:
             try:
                 print(f"打开酒馆：{args.tavern}", flush=True)
                 page.goto(args.tavern, wait_until="load", timeout=60000)
-                # 等扩展加载
-                page.wait_for_timeout(8000)
-                loaded = page.evaluate(
-                    "() => { const c = window.SillyTavern?.getContext?.(); "
-                    "return !!(c && c.extensionSettings && c.extensionSettings.comicBridge); }"
+                page.wait_for_timeout(8000)  # 等扩展脚本加载
+                # 自动启用 comic-bridge 扩展（酒馆退出时会把设置写回 false，故每次启动都确保打开）
+                state = page.evaluate(
+                    """() => {
+                        const ctx = window.SillyTavern?.getContext?.();
+                        if (!ctx) return null;
+                        ctx.extensionSettings.comicBridge = ctx.extensionSettings.comicBridge || {};
+                        const s = ctx.extensionSettings.comicBridge;
+                        s.enabled = true;
+                        s.backend = s.backend || 'http://127.0.0.1:8770';
+                        ctx.saveSettingsDebounced?.();
+                        // 同步勾上界面开关，触发扩展内部的轮询/镜像循环
+                        const cb = document.querySelector('#cb-enabled');
+                        if (cb && !cb.checked) { cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true })); }
+                        return s;
+                    }"""
                 )
-                if loaded:
-                    print("扩展已加载，开始常驻（保持此页面存活）", flush=True)
+                if state and state.get("enabled"):
+                    print(f"扩展已启用（backend={state.get('backend')}），开始常驻", flush=True)
                 else:
                     print("未检测到扩展设置，可能酒馆未就绪；稍后重试", flush=True)
 

@@ -125,6 +125,19 @@ def tavern_switch(body: dict, session: Session = Depends(get_session)) -> dict:
     file_name = (body.get("file_name") or "").strip()
     if not file_name:
         raise HTTPException(400, "缺少 file_name")
+
+    # 防重复：若已有同目标的排队/执行中任务，直接复用，避免桥重启后重复执行
+    dup = session.scalars(
+        select(Job).where(
+            Job.kind == TAVERN_KIND,
+            Job.status.in_((JobStatus.QUEUED.value, JobStatus.RUNNING.value)),
+        )
+    ).all()
+    for j in dup:
+        p = j.payload or {}
+        if p.get("action") == "switch" and p.get("avatar") == avatar and p.get("file_name") == file_name:
+            return {"job_id": j.id, "status": j.status, "deduped": True}
+
     job = jobq.enqueue_deferred(
         TAVERN_KIND,
         project_id=None,
