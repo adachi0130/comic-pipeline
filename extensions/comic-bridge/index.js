@@ -118,13 +118,26 @@ function simpleHash(s) {
 function snapshotMessages() {
   const ctx = getContext();
   const chat = ctx.chat || [];
-  return chat.slice(-MIRROR_MAX_MESSAGES).map((m) => ({
-    name: m.name || '',
-    is_user: !!m.is_user,
-    is_system: !!m.is_system,
-    mes: m.mes || '',
-    send_date: m.send_date || '',
-  }));
+  // 过滤系统消息 / 欢迎面板等噪声：镜像只保留真正的对话内容
+  return chat
+    .filter((m) => {
+      if (!m) return false;
+      if (m.is_system) return false;
+      const name = (m.name || '').trim();
+      if (name === 'SillyTavern System' || name === 'System') return false;
+      const mes = m.mes || '';
+      if (/^\s*<div\b/i.test(mes)) return false;
+      if (/already configured the API|尝试发送些什么|Hint:/i.test(mes)) return false;
+      return true;
+    })
+    .slice(-MIRROR_MAX_MESSAGES)
+    .map((m) => ({
+      name: m.name || '',
+      is_user: !!m.is_user,
+      is_system: !!m.is_system,
+      mes: m.mes || '',
+      send_date: m.send_date || '',
+    }));
 }
 
 function snapshotContext() {
@@ -275,10 +288,26 @@ async function runTask(task) {
   }
 }
 
+/**
+ * 只取“本次请求之后新产生的角色回复”，**绝不包含历史对话**。
+ *
+ * 从最后一条用户消息之后开始取（即使 chatLenBefore 因故不准，也不会把历史当产物）；
+ * 只有你新发的那条用户消息之后的内容，才是本次要保存的产物。
+ */
 function extractNewText() {
   const ctx = getContext();
-  const added = ctx.chat.slice(chatLenBefore);
-  return added.filter((m) => m.is_user === false).map((m) => m.mes || '').join('\n\n').trim();
+  const chat = ctx.chat || [];
+  let start = chatLenBefore;
+  for (let i = chat.length - 1; i >= 0; i--) {
+    if (chat[i] && chat[i].is_user) { start = i + 1; break; }
+  }
+  const from = Math.max(0, Math.min(start, chat.length));
+  return chat
+    .slice(from)
+    .filter((m) => m && m.is_user === false && !m.is_system)
+    .map((m) => m.mes || '')
+    .join('\n\n')
+    .trim();
 }
 
 async function reportResult(task, text) {
