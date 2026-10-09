@@ -177,8 +177,13 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
           <textarea id="np-outline" placeholder="写几百字的大纲即可；酒馆会据此扩写成小说。"></textarea></div>
         <div class="row" style="margin-top:12px"><button class="primary" id="btn-new">创建项目</button></div>
       </div>
-      <div class="card"><h2>我的项目</h2><div class="h2sub">每个项目的流水线、正文、图库彼此隔离。</div>
+      <div class="card"><h2>我的项目</h2><div class="h2sub">每个项目的流水线、正文、图库彼此隔离；点一下选中。</div>
         <div class="plist" id="plist"><div class="empty">还没有项目</div></div></div>
+      <div class="card" id="proj-detail-card">
+        <h2>项目详情</h2>
+        <div class="h2sub">选中某个项目后显示它的详情与各阶段产出</div>
+        <div id="proj-detail"><div class="empty">未选择项目</div></div>
+      </div>
     </section>
 
     <!-- 正文（小说） -->
@@ -293,6 +298,6 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js"></script>
+<script type="module" src="/ui/app.js?v=3"></script>
 </body>
 </html>
