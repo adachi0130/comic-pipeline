@@ -90,6 +90,19 @@ def list_providers(session: Session = Depends(get_session)) -> list[dict]:
 
 @router.post("/providers")
 def create_provider(body: ProviderCreate, session: Session = Depends(get_session)) -> dict:
+    """新建供应商。同名已存在则**更新**（避免反复导入/添加产生重复项）。"""
+    existing = session.scalars(
+        select(LLMProvider).where(LLMProvider.name == body.name)
+    ).first()
+    if existing is not None:
+        existing.base_url = body.base_url
+        existing.model = body.model
+        if body.api_key:
+            existing.api_key = body.api_key
+        existing.extra = body.extra or existing.extra
+        session.commit()
+        session.refresh(existing)
+        return _brief(existing)
     p = LLMProvider(**body.model_dump())
     session.add(p)
     session.commit()
