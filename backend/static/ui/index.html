@@ -116,7 +116,7 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
 .cand.sel{border-color:var(--ok);box-shadow:0 0 0 3px var(--okbg)}
 .cand img{width:100%;display:block;aspect-ratio:3/4;object-fit:cover;background:#f1f3f6}
 .cand .lbl{font-size:11px;padding:5px 8px;color:var(--muted);display:flex;justify-content:space-between}
-.hidden{display:none}
+.hidden{display:none !important}
 .thumb{width:120px;border:1px solid var(--line2);border-radius:8px;cursor:pointer;display:block;background:#fff}
 .modal{position:fixed;inset:0;background:rgba(16,24,40,.55);display:flex;align-items:center;justify-content:center;z-index:60;padding:24px}
 .modal .box{background:#fff;border-radius:14px;max-width:min(920px,94vw);max-height:92vh;overflow:auto;padding:20px;box-shadow:0 20px 60px -12px rgba(16,24,40,.4)}
@@ -181,27 +181,51 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
       </div>
     </div>
 
-    <!-- 项目 -->
+    <!-- 项目（一级：列表 / 二级：详情） -->
     <section id="tab-projects">
-      <div class="card">
-        <h2>新建漫画</h2>
+      <!-- 一级页面：项目列表 -->
+      <div id="pv-list">
+        <div class="card">
+          <h2>我的项目 <span class="spacer"></span>
+            <button class="primary sm" id="btn-new-proj">＋ 新建项目</button></h2>
+          <div class="h2sub">点项目卡片进入详情（二级页面）；各项目的流水线、正文、分格、图库互相隔离</div>
+          <div class="plist" id="plist"><div class="empty">还没有项目，点右上角「＋ 新建项目」开始</div></div>
+        </div>
+      </div>
+
+      <!-- 二级页面：项目详情 -->
+      <div id="pv-detail" class="hidden">
+        <div class="row" style="margin-bottom:12px">
+          <button class="sm" id="pv-back">← 返回项目列表</button>
+          <span class="mut" id="pv-crumb" style="font-size:12.5px"></span>
+        </div>
+        <div class="card">
+          <h2 id="pd-title-h">项目详情</h2>
+          <div class="h2sub">以下字段可直接编辑并保存；下方是各阶段产物与小说全文</div>
+          <div id="proj-detail"><div class="empty">未选择项目</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 新建项目弹窗 -->
+    <div class="modal hidden" id="newproj-modal">
+      <div class="box" style="width:620px">
+        <h3>新建项目</h3>
         <div class="h2sub">只需写一段大纲；正文用酒馆生成，逐段审核。</div>
         <div class="grid2">
           <div><label class="fld">标题</label><input id="np-title" placeholder="如：废墟上的机械少女"></div>
           <div><label class="fld">目标页数</label><input id="np-pages" type="number" value="16" min="1"></div>
         </div>
         <div style="margin-top:12px"><label class="fld">故事大纲</label>
-          <textarea id="np-outline" placeholder="写几百字的大纲即可；酒馆会据此扩写成小说。"></textarea></div>
-        <div class="row" style="margin-top:12px"><button class="primary" id="btn-new">创建项目</button></div>
+          <textarea id="np-outline" style="min-height:120px" placeholder="写几百字的大纲即可；酒馆会据此扩写成小说。"></textarea></div>
+        <div class="row" style="margin-top:14px">
+          <span class="mut" style="font-size:12px">创建后进入该项目的详情页</span>
+          <div class="spacer"></div>
+          <button class="sm" id="np-cancel">取消</button>
+          <button class="primary sm" id="btn-new">创建项目</button>
+        </div>
       </div>
-      <div class="card"><h2>我的项目</h2><div class="h2sub">每个项目的流水线、正文、图库彼此隔离；点一下选中。</div>
-        <div class="plist" id="plist"><div class="empty">还没有项目</div></div></div>
-      <div class="card" id="proj-detail-card">
-        <h2>项目详情</h2>
-        <div class="h2sub">选中某个项目后显示它的详情与各阶段产出</div>
-        <div id="proj-detail"><div class="empty">未选择项目</div></div>
-      </div>
-    </section>
+    </div>
 
     <!-- 正文（小说） -->
     <section id="tab-novel" class="hidden">
@@ -398,6 +422,6 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=25"></script>
+<script type="module" src="/ui/app.js?v=26"></script>
 </body>
 </html>

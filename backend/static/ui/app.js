@@ -51,7 +51,11 @@ function switchTab(tab) {
   if (tab === 'images') loadWorkbench();
   if (tab === 'pages') loadPages();
   if (tab === 'settings') { loadProviders(); loadStageBinding(); }
-  if (tab === 'projects') { if (state.projectId) api('/api/projects/' + state.projectId).then((p) => { state.project = p; renderProjectDetail(); }); }
+  if (tab === 'projects') {
+    // 已选中项目时停在详情（二级），否则显示列表（一级）
+    showProjectView(state.projectId ? 'detail' : 'list');
+    if (state.projectId) api('/api/projects/' + state.projectId).then((p) => { state.project = p; renderProjectDetail(); });
+  }
 }
 
 // ---------- 健康 ----------
@@ -75,9 +79,25 @@ async function loadProjects() {
   $$('[data-pick]').forEach((el) => el.addEventListener('click', () => pickProject(+el.dataset.pick)));
 }
 
+// 返回一级（项目列表）
+document.addEventListener('click', (e) => {
+  if (e.target.closest && e.target.closest('#pv-back')) showProjectView('list');
+});
+
+/** 显示「项目」标签内的一级列表 / 二级详情。 */
+function showProjectView(which) {
+  const isDetail = which === 'detail';
+  const lv = $('#pv-list'), dv = $('#pv-detail');
+  if (lv) lv.classList.toggle('hidden', isDetail);
+  if (dv) dv.classList.toggle('hidden', !isDetail);
+}
+
 async function pickProject(id) {
   state.projectId = id;
   state.project = await api('/api/projects/' + id);
+  showProjectView('detail');                       // 进入二级页面
+  const h = $('#pd-title-h'); if (h) h.textContent = state.project.title || '项目详情';
+  const c = $('#pv-crumb'); if (c) c.textContent = `项目 / ${state.project.title || ''}`;
   $('#cur-proj').innerHTML = `<b>${esc(state.project.title)}</b>
     <span class="mut">${state.project.target_pages} 页 · ${state.project.review_mode === 'auto' ? '全自动' : '人工审查'}</span>`;
   $('#automode').checked = state.project.review_mode === 'auto';
@@ -252,13 +272,23 @@ async function updateProjectStats() {
 }
 
 
+function openNewProject() {
+  const m = $('#newproj-modal');
+  m.classList.remove('hidden');
+  $('#np-title').value = ''; $('#np-outline').value = ''; $('#np-pages').value = '16';
+  setTimeout(() => $('#np-title').focus(), 50);
+}
+function closeNewProject() { $('#newproj-modal').classList.add('hidden'); }
+$('#btn-new-proj').addEventListener('click', openNewProject);
+$('#np-cancel').addEventListener('click', closeNewProject);
+$('#newproj-modal').addEventListener('click', (e) => { if (e.target.id === 'newproj-modal') closeNewProject(); });
 $('#btn-new').addEventListener('click', async () => {
   try {
     const p = await api('/api/projects', { method: 'POST', body: JSON.stringify({
       title: $('#np-title').value || '未命名漫画', outline: $('#np-outline').value, target_pages: +$('#np-pages').value || 16 }) });
     toast('项目已创建', 'ok');
-    $('#np-title').value = ''; $('#np-outline').value = '';
-    await pickProject(p.id);
+    closeNewProject();
+    await pickProject(p.id);       // 创建后直接进入二级详情页
   } catch (e) { toast('创建失败：' + e.message, 'err'); }
 });
 
@@ -1296,11 +1326,8 @@ $('#cf-guess').addEventListener('click', async () => {
   await checkHealth();
   await ensureMeta();
   await loadProjects();
-  // 自动选中第一个项目，这样一进来就能看到详情（不用手动点）
-  if (!state.projectId) {
-    const rows = await api('/api/projects');
-    if (rows.length) await pickProject(rows[0].id);
-  }
+  // 不再自动选中项目：进入「项目」页显示列表，点某个项目才看详情（二级页面）
+  showProjectView('list');
   startJobsSSE();
   startTavernSSE();
   setInterval(refreshGates, 5000);
