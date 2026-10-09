@@ -926,6 +926,16 @@ async function aiFillPage(pageRef, btn) {
 
 // ---------- 提示词（S3 工作台）----------
 $('#pr-reload').addEventListener('click', loadPrompts);
+$('#pr-addchar').addEventListener('click', () => upsertCharacter({ name: '', trigger_words: '', lora_name: '', lora_weight: 0.8, use_lora: true, prompt_block: '' }));
+$('#pr-pull-lora').addEventListener('click', async () => {
+  const el = $('#pr-lora-state'); el.textContent = '拉取中…';
+  try {
+    const r = await api('/api/comfy/assets');
+    state._loras = r.loras || [];
+    el.textContent = `LoRA ${state._loras.length} 个（角色卡的 LoRA 输入框可下拉联想）`;
+    installLoraDatalist(state._loras);
+  } catch (e) { el.textContent = '失败：' + e.message; }
+});
 $('#pr-run-all').addEventListener('click', async () => {
   if (!state.projectId) return toast('先选择项目', 'err');
   try {
@@ -937,7 +947,124 @@ $('#pr-run-all').addEventListener('click', async () => {
   setTimeout(loadPrompts, 1500);
 });
 
+function installLoraDatalist(list) {
+  const old = document.getElementById('lora-all'); if (old) old.remove();
+  const dl = document.createElement('datalist'); dl.id = 'lora-all';
+  dl.innerHTML = (list || []).map((l) => `<option value="${esc(l)}">`).join('');
+  document.body.appendChild(dl);
+}
+
+// ---- 角色卡 + 提示词预设渲染 ----
+async function loadCharacterPresetPanel() {
+  const box = $('#pr-chars');
+  if (!state.projectId) { box.innerHTML = '<div class="empty">先选择项目</div>'; return; }
+  let chars = [], presets = { positive: [], negative: [] };
+  try {
+    [chars, presets] = await Promise.all([
+      api(`/api/projects/${state.projectId}/characters`),
+      api(`/api/prompt-presets?project_id=${state.projectId}`),
+    ]);
+  } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+
+  const presetCard = (kind, list) => `
+    <div style="flex:1;min-width:280px">
+      <div class="row" style="gap:6px"><b style="font-size:13px">${kind === 'positive' ? '正向预设' : '负向预设'}</b>
+        <span class="mut" style="font-size:11.5px">（${kind === 'positive' ? '风格骨架' : '基础负向'}）</span>
+        <div class="spacer"></div>
+        <button class="sm" data-addpreset="${kind}">＋ 加</button></div>
+      ${(list || []).map((p) => `
+        <div class="mini-card" style="padding:8px 10px;margin-top:6px" data-preset="${p.id}">
+          <div class="row" style="gap:6px">
+            <input class="pres-name" value="${esc(p.name)}" placeholder="名称" style="width:120px">
+            <label class="mut" style="font-size:11.5px"><input type="checkbox" class="pres-def" ${p.is_default ? 'checked' : ''} style="width:auto"> 默认</label>
+            <span class="pill tag">${p.scope === 'project' ? '本项目' : '全局'}</span>
+            <div class="spacer"></div>
+            <button class="sm pres-save">保存</button>
+            <button class="sm danger pres-del">删</button>
+          </div>
+          <textarea class="pres-text" style="margin-top:6px;min-height:52px;font-size:12px">${esc(p.text)}</textarea>
+        </div>`).join('') || '<div class="mut" style="font-size:12px;margin-top:6px">还没有预设</div>'}
+    </div>`;
+
+  box.innerHTML = `
+    <div class="row" style="align-items:flex-start;gap:16px">
+      ${presetCard('positive', presets.positive)}
+      ${presetCard('negative', presets.negative)}
+    </div>
+    <div class="divider"></div>
+    <b style="font-size:13px">角色（触发词 ↔ 角色 LoRA）</b>
+    ${chars.map((c) => `
+      <div class="mini-card" style="padding:10px 12px;margin-top:8px" data-char="${c.id}">
+        <div class="row" style="gap:8px">
+          <input class="ch-name" value="${esc(c.name)}" placeholder="角色名（要和分格里一致）" style="width:160px">
+          <input class="ch-trig" value="${esc(c.trigger_words || '')}" placeholder="触发词，如 trig1, trig2" style="flex:1;min-width:180px">
+          <label class="mut" style="font-size:11.5px"><input type="checkbox" class="ch-uselora" ${c.use_lora ? 'checked' : ''} style="width:auto"> 用 LoRA</label>
+          <div class="spacer"></div>
+          <button class="sm primary ch-save">保存</button>
+          <button class="sm danger ch-del">删</button>
+        </div>
+        <div class="row" style="gap:8px;margin-top:6px">
+          <input class="ch-lora" list="lora-all" value="${esc(c.lora_name || '')}" placeholder="角色 LoRA 文件名（可留空=纯提示词）" style="flex:1;min-width:240px">
+          <label class="fld" style="margin:0">权重</label>
+          <input class="ch-w" type="number" step="0.05" value="${c.lora_weight ?? 0.8}" style="width:80px">
+        </div>
+        <input class="ch-block" value="${esc(c.prompt_block || '')}" placeholder="固定外观词块（可选），如 silver hair, blue eyes, ..." style="width:100%;margin-top:6px">
+      </div>`).join('') || '<div class="mut" style="font-size:12px;margin-top:8px">还没有角色。点右上「＋ 加角色」。</div>'}`;
+
+  // 预设按钮
+  box.querySelectorAll('[data-preset]').forEach((el) => {
+    const id = +el.dataset.preset;
+    el.querySelector('.pres-save').addEventListener('click', async () => {
+      try {
+        await api('/api/prompt-presets', { method: 'POST', body: JSON.stringify({
+          id, name: el.querySelector('.pres-name').value, text: el.querySelector('.pres-text').value,
+          is_default: el.querySelector('.pres-def').checked }) });
+        toast('预设已保存', 'ok'); loadCharacterPresetPanel();
+      } catch (e) { toast(e.message, 'err'); }
+    });
+    el.querySelector('.pres-del').addEventListener('click', async () => {
+      try { await api(`/api/prompt-presets/${id}`, { method: 'DELETE' }); toast('已删除', 'ok'); loadCharacterPresetPanel(); }
+      catch (e) { toast(e.message, 'err'); }
+    });
+  });
+  box.querySelectorAll('[data-addpreset]').forEach((b) => b.addEventListener('click', async () => {
+    try {
+      await api('/api/prompt-presets', { method: 'POST', body: JSON.stringify({
+        kind: b.dataset.addpreset, name: b.dataset.addpreset === 'positive' ? '新正向预设' : '新负向预设',
+        scope: 'project', project_id: state.projectId, text: '', is_default: false }) });
+      loadCharacterPresetPanel();
+    } catch (e) { toast(e.message, 'err'); }
+  }));
+
+  // 角色按钮
+  box.querySelectorAll('[data-char]').forEach((el) => {
+    const id = +el.dataset.char;
+    el.querySelector('.ch-save').addEventListener('click', async () => {
+      try {
+        await api(`/api/projects/${state.projectId}/characters`, { method: 'POST', body: JSON.stringify({
+          id, name: el.querySelector('.ch-name').value, trigger_words: el.querySelector('.ch-trig').value,
+          lora_name: el.querySelector('.ch-lora').value, lora_weight: +el.querySelector('.ch-w').value || 0.8,
+          use_lora: el.querySelector('.ch-uselora').checked, prompt_block: el.querySelector('.ch-block').value }) });
+        toast('角色已保存', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+    });
+    el.querySelector('.ch-del').addEventListener('click', async () => {
+      try { await api(`/api/characters/${id}`, { method: 'DELETE' }); toast('已删除', 'ok'); loadCharacterPresetPanel(); }
+      catch (e) { toast(e.message, 'err'); }
+    });
+  });
+}
+
+async function upsertCharacter(data) {
+  if (!state.projectId) return toast('先选择项目', 'err');
+  try {
+    await api(`/api/projects/${state.projectId}/characters`, { method: 'POST', body: JSON.stringify(data) });
+    loadCharacterPresetPanel();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 async function loadPrompts() {
+  loadCharacterPresetPanel();
   if (!state.projectId) {
     $('#pr-list').innerHTML = '';
     $('#pr-blank').style.display = 'block';
@@ -1278,15 +1405,16 @@ async function loadWorkbench() {
 /** 渲染 S2 分格产物：每页一张卡（真版式缩略图 + 每格摘要 + 出图进度）。 */
 async function renderWorkbenchPages() {
   const box = $('#wb-pages');
-  const d = await api(`/api/projects/${state.projectId}/pages`);
-  const pages = d.pages || [];
-  $('#wb-pages-info').textContent = `${pages.length} 页 · 目标 ${d.target_pages} 页`;
+  // 预览来源 = S3 提示词产物（每格的正/负向提示词），不是 S2 分格
+  let board = { pages: [], panel_done: 0, panel_total: 0 };
+  try { board = await api(`/api/projects/${state.projectId}/prompt-board`); } catch { /* ignore */ }
+  const pages = board.pages || [];
+  $('#wb-pages-info').textContent = `${pages.length} 页 · 提示词 ${board.panel_done}/${board.panel_total} 格`;
   if (!pages.length) {
     box.innerHTML = '<div class="empty">还没有分好的页。去「分格」页加一页或让 AI 选版式。</div>';
     return;
   }
-  // 每页已有候选图数量（按 ref 前缀 panel:page. → 不好统计，改用 S3 提示词数）
-  box.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">
+  box.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px">
     ${pages.map((p) => `
       <div class="mini-card" style="padding:12px" data-wbpage="${esc(p.page_ref)}">
         <div class="row" style="gap:8px">
@@ -1294,33 +1422,36 @@ async function renderWorkbenchPages() {
             ${p.template_id ? `<img src="/api/templates/${encodeURIComponent(p.template_id)}/svg" alt="">` : ''}
           </div>
           <div>
-            <div class="row" style="gap:6px"><b>${esc(p.page_ref)}</b> ${pill(p.status)}
-              <span class="pill tag">${p.panels.length} 格</span></div>
-            <div class="mut" style="font-size:11.5px">${esc(p.template_id || '')}</div>
-            <div class="mut" style="font-size:11.5px" data-tpldesc="${esc(p.page_ref)}"></div>
+            <div class="row" style="gap:6px"><b>${esc(p.page_ref)}</b>
+              <span class="pill tag">${p.panels.length} 格</span>
+              <span class="pill tag">${p.panels.filter((x) => x.prompt).length}/${p.panels.length} 已生成</span></div>
+            <div class="mut" style="font-size:11.5px">${esc(p.template ? (p.template.layout_desc || p.template_id) : (p.template_id || ''))}</div>
           </div>
           <div class="spacer"></div>
           <button class="sm" data-wbpick="${esc(p.page_ref)}">看这页候选图</button>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:6px;margin-top:10px">
-          ${p.panels.map((x) => `<div class="mini-card" style="padding:6px 8px">
-            <div class="mut" style="font-size:11px">第 ${x.panel_order} 格 · ${esc(x.shot || '')}</div>
-            <div style="font-size:11.5px;margin-top:2px">${esc((x.action || x.scene_desc || '（空）').slice(0, 24))}</div>
-          </div>`).join('')}
+        <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">
+          ${p.panels.map((x) => {
+            const pr = x.prompt; const fb = x.fallback || {};
+            const blk = pr || fb;
+            return `<div class="mini-card" style="padding:8px 10px">
+              <div class="row" style="gap:6px">
+                <b style="font-size:11.5px">第 ${x.panel_order} 格</b>
+                <span class="mut" style="font-size:11px">${esc(x.shot || '')}</span>
+                ${pr ? pill(pr.status) : '<span class="pill warn">待生成</span>'}
+              </div>
+              <div class="mut" style="font-size:11px;margin-top:3px">正向：${esc((blk.prompt_pos || '（空）').slice(0, 110))}</div>
+              ${blk.prompt_neg ? `<div class="mut" style="font-size:11px;margin-top:2px">负向：${esc(blk.prompt_neg.slice(0, 80))}</div>` : ''}
+              ${(pr && (pr.loras || []).length) ? `<div class="mut" style="font-size:11px;margin-top:2px">LoRA ${esc(pr.loras.map((l) => l.name).join('、'))}</div>` : ''}
+            </div>`;
+          }).join('')}
         </div>
       </div>`).join('')}
   </div>`;
-  // 补齐版式文字描述
-  for (const p of pages) {
-    const el = box.querySelector(`[data-tpldesc="${CSS.escape(p.page_ref)}"]`);
-    if (!el || !p.template_id) continue;
-    const t = (d.templates || []).find((x) => x.id === p.template_id);
-    if (t) el.textContent = t.layout_desc || '';
-  }
   box.querySelectorAll('[data-wbpick]').forEach((b) => b.addEventListener('click', () => {
     const el = document.querySelector(`#wb-list .card[data-ref^="${CSS.escape(b.dataset.wbpick.replace('page:', 'panel:'))}"]`);
     if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.style.boxShadow = '0 0 0 3px var(--accent)'; setTimeout(() => { el.style.boxShadow = ''; }, 1400); }
-    else toast('这页还没有对应的分镜提示词（先跑 S3）');
+    else toast('这页还没有对应的提示词产物（可在「提示词」页生成，或在下面点「出图」自动准备）');
   }));
 }
 
@@ -1340,8 +1471,18 @@ function bindWorkbench(prompts) {
     });
     card.querySelector('.wb-gen').addEventListener('click', async () => {
       const count = +card.querySelector('.wb-count').value || 4;
-      const r = await api(`/api/projects/${state.projectId}/panels/${encodeURIComponent(ref)}/generate`, { method: 'POST', body: JSON.stringify({ count }) });
-      toast(`${ref} 出图已入队 #${r.job_id}（${count} 张）`);
+      const btn = card.querySelector('.wb-gen');
+      btn.disabled = true; btn.textContent = '准备中…';
+      try {
+        // 若这格还没有提示词产物：用「主人预设的正/负向 + 角色 LoRA」自动准备一条（免手动填写）
+        await api(`/api/projects/${state.projectId}/panels/${encodeURIComponent(ref)}/prepare`, { method: 'POST', body: '{}' });
+      } catch (e) { /* prepare 失败不阻断，后端会用已有 payload */ }
+      try {
+        const r = await api(`/api/projects/${state.projectId}/panels/${encodeURIComponent(ref)}/generate`, { method: 'POST', body: JSON.stringify({ count }) });
+        toast(`${ref} 出图已入队 #${r.job_id}（${count} 张）`);
+        setTimeout(() => loadWorkbench(), 4000);
+      } catch (e) { toast(e.message, 'err'); }
+      finally { btn.disabled = false; btn.textContent = '出图'; }
     });
   });
 }

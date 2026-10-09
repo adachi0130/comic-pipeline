@@ -1,13 +1,13 @@
-"""角色资产库 + LoRA 选择（项目默认 / 单格覆盖）。"""
+"""角色资产库 + 提示词预设 + LoRA 选择（项目默认 / 单格覆盖）。"""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from ...db import get_session
-from ...models import Character, LoraSelection, Project
+from ...models import Character, LoraSelection, Project, PromptPreset
 
 router = APIRouter(tags=["assets"])
 
@@ -30,7 +30,8 @@ def upsert_character(project_id: int, body: dict, session: Session = Depends(get
     if c is None:
         c = Character(project_id=project_id, name=body.get("name", "角色"))
         session.add(c)
-    for f in ("name", "lora_name", "lora_weight", "use_lora", "ref_image_path", "prompt_block", "notes"):
+    for f in ("name", "trigger_words", "lora_name", "lora_weight", "use_lora",
+              "ref_image_path", "prompt_block", "notes"):
         if f in body and body[f] is not None:
             setattr(c, f, body[f])
     session.commit()
@@ -41,6 +42,54 @@ def upsert_character(project_id: int, body: dict, session: Session = Depends(get
 @router.delete("/characters/{character_id}")
 def delete_character(character_id: int, session: Session = Depends(get_session)) -> dict:
     session.execute(delete(Character).where(Character.id == character_id))
+    session.commit()
+    return {"ok": True}
+
+
+# ---------------- 提示词预设（主人常用的正/负向提示词）----------------
+@router.get("/prompt-presets")
+def list_presets(project_id: int | None = None, session: Session = Depends(get_session)) -> dict:
+    """列出全局预设 + 指定项目的预设。"""
+    cond = [PromptPreset.scope == "global"]
+    if project_id:
+        cond.append((PromptPreset.scope == "project") & (PromptPreset.project_id == project_id))
+    rows = session.scalars(
+        select(PromptPreset).where(or_(*cond)).order_by(PromptPreset.kind, PromptPreset.scope, PromptPreset.id)
+    ).all()
+    return {
+        "positive": [_preset(p) for p in rows if p.kind == "positive"],
+        "negative": [_preset(p) for p in rows if p.kind == "negative"],
+    }
+
+
+@router.post("/prompt-presets")
+def upsert_preset(body: dict, session: Session = Depends(get_session)) -> dict:
+    pid = body.get("id")
+    p = session.get(PromptPreset, pid) if pid else None
+    if p is None:
+        p = PromptPreset(name=body.get("name", "预设"))
+        session.add(p)
+    for f in ("name", "text", "kind", "scope", "project_id", "is_default"):
+        if f in body:
+            setattr(p, f, body[f])
+    if p.kind not in ("positive", "negative"):
+        raise HTTPException(400, "kind 必须是 positive 或 negative")
+    # 同一 kind 只能有一个默认：设了新的就清掉旧的
+    if p.is_default:
+        session.flush()
+        others = session.scalars(
+            select(PromptPreset).where(PromptPreset.kind == p.kind, PromptPreset.id != p.id)
+        ).all()
+        for o in others:
+            o.is_default = False
+    session.commit()
+    session.refresh(p)
+    return _preset(p)
+
+
+@router.delete("/prompt-presets/{preset_id}")
+def delete_preset(preset_id: int, session: Session = Depends(get_session)) -> dict:
+    session.execute(delete(PromptPreset).where(PromptPreset.id == preset_id))
     session.commit()
     return {"ok": True}
 
@@ -97,12 +146,25 @@ def _char(c: Character) -> dict:
     return {
         "id": c.id,
         "name": c.name,
+        "trigger_words": c.trigger_words,
         "lora_name": c.lora_name,
         "lora_weight": c.lora_weight,
         "use_lora": c.use_lora,
         "prompt_block": c.prompt_block,
         "ref_image_path": c.ref_image_path,
         "notes": c.notes,
+    }
+
+
+def _preset(p: PromptPreset) -> dict:
+    return {
+        "id": p.id,
+        "name": p.name,
+        "text": p.text,
+        "kind": p.kind,
+        "scope": p.scope,
+        "project_id": p.project_id,
+        "is_default": p.is_default,
     }
 
 

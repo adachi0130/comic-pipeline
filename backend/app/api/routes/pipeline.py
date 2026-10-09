@@ -281,9 +281,64 @@ def create_page(project_id: int, body: dict, session: Session = Depends(get_sess
     return {"ok": True, "page_ref": ref, "template_id": tpl.id, "panels_count": tpl.panels_count}
 
 
+@router.post("/projects/{project_id}/panels/{panel_ref}/prepare")
+def prepare_panel(project_id: int, panel_ref: str, session: Session = Depends(get_session)) -> dict:
+    """为某一格准备 S3 提示词产物（若还没有）：生成一条带预设默认值的提示词。
+
+    出图工作台据此预填“出图设置里的正/负向提示词”，免得那一格空着没法出图。
+    S3 正式跑过（已有 AI 提示词）的格子会直接复用，不覆盖。
+    """
+    from ...stages import prompt as prompt_stage
+
+    if session.get(Project, project_id) is None:
+        raise HTTPException(404, "项目不存在")
+
+    existing = A.current(session, project_id, ArtifactKind.PANEL_PROMPT.value, panel_ref)
+    if existing is not None:
+        return {"ok": True, "reused": True, "artifact_id": existing.id}
+
+    # 从 ref（panel:<页>.<格>）反查该格的分格脚本，拿到出场角色
+    page_no, _, order_part = panel_ref.split(":", 1)[1].partition(".")
+    page_ref = f"page:{page_no}"
+    page = A.current(session, project_id, ArtifactKind.PAGE_SCRIPT.value, page_ref)
+    panel = None
+    if page is not None:
+        for p in (page.payload or {}).get("panels", []):
+            if str(p.get("panel_order")) == order_part:
+                panel = p
+                break
+
+    preset_pos, preset_neg = prompt_stage._default_presets(session, project_id)
+    loras: list[dict] = []
+    if panel is not None:
+        from ...models import Character
+
+        names = panel.get("characters") or []
+        if names:
+            for c in session.scalars(
+                select(Character).where(Character.project_id == project_id, Character.name.in_(names))
+            ).all():
+                if c.use_lora and c.lora_name:
+                    loras.append({"name": c.lora_name, "weight": c.lora_weight})
+
+    art = A.create(
+        session, project_id=project_id, kind=ArtifactKind.PANEL_PROMPT.value, ref=panel_ref,
+        payload={
+            "prompt_pos": preset_pos, "prompt_neg": preset_neg, "loras": loras,
+            "seed": None, "width": None, "height": None, "prepared": True,
+        },
+        inputs=[page] if page is not None else [],
+        status=ArtifactStatus.REVIEW.value,
+    )
+    session.commit()
+    return {"ok": True, "reused": False, "artifact_id": art.id}
+
+
 @router.get("/projects/{project_id}/prompt-board")
 def prompt_board(project_id: int, session: Session = Depends(get_session)) -> dict:
     """S3「提示词」独立页面数据：按页列出每一格的分镜提示词（含未生成的占位）。"""
+    from ...stages import prompt as prompt_stage
+
     project = session.get(Project, project_id)
     if project is None:
         raise HTTPException(404, "项目不存在")
@@ -298,6 +353,9 @@ def prompt_board(project_id: int, session: Session = Depends(get_session)) -> di
             "loras": p.get("loras", []), "width": p.get("width"), "height": p.get("height"),
         }
 
+    # 该项目的默认提示词预设：给尚未生成的格子做“出图设置里的正/负向”初始值
+    preset_pos, preset_neg = prompt_stage._default_presets(session, project_id)
+
     pages = []
     for a in A.all_current(session, project_id, ArtifactKind.PAGE_SCRIPT.value):
         payload = a.payload or {}
@@ -310,11 +368,16 @@ def prompt_board(project_id: int, session: Session = Depends(get_session)) -> di
         for p in payload.get("panels", []):
             order = p.get("panel_order")
             ref = f"panel:{no}.{order}"
+            prompt = prompt_by_ref.get(ref)
+            # 尚未生成时，给出“出图设置里的正/负向”默认（主人预设）
+            fallback = None if prompt else {"prompt_pos": preset_pos, "prompt_neg": preset_neg, "prepared": False}
             panels.append({
                 "panel_order": order, "panel_ref": ref,
                 "shot": p.get("shot", ""), "action": p.get("action", ""),
                 "dialogue": p.get("dialogue", ""),
-                "prompt": prompt_by_ref.get(ref),
+                "characters": p.get("characters", []),
+                "prompt": prompt,
+                "fallback": fallback,
             })
         pages.append({
             "page_ref": a.ref, "page_index": no, "status": a.status,

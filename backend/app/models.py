@@ -258,19 +258,41 @@ class TavernMirror(Base):
 
 
 class Character(Base):
-    """角色资产库：角色 id -> LoRA / 参考图 / 固定词块 / 权重。"""
+    """角色资产库：角色 id -> LoRA / 参考图 / 触发词 / 固定词块 / 权重。"""
 
     __tablename__ = "characters"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
     name: Mapped[str] = mapped_column(String(64))
-    lora_name: Mapped[str] = mapped_column(String(256), default="")   # 出图后端上的 LoRA 文件名
+    lora_name: Mapped[str] = mapped_column(String(256), default="")   # 出图后端上的 LoRA 文件名（可空=不用 LoRA）
     lora_weight: Mapped[float] = mapped_column(Float, default=0.8)
     use_lora: Mapped[bool] = mapped_column(Boolean, default=True)     # 可一键关掉角色 LoRA
+    # 触发词：该角色 LoRA / 模型需要的激活词（如 trig1, trig2）。S3 生成提示词时交给 AI 参考。
+    trigger_words: Mapped[str] = mapped_column(Text, default="")
     ref_image_path: Mapped[str] = mapped_column(String(512), default="")
     prompt_block: Mapped[str] = mapped_column(Text, default="")       # 固定角色描述词块
     notes: Mapped[str] = mapped_column(Text, default="")
+
+
+class PromptPreset(Base):
+    """提示词预设：主人常用的正向/负向提示词，供 S3 生成与出图试跑复用。
+
+    - ``scope=global``：全局预设，所有项目可用；
+    - ``scope=project``：某项目专属；
+    - ``is_default=True``：S3 生成时会作“风格参考”喂给 AI（正面/负面各取一个默认）。
+    """
+
+    __tablename__ = "prompt_presets"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scope: Mapped[str] = mapped_column(String(16), default="global")   # global / project
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    kind: Mapped[str] = mapped_column(String(16), default="positive")  # positive / negative
+    name: Mapped[str] = mapped_column(String(128))
+    text: Mapped[str] = mapped_column(Text, default="")
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class LoraSelection(Base):
