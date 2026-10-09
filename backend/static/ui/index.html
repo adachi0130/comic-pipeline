@@ -130,6 +130,15 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
 .switch input{width:auto}
 .divider{height:1px;background:var(--line);margin:16px 0}
 @media(max-width:820px){.app{grid-template-columns:1fr}.side{position:static;height:auto}.grid2,.grid3{grid-template-columns:1fr}}
+
+/* 模板缩略图选择器 */
+.tplcard{border:2px solid var(--line2);border-radius:10px;background:#fff;cursor:pointer;overflow:hidden;transition:.12s}
+.tplcard:hover{border-color:var(--accent);transform:translateY(-2px)}
+.tplcard.sel{border-color:var(--accent);box-shadow:0 0 0 3px var(--rgba-accent,#e9f0ff)}
+.tplthumb{background:#f4f6f9;aspect-ratio:3/4;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.tplthumb img{max-width:86%;max-height:90%;display:block}
+.tplmeta{display:flex;justify-content:space-between;padding:4px 7px;font-size:11px;color:var(--muted);border-top:1px solid var(--line)}
+.tplmeta b{color:var(--ink);font-weight:600}
 </style>
 </head>
 <body>
@@ -292,9 +301,8 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
           也可以<b>手动加一页</b>自己挑模板和填内容。</div>
         <div class="row">
           <button class="sm" id="pg-reload">刷新</button>
-          <label class="fld" style="margin:0">新页模板</label>
-          <select id="pg-newtpl" style="width:250px"></select>
-          <button class="sm" id="pg-add">手动加一页</button>
+          <button class="sm primary" id="pg-add">＋ 加一页（选版式）</button>
+          <span class="mut" style="font-size:12.5px">点开是 69 个版式的真实缩略图</span>
           <span class="spacer"></span>
           <span class="mut" id="pg-meta" style="font-size:12.5px">—</span>
         </div>
@@ -384,6 +392,6 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=15"></script>
+<script type="module" src="/ui/app.js?v=17"></script>
 </body>
 </html>

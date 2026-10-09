@@ -544,9 +544,7 @@ async function openPageDetail(pageRef) {
       <b>${esc(d.template_id)}</b>
       <span class="mut">${esc((d.template || {}).layout_desc || '')} · ${(d.template || {}).panels_count || '?'} 格</span>
       <div class="spacer"></div>
-      <label class="fld" style="margin:0">换成模板</label>
-      <select id="pd-tpl" style="width:230px">${tplOpts}</select>
-      <button class="sm primary" id="pd-apply-tpl">应用</button>
+      <button class="sm primary" id="pd-pick">换个版式…</button>
     </div>
     <div class="h2sub">换模板后分格数会自动对齐到新模板的格数（多出的格留空待填）。改完点「保存分格」。</div>
     <div id="pd-panels" style="margin-top:10px"></div>
@@ -575,14 +573,15 @@ async function openPageDetail(pageRef) {
   box.querySelector('[data-close]').addEventListener('click', () => box.remove());
   box.addEventListener('click', (e) => { if (e.target === box) box.remove(); });
 
-  box.querySelector('#pd-apply-tpl').addEventListener('click', async () => {
-    const t = box.querySelector('#pd-tpl').value;
-    if (!confirm('换模板会按新格数重排分格（内容尽力保留），继续？')) return;
-    try {
-      const r = await api(`/api/projects/${state.projectId}/pages/${encodeURIComponent(pageRef)}/template`,
-        { method: 'POST', body: JSON.stringify({ template_id: t }) });
-      toast(r.note || '已换模板', 'ok'); box.remove(); openPageDetail(pageRef); refreshGates();
-    } catch (e) { toast(e.message, 'err'); }
+  box.querySelector('#pd-pick').addEventListener('click', () => {
+    openTemplatePicker(async (tplId) => {
+      if (!confirm('换版式会按新格数重排分格（内容尽力保留），继续？')) return;
+      try {
+        const r = await api(`/api/projects/${state.projectId}/pages/${encodeURIComponent(pageRef)}/template`,
+          { method: 'POST', body: JSON.stringify({ template_id: tplId }) });
+        toast(r.note || '已换版式', 'ok'); box.remove(); openPageDetail(pageRef); refreshGates();
+      } catch (e) { toast(e.message, 'err'); }
+    }, (d.template || {}).id, '换成哪个版式？');
   });
   box.querySelector('#pd-save').addEventListener('click', async () => {
     const panels = [...box.querySelectorAll('#pd-panels .card')].map((c, i) => ({
@@ -609,16 +608,70 @@ function mergePanels(edited) {
 }
 
 
+
+// ---------- 可视化选模板（缩略图点选）----------
+let _tplCache = null;
+async function getAllTemplates() {
+  if (_tplCache) return _tplCache;
+  _tplCache = await api('/api/templates');
+  return _tplCache;
+}
+
+/**
+ * 打开模板选择器：69 个模板以“真实版式缩略图”呈现，点选即可。
+ * @param {(id:string)=>void} onPick
+ * @param {string} [currentId] 当前模板（高亮）
+ * @param {string} [title]
+ */
+async function openTemplatePicker(onPick, currentId, title) {
+  const tpls = await getAllTemplates();
+  const box = document.createElement('div');
+  box.className = 'modal';
+  const groups = { vertical: [], landscape: [] };
+  tpls.forEach((t) => (groups[t.dir] ||= []).push(t));
+  const renderGroup = (dirName, list) => `
+    <div style="margin-bottom:16px">
+      <div class="mut" style="font-size:12.5px;margin-bottom:6px">${dirName === 'vertical' ? '竖版' : '横版'}
+        <span class="pill tag">${list.length}</span></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:10px">
+        ${list.map((t) => `
+          <div class="tplcard ${t.id === currentId ? 'sel' : ''}" data-tpl="${esc(t.id)}"
+               title="${esc(t.id)} · ${t.panels_count}格 · ${esc(t.layout_desc)}">
+            <div class="tplthumb"><img src="/api/templates/${encodeURIComponent(t.id)}/svg" loading="lazy" alt=""></div>
+            <div class="tplmeta"><b>${t.panels_count}格</b><span>${esc(t.id.split(':')[1])}</span></div>
+          </div>`).join('')}
+      </div>
+    </div>`;
+  box.innerHTML = `<div class="box" style="width:min(1000px,94vw)">
+    <h3>${esc(title || '选择版式模板')} <span class="mut" style="font-size:13px;font-weight:400">
+      — 缩略图是真实版式；点一下就选中</span></h3>
+    <div class="h2sub">格数 = 这一页的镜头数。大格位置（上/下、左/右）决定画面重点怎么放。</div>
+    <div style="max-height:64vh;overflow:auto;padding-right:6px">
+      ${renderGroup('vertical', groups.vertical || [])}
+      ${renderGroup('landscape', groups.landscape || [])}
+    </div>
+    <div class="row" style="margin-top:12px"><div class="spacer"></div>
+      <button class="sm" data-close>取消</button></div></div>`;
+  document.body.appendChild(box);
+  box.querySelector('[data-close]').addEventListener('click', () => box.remove());
+  box.addEventListener('click', (e) => { if (e.target === box) box.remove(); });
+  box.querySelectorAll('[data-tpl]').forEach((el) => el.addEventListener('click', () => {
+    box.remove();
+    onPick(el.dataset.tpl);
+  }));
+}
+
 // ---------- 分格工作台（S2）----------
 $('#pg-reload').addEventListener('click', loadPages);
 $('#pg-add').addEventListener('click', async () => {
   if (!state.projectId) return toast('先选择项目', 'err');
-  try {
-    const tpl = $('#pg-newtpl').value;
-    const r = await api(`/api/projects/${state.projectId}/pages`, { method: 'POST', body: JSON.stringify({ template_id: tpl }) });
-    toast(`已加 ${r.page_ref}（${r.panels_count} 格）`, 'ok');
-    loadPages(); refreshGates();
-  } catch (e) { toast(e.message, 'err'); }
+  openTemplatePicker(async (tplId) => {
+    try {
+      const r = await api(`/api/projects/${state.projectId}/pages`, { method: 'POST', body: JSON.stringify({ template_id: tplId }) });
+      toast(`已加 ${r.page_ref}（${r.panels_count} 格）`, 'ok');
+      loadPages(); refreshGates();
+    } catch (e) { toast(e.message, 'err'); }
+  }, null, '新页用哪个版式？');
 });
 
 async function loadPages() {
@@ -628,13 +681,6 @@ async function loadPages() {
     state._tpls = d.templates || [];
     $('#pg-count').textContent = `${d.pages.length} 页`;
     $('#pg-meta').textContent = `已审核正文 ${d.novel_chars} 字 · 目标 ${d.target_pages} 页 · 提示词 ${d.panel_prompt_count} 条`;
-
-    // 新页模板下拉（按格数分组展示）
-    const opts = d.templates.map((t) => `<option value="${esc(t.id)}">${esc(t.id)}（${t.panels_count}格）</option>`).join('');
-    if ($('#pg-newtpl').dataset.filled !== String(d.templates.length)) {
-      $('#pg-newtpl').innerHTML = opts;
-      $('#pg-newtpl').dataset.filled = String(d.templates.length);
-    }
 
     const box = $('#pg-list');
     $('#pg-blank').style.display = d.pages.length ? 'none' : 'block';
