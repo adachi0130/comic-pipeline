@@ -1,6 +1,6 @@
-# S4 · 分镜提示词提示词
+# S3 · 分镜提示词
 
-> 阶段：S4（每格脚本 → 每格正/负向提示词 + LoRA 绑定）
+> 阶段：S3（每格脚本 → 每格正/负向提示词 + LoRA 绑定）
 > 输出契约：`backend/app/schemas.py` 的 `PagePrompts`
 > 说明：正向提示词面向 **Anima（动漫文生图模型）**，用 Danbooru 风格 tag。
 

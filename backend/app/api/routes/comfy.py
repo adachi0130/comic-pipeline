@@ -109,6 +109,6 @@ def generate_panel(
         raise HTTPException(404, "项目不存在")
     payload = {"project_id": project_id, "panel_ref": panel_ref, **body}
     job = jobq.enqueue(
-        "s5_image", project_id=project_id, stage="S5", payload=payload
+        "image", project_id=project_id, stage="S4", payload=payload
     )
     return {"job_id": job.id, "status": job.status}

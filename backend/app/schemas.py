@@ -23,48 +23,7 @@ BubbleType = Literal["speech", "thought", "narration", "shout", "whisper", "none
 
 
 # --------------------------------------------------------------------------
-# S1 结构规划
-# --------------------------------------------------------------------------
-class Scene(BaseModel):
-    summary: str = Field(description="一场的一句话剧情摘要")
-    characters: list[str] = Field(default_factory=list, description="出场角色名")
-    goal: str = Field(default="", description="本场目标")
-    conflict: str = Field(default="", description="本场冲突")
-    page_budget: int = Field(ge=1, description="本场分配页数（≥1）")
-    pace_role: PaceRole = "rising"
-
-
-class Chapter(BaseModel):
-    title: str
-    page_budget: int = Field(ge=1)
-    scenes: list[Scene] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def _chapter_budget_matches_scenes(self) -> "Chapter":
-        s = sum(sc.page_budget for sc in self.scenes)
-        if self.page_budget != s:
-            raise ValueError(f"章 '{self.title}' 的 page_budget={self.page_budget} 与各场之和={s} 不一致")
-        return self
-
-
-class Structure(BaseModel):
-    """S1 输出：章 -> 场，且全场页预算之和 == 全书目标页数。"""
-
-    target_pages: int = Field(ge=1)
-    chapters: list[Chapter] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def _total_budget_matches(self) -> "Structure":
-        total = sum(sc.page_budget for ch in self.chapters for sc in ch.scenes)
-        if total != self.target_pages:
-            raise ValueError(
-                f"所有场 page_budget 之和={total} 必须严格等于 target_pages={self.target_pages}"
-            )
-        return self
-
-
-# --------------------------------------------------------------------------
-# S3 每页分格脚本（页产物 = 下游契约）
+# S2 分页分格（原 S3）
 # --------------------------------------------------------------------------
 class PanelScript(BaseModel):
     panel_order: int = Field(ge=1, description="1..N 的稳定序号，贯穿 S4/S5/S6 做主键")
@@ -79,9 +38,9 @@ class PanelScript(BaseModel):
 
 
 class PageScript(BaseModel):
-    """S3 输出：单页。``panels`` 条数必须等于所选模板的格数（阶段层校验）。"""
+    """S2 输出：单页。``panels`` 条数必须等于所选模板的格数（阶段层校验）。"""
 
-    scene_id: int
+    scene_id: int = 0          # 已无场结构，保留字段便于兼容（默认 0）
     page_index: int = Field(ge=1)
     template_id: str
     panels: list[PanelScript] = Field(min_length=1)
@@ -94,8 +53,21 @@ class PageScript(BaseModel):
         return self
 
 
+class Storyboard(BaseModel):
+    """S2 批量输出：一次产出若干页（按小说文本切分），供分批调用以控制输出长度。"""
+
+    pages: list[PageScript] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _page_index_unique(self) -> "Storyboard":
+        idx = [p.page_index for p in self.pages]
+        if len(set(idx)) != len(idx):
+            raise ValueError(f"page_index 出现重复：{idx}")
+        return self
+
+
 # --------------------------------------------------------------------------
-# S4 每格提示词
+# S3 每格提示词（原 S4）
 # --------------------------------------------------------------------------
 class PanelPrompt(BaseModel):
     panel_ref: str = Field(description="对应 panel:页.序，如 panel:3.2")

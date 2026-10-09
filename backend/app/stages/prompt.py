@@ -1,10 +1,7 @@
-"""S4 分镜提示词：每页分格 → 每格正/负向提示词 + LoRA 绑定。
+"""S3 分镜提示词（原 S4）。
 
-作业 payload: {"project_id": 1, "page_ref": "page:3"}  （不传则处理全部已通过的页）
-前置：该页 PAGE_SCRIPT 产物存在。
-
-产出：为该页每一格写 ``PANEL_PROMPT`` 产物（ref="panel:{页}.{格}"），
-供 S5 直接出图。
+输入：每页分格脚本（S2 产出）+ 角色资产（LoRA/词块）+ 技法库。
+输出：该页每一格的 ``PANEL_PROMPT`` 产物（ref="panel:{页}.{格}"），供 S4 出图。
 """
 
 from __future__ import annotations
@@ -20,7 +17,7 @@ from ..models import ArtifactKind, ArtifactStatus, Character, Job, LoraSelection
 from ..schemas import PagePrompts
 from . import promptlib
 
-KIND = "s4_prompt"
+KIND = "prompt"
 
 
 def _characters(session: Session, project_id: int) -> str:
@@ -40,8 +37,11 @@ def _characters(session: Session, project_id: int) -> str:
 def _project_loras(session: Session, project_id: int) -> list[dict]:
     rows = session.scalars(
         select(LoraSelection)
-        .where(LoraSelection.project_id == project_id, LoraSelection.scope == "project",
-               LoraSelection.enabled.is_(True))
+        .where(
+            LoraSelection.project_id == project_id,
+            LoraSelection.scope == "project",
+            LoraSelection.enabled.is_(True),
+        )
         .order_by(LoraSelection.order_index)
     ).all()
     return [{"name": r.lora_name, "weight": r.weight} for r in rows]
@@ -60,8 +60,8 @@ def handle(session: Session, job: Job) -> dict:
         raise ValueError(f"项目不存在：{project_id}")
 
     if payload.get("page_ref"):
-        pages = [current(session, project_id, ArtifactKind.PAGE_SCRIPT.value, payload["page_ref"])]
-        pages = [p for p in pages if p is not None]
+        page = current(session, project_id, ArtifactKind.PAGE_SCRIPT.value, payload["page_ref"])
+        pages = [page] if page is not None else []
     else:
         pages = [
             p
@@ -69,17 +69,17 @@ def handle(session: Session, job: Job) -> dict:
             if p.status in (ArtifactStatus.APPROVED.value, ArtifactStatus.REVIEW.value)
         ]
     if not pages:
-        raise ValueError("没有可处理的分页脚本（先跑 S3）")
+        raise ValueError("没有可处理的分页脚本（先跑 S2 分页分格）")
 
-    provider, cfg = promptlib.resolve_provider(session, "S4")
+    provider, cfg = promptlib.resolve_provider(session, "S3")
     client = LLMClient(cfg)
-    system, user_tpl = promptlib.load_prompt("s4_prompt")
+    system, user_tpl = promptlib.load_prompt("s3_prompt")
     chars = _characters(session, project_id)
     techs = _techniques(session)
     default_loras = _project_loras(session, project_id)
 
-    log = LLMLogContext(session=session, stage="S4", project_id=project_id, provider_id=provider.id)
-    out = []
+    log = LLMLogContext(session=session, stage="S3", project_id=project_id, provider_id=provider.id)
+    out: list[str] = []
     for page in pages:
         geom = (page.payload or {}).get("geometry") or {}
         user = promptlib.render(
@@ -96,7 +96,6 @@ def handle(session: Session, job: Job) -> dict:
             PagePrompts,
             log=log,
         )
-
         for item in prompts.panels:
             loras = item.loras or default_loras
             art = create(

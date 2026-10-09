@@ -1,9 +1,7 @@
-"""S7 整册导出：把全部已通过的整页图合成 PDF / CBZ。
+"""S6 整册导出（原 S7）：把全部整页图合成 PDF / CBZ。
 
-作业 payload: {"project_id": 1, "format": "pdf"|"cbz"|"both"}
-前置：各页 PAGE_IMAGE 产物已通过（approved）。
-
-产出：``BOOK`` 产物（ref="book"），path 指向导出的文件。
+payload: {"project_id", "format": "pdf"|"cbz"|"both"}
+产出：``BOOK`` 产物（ref="book"），path 指向导出文件。
 """
 
 from __future__ import annotations
@@ -17,7 +15,7 @@ from ..artifacts import all_current, create, set_status
 from ..config import get_settings
 from ..models import ArtifactKind, ArtifactStatus, Job, Project
 
-KIND = "s7_book"
+KIND = "book"
 
 
 def _page_no(ref: str) -> int:
@@ -37,10 +35,10 @@ def handle(session: Session, job: Job) -> dict:
 
     pages = [a for a in all_current(session, project_id, ArtifactKind.PAGE_IMAGE.value) if a.path]
     approved = [a for a in pages if a.status == ArtifactStatus.APPROVED.value]
-    use = approved or pages  # 自动模式下可能未显式通过，只要有页图就导出
+    use = approved or pages
     use.sort(key=lambda a: _page_no(a.ref))
     if not use:
-        raise ValueError("没有可导出的整页图（先跑 S6 分页合成）")
+        raise ValueError("没有可导出的整页图（先跑 S5 分页合成）")
 
     out_dir = get_settings().data_dir / "projects" / str(project_id) / "book"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -76,7 +74,6 @@ def handle(session: Session, job: Job) -> dict:
 
 
 def _make_pdf(pngs: list[Path], out: Path) -> None:
-    """用 img2pdf 无损合成（3 倍缩放画布图直接嵌入）。"""
     import img2pdf
 
     with open(out, "wb") as f:
@@ -84,7 +81,6 @@ def _make_pdf(pngs: list[Path], out: Path) -> None:
 
 
 def _make_cbz(pngs: list[Path], out: Path) -> None:
-    """CBZ = 按页序打包的 zip，条目名保证字典序即页序。"""
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for i, p in enumerate(pngs, start=1):
             z.write(p, arcname=f"{i:04d}_{p.name}")

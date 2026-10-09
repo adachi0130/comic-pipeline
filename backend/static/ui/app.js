@@ -1,77 +1,327 @@
-/* 自研前端逻辑（原生 ES module，无构建）。 */
+/* 自研前端逻辑（原生 ES module，无构建）。
+ * 新流程：S1 正文（酒馆写/续写/审核）→ S2 分格 → S3 提示词 → S4 出图 → S5 合成 → S6 导出
+ * 所有数据按当前项目隔离，切换项目会全量刷新。
+ */
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
 const API = '';
 
-let state = { projectId: null, templates: [], techniques: [] };
+const state = { projectId: null, project: null, meta: null, templates: [], techniques: [] };
 
 // ---------- 工具 ----------
 async function api(path, opts = {}) {
-  const res = await fetch(API + path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
+  const res = await fetch(API + path, { headers: { 'Content-Type': 'application/json' }, ...opts });
   const text = await res.text();
   let data;
   try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
   if (!res.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
   return data;
 }
-
 function toast(msg, kind = '') {
   const el = document.createElement('div');
-  el.className = 'toast ' + kind;
-  el.textContent = msg;
-  document.body.appendChild(el);
-  setTimeout(() => el.remove(), 4200);
+  el.className = 'toast ' + kind; el.textContent = msg;
+  document.body.appendChild(el); setTimeout(() => el.remove(), 4200);
+}
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const STATUS = {
+  approved: ['ok', '已通过'], review: ['warn', '待审查'], rejected: ['err', '已驳回'],
+  stale: ['stale', '需重跑'], running: ['run', '生成中'], pending: ['', '待生成'],
+  done: ['ok', '完成'], failed: ['err', '失败'], queued: ['', '排队中'], cancelled: ['', '已取消'],
+};
+const pill = (s) => { const [c, l] = STATUS[s] || ['', s || '—']; return `<span class="pill ${c}"><i class="dotm"></i>${l}</span>`; };
+
+// ---------- Tab ----------
+const TITLES = {
+  projects: ['项目', '选择或新建一部漫画'],
+  novel: ['正文', '用酒馆写小说，逐段审核，然后进入分页'],
+  pipeline: ['流水线', '各阶段与中间产物'],
+  images: ['出图', '逐格出图与挑图'],
+  settings: ['设置', 'LLM 供应商 / ComfyUI / 阶段绑定'],
+};
+$$('.nav button[data-tab]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
+function switchTab(tab) {
+  $$('.nav button[data-tab]').forEach((x) => x.classList.toggle('active', x.dataset.tab === tab));
+  ['projects', 'novel', 'pipeline', 'images', 'settings'].forEach((t) => $('#tab-' + t).classList.toggle('hidden', t !== tab));
+  $('#view-title').textContent = TITLES[tab][0];
+  $('#view-sub').textContent = TITLES[tab][1];
+  if (tab === 'novel') loadNovel();
+  if (tab === 'pipeline') { renderFlow(); refreshGates(); }
+  if (tab === 'images') loadWorkbench();
+  if (tab === 'settings') { loadProviders(); loadStageBinding(); }
 }
 
-const statusPill = (s) => {
-  const map = { approved: ['ok', '已通过'], review: ['warn', '待审查'], rejected: ['err', '已驳回'],
-    stale: ['stale', '需重跑'], running: ['run', '生成中'], pending: ['', '待生成'],
-    done: ['ok', '完成'], failed: ['err', '失败'], queued: ['', '排队中'], cancelled: ['', '已取消'] };
-  const [cls, label] = map[s] || ['', s || '—'];
-  return `<span class="pill ${cls}">${label}</span>`;
-};
+// ---------- 健康 ----------
+async function checkHealth() {
+  try { await api('/api/health'); $('#health').className = 'pill ok'; $('#health').innerHTML = '<i class="dotm"></i>后端在线'; }
+  catch { $('#health').className = 'pill err'; $('#health').innerHTML = '<i class="dotm"></i>后端离线'; }
+}
+
+// ---------- 项目 ----------
+async function loadProjects() {
+  const rows = await api('/api/projects');
+  const box = $('#plist');
+  if (!rows.length) { box.innerHTML = '<div class="empty">还没有项目，先在上面创建一个</div>'; return; }
+  box.innerHTML = rows.map((p) => `
+    <div class="pitem ${p.id === state.projectId ? 'sel' : ''}" data-pick="${p.id}">
+      <div class="av">${esc((p.title || '?').slice(0, 1))}</div>
+      <div><b>${esc(p.title)}</b><div class="meta">${p.target_pages} 页 · ${p.review_mode === 'auto' ? '全自动' : '人工审查'}</div></div>
+      <div class="spacer"></div>
+      ${p.id === state.projectId ? '<span class="pill ok"><i class="dotm"></i>当前</span>' : '<span class="mut" style="font-size:12.5px">点击打开</span>'}
+    </div>`).join('');
+  $$('[data-pick]').forEach((el) => el.addEventListener('click', () => pickProject(+el.dataset.pick)));
+}
+
+async function pickProject(id) {
+  state.projectId = id;
+  state.project = await api('/api/projects/' + id);
+  $('#cur-proj').innerHTML = `<b>${esc(state.project.title)}</b>
+    <span class="mut">${state.project.target_pages} 页 · ${state.project.review_mode === 'auto' ? '全自动' : '人工审查'}</span>`;
+  $('#automode').checked = state.project.review_mode === 'auto';
+  // 项目隔离：切项目时全量刷新所有视图
+  await loadProjects();
+  renderFlow();
+  refreshGates();
+  const active = document.querySelector('.nav button.active')?.dataset.tab;
+  if (active === 'novel') loadNovel();
+  if (active === 'images') loadWorkbench();
+}
+
+$('#btn-new').addEventListener('click', async () => {
+  try {
+    const p = await api('/api/projects', { method: 'POST', body: JSON.stringify({
+      title: $('#np-title').value || '未命名漫画', outline: $('#np-outline').value, target_pages: +$('#np-pages').value || 16 }) });
+    toast('项目已创建', 'ok');
+    $('#np-title').value = ''; $('#np-outline').value = '';
+    await pickProject(p.id);
+  } catch (e) { toast('创建失败：' + e.message, 'err'); }
+});
+
+$('#automode').addEventListener('change', async () => {
+  if (!state.projectId) { toast('先选择项目', 'err'); $('#automode').checked = false; return; }
+  try {
+    await api(`/api/projects/${state.projectId}/review-mode`, { method: 'PATCH', body: JSON.stringify({ mode: $('#automode').checked ? 'auto' : 'manual' }) });
+    state.project.review_mode = $('#automode').checked ? 'auto' : 'manual';
+    toast($('#automode').checked ? '已切到全自动' : '已切到人工审查', 'ok');
+    renderFlow();
+  } catch (e) { toast(e.message, 'err'); }
+});
+
+// ---------- 正文（小说） ----------
+$('#nv-start').addEventListener('click', () => requestProse('start'));
+$('#nv-continue').addEventListener('click', () => requestProse('continue'));
+
+async function requestProse(mode) {
+  if (!state.projectId) return toast('先选择项目', 'err');
+  try {
+    const r = await api(`/api/projects/${state.projectId}/prose/request`, { method: 'POST',
+      body: JSON.stringify({ mode, instruction: $('#nv-instr').value }) });
+    toast(`已请求酒馆${mode === 'continue' ? '续写' : '开始写作'} #${r.job_id}（需酒馆标签页打开）`);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function loadNovel() {
+  if (!state.projectId) { $('#nv-segs').innerHTML = '<div class="empty">请先选择项目</div>'; return; }
+  try {
+    const n = await api(`/api/projects/${state.projectId}/novel`);
+    $('#nv-state').className = 'pill ' + (n.total_count === 0 ? '' : n.can_continue ? 'ok' : 'warn');
+    $('#nv-state').innerHTML = `<i class="dotm"></i>${n.approved_count}/${n.total_count} 段已通过`;
+    $('#nv-continue').disabled = !(n.can_continue && n.total_count > 0);
+
+    // 分段
+    const box = $('#nv-segs');
+    if (!n.segments.length) box.innerHTML = '<div class="empty">还没有正文分段，点上面「开始写作」</div>';
+    else box.innerHTML = n.segments.map((s) => `
+      <div class="seg" data-id="${s.id}">
+        <div class="segh"><b>第 ${s.index} 段</b> ${pill(s.status)}
+          <span class="pill tag">${s.mode === 'continue' ? '续写' : '起笔'}</span>
+          <span class="mut" style="font-size:12px">${s.chars} 字</span>
+          <div class="spacer"></div>
+          <button class="sm" data-edit="${s.id}">编辑</button>
+          <button class="sm" data-approve="${s.id}">通过</button>
+          <button class="sm danger" data-reject="${s.id}">驳回</button>
+        </div>
+        <div class="txt clip">${esc(s.text)}</div>
+      </div>`).join('');
+    bindSegments();
+
+    // 全文
+    $('#nv-fullmeta').textContent = `共 ${n.total_count} 段 · ${n.chars} 字`;
+    $('#nv-full').innerHTML = n.text ? n.text.split(/\n{2,}/).map((p) => `<p>${esc(p)}</p>`).join('') : '<div class="empty">暂无全文</div>';
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function bindSegments() {
+  $$('[data-approve]').forEach((b) => b.addEventListener('click', async () => {
+    await api(`/api/artifacts/${b.dataset.approve}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'approve' }) });
+    toast('该段已通过', 'ok'); loadNovel(); refreshGates();
+  }));
+  $$('[data-reject]').forEach((b) => b.addEventListener('click', async () => {
+    const comment = prompt('驳回批注（可留空）：') || '';
+    await api(`/api/artifacts/${b.dataset.reject}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'reject', comment }) });
+    toast('该段已驳回，可编辑后重审', 'ok'); loadNovel(); refreshGates();
+  }));
+  $$('[data-edit]').forEach((b) => b.addEventListener('click', () => openSegEdit(+b.dataset.edit)));
+}
+
+async function openSegEdit(id) {
+  const a = await api('/api/artifacts/' + id);
+  const box = document.createElement('div');
+  box.className = 'modal';
+  box.innerHTML = `<div class="box" style="width:720px">
+    <h3>编辑第 ${(a.payload && a.payload.mode ? a.ref : a.ref)} 段</h3>
+    <textarea id="seg-edit" style="min-height:320px">${esc(a.payload.text || '')}</textarea>
+    <div class="row" style="margin-top:12px"><span class="mut" style="font-size:12.5px">保存会生成新版本并保留旧版</span>
+      <div class="spacer"></div>
+      <button class="sm" data-close>取消</button>
+      <button class="primary sm" id="seg-save">保存</button></div></div>`;
+  document.body.appendChild(box);
+  box.querySelector('[data-close]').addEventListener('click', () => box.remove());
+  box.addEventListener('click', (e) => { if (e.target === box) box.remove(); });
+  box.querySelector('#seg-save').addEventListener('click', async () => {
+    const text = box.querySelector('#seg-edit').value;
+    await api(`/api/artifacts/${id}/payload`, { method: 'PATCH', body: JSON.stringify({ text }) });
+    box.remove(); toast('已保存（下游标记需重跑）', 'ok'); loadNovel(); refreshGates();
+  });
+}
+
+$('#nv-copy').addEventListener('click', async () => {
+  if (!state.projectId) return;
+  const n = await api(`/api/projects/${state.projectId}/novel`);
+  try { await navigator.clipboard.writeText(n.text); toast('全文已复制', 'ok'); }
+  catch { toast('复制失败，请手动选择', 'err'); }
+});
+$('#nv-export').addEventListener('click', () => {
+  if (!state.projectId) return;
+  window.open(`/api/projects/${state.projectId}/novel/approved`, '_blank');
+});
+
+// ---------- 流水线 ----------
+function renderFlow() {
+  const box = $('#flow');
+  if (!state.project || !state.meta) { box.innerHTML = '<div class="empty">选择项目后显示</div>'; return; }
+  const stages = state.meta.stages || [];
+  const gates = state._gates || {};
+  box.innerHTML = stages.map((s) => {
+    const g = gates[s.id] || { count: 0, approved: 0, review: 0, stale: 0 };
+    const total = g.count || 0;
+    const pct = total ? Math.round(100 * (g.approved || 0) / total) : 0;
+    const isS1 = s.id === 'S1';
+    return `<div class="stage" data-stage="${s.id}">
+      <div class="idx">${s.id}</div>
+      <div><div class="nm">${esc(s.name)}</div><div class="ds">${esc(s.desc)}</div>
+        <div class="bar"><i style="width:${pct}%"></i></div></div>
+      <div class="stat">
+        <span class="pill tag">${total} 项</span>
+        ${g.approved ? `<span class="pill ok"><i class="dotm"></i>${g.approved} 通过</span>` : ''}
+        ${g.review ? `<span class="pill warn"><i class="dotm"></i>${g.review} 待审</span>` : ''}
+        ${g.stale ? `<span class="pill stale"><i class="dotm"></i>${g.stale} 需重跑</span>` : ''}
+        <button class="sm" data-view="${s.id}">查看</button>
+        ${isS1 ? '<button class="sm primary" data-go="novel">去写正文</button>' : `<button class="sm" data-run="${s.id}">运行</button>`}
+      </div></div>`;
+  }).join('');
+  $$('[data-view]').forEach((b) => b.addEventListener('click', () => openStageArtifacts(b.dataset.view)));
+  $$('[data-run]').forEach((b) => b.addEventListener('click', () => runStage(b.dataset.run)));
+  $$('[data-go]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.go)));
+}
+
+async function runStage(stage) {
+  if (!state.projectId) return toast('先选择项目', 'err');
+  try {
+    const r = await api(`/api/projects/${state.projectId}/run/${stage}`, { method: 'POST', body: '{}' });
+    toast(`${stage} 已入队 #${r.job_id}`);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function openStageArtifacts(stage) {
+  if (!state.projectId) return;
+  const d = await api(`/api/projects/${state.projectId}/stage-artifacts`);
+  const blk = d[stage] || { label: stage, items: [] };
+  const box = document.createElement('div');
+  box.className = 'modal';
+  box.innerHTML = `<div class="box" style="width:820px">
+    <h3>${stage} · ${esc(blk.label)} <span class="mut" style="font-size:13px;font-weight:400">（${blk.items.length} 项）</span></h3>
+    ${blk.items.length ? `<table><thead><tr><th>ref</th><th>版本</th><th>状态</th><th>内容</th><th></th></tr></thead><tbody>
+      ${blk.items.map((it) => `<tr><td>${esc(it.ref)}</td><td>v${it.version}</td><td>${pill(it.status)}</td>
+        <td class="mut" style="max-width:320px">${esc(it.summary)}</td>
+        <td><button class="sm" data-open="${it.id}">详情</button></td></tr>`).join('')}
+    </tbody></table>` : '<div class="empty">该阶段还没有产物</div>'}
+    <div class="row" style="margin-top:14px"><div class="spacer"></div><button class="sm" data-close>关闭</button></div>
+    <div id="art-detail"></div></div>`;
+  document.body.appendChild(box);
+  box.querySelector('[data-close]').addEventListener('click', () => box.remove());
+  box.addEventListener('click', (e) => { if (e.target === box) box.remove(); });
+  box.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', async () => {
+    const a = await api('/api/artifacts/' + b.dataset.open);
+    box.querySelector('#art-detail').innerHTML = `<div class="divider"></div><pre>${esc(JSON.stringify(a.payload, null, 2))}</pre>`;
+  }));
+}
+
+async function refreshGates() {
+  if (!state.projectId) return;
+  if (!state.meta) state.meta = await api('/api/meta');
+  try {
+    const g = await api(`/api/projects/${state.projectId}/gates`);
+    state._gates = g.stages;
+    if (document.querySelector('.nav button.active')?.dataset.tab === 'pipeline') renderFlow();
+  } catch { /* 忽略 */ }
+}
+
+// ---------- 作业 SSE ----------
+let _sse = null;
+function startJobsSSE() {
+  if (_sse) _sse.close();
+  _sse = new EventSource(API + '/api/jobs/events' + (state.projectId ? `?project_id=${state.projectId}` : ''));
+  _sse.onmessage = (ev) => { try { renderJobs(JSON.parse(ev.data)); } catch { /* keep-alive */ } };
+}
+function renderJobs(jobs) {
+  const box = $('#jobs');
+  if (!box) return;
+  if (!jobs.length) { box.innerHTML = '<div class="empty">暂无作业</div>'; return; }
+  box.innerHTML = jobs.slice(0, 12).map((j) => `
+    <div class="job"><span class="pill tag">${j.stage || j.kind}</span>
+      <span class="mut" style="min-width:52px">#${j.id}</span>${pill(j.status)}
+      <div class="bar"><i style="width:${j.total ? Math.round(100 * j.progress / j.total) : (j.status === 'done' ? 100 : 6)}%"></i></div>
+      <span class="mut" style="font-size:12px">${esc(j.message || '')}</span></div>`).join('');
+  refreshGates();
+  const t = document.querySelector('.nav button.active')?.dataset.tab;
+  if (t === 'novel') loadNovel();
+}
 
 // ---------- 出图工作台 ----------
 $('#wb-reload').addEventListener('click', loadWorkbench);
 
 async function loadWorkbench() {
-  if (!state.projectId) return toast('先选择项目', 'err');
+  if (!state.projectId) { $('#wb-list').innerHTML = '<div class="empty">请先选择项目</div>'; return; }
   const box = $('#wb-list');
   try {
     const prompts = await api(`/api/projects/${state.projectId}/artifacts?kind=panel_prompt`);
-    if (!prompts.length) { box.innerHTML = '<div class="empty">还没有 S4 提示词产物（先跑 S3、S4）</div>'; $('#wb-info').textContent = '0 格'; return; }
-    // 拉取可用 LoRA 列表（失败不阻塞）
-    let loraOpts = '';
-    try { const r = await api('/api/comfy/assets?backend=cloud'); loraOpts = (r.loras || []).join('\n'); } catch { /* ComfyUI 未启动 */ }
+    if (!prompts.length) { box.innerHTML = '<div class="empty">还没有提示词产物（先跑 S2 分页分格、S3 提示词）</div>'; $('#wb-info').textContent = '0 格'; return; }
+    let loraOpts = [];
+    try { const r = await api('/api/comfy/assets?backend=cloud'); loraOpts = r.loras || []; } catch { /* ComfyUI 未启动 */ }
 
-    box.innerHTML = prompts.map((p) => `
-      <div class="card" data-ref="${esc(p.ref)}" style="margin-bottom:12px">
-        <div class="row"><b>${esc(p.ref)}</b> ${statusPill(p.status)}
+    box.innerHTML = prompts.map((p) => {
+      const pl = p.payload || {}; const l0 = (pl.loras || [])[0] || {};
+      return `<div class="card" data-ref="${esc(p.ref)}" style="margin-bottom:12px;padding:16px">
+        <div class="row"><b>${esc(p.ref)}</b> ${pill(p.status)}
           <div class="spacer"></div>
-          <label class="mut" style="font-size:12px">张数</label>
-          <input class="wb-count" type="number" value="${$('#wb-count').value}" min="1" max="8" style="width:64px">
-          <button class="sm wb-save">保存提示词</button>
-          <button class="primary sm wb-gen">出图</button>
+          <label class="fld" style="margin:0">张数</label>
+          <input class="wb-count" type="number" value="${$('#wb-count').value}" min="1" max="8" style="width:66px">
+          <button class="sm wb-save">保存</button><button class="primary sm wb-gen">出图</button></div>
+        <div class="grid2" style="margin-top:10px">
+          <div><label class="fld">正向</label><textarea class="wb-pos">${esc(pl.prompt_pos || '')}</textarea></div>
+          <div><label class="fld">负向</label><textarea class="wb-neg">${esc(pl.prompt_neg || '')}</textarea></div>
         </div>
-        <div style="margin-top:8px"><label class="mut">正向</label>
-          <textarea class="wb-pos">${esc((p.payload || {}).prompt_pos || '')}</textarea></div>
-        <div style="margin-top:6px"><label class="mut">负向</label>
-          <textarea class="wb-neg">${esc((p.payload || {}).prompt_neg || '')}</textarea></div>
-        <div class="row" style="margin-top:6px"><label class="mut" style="font-size:12px">
-            <input type="checkbox" class="wb-uselora" style="width:auto" ${(p.payload || {}).loras?.length ? 'checked' : ''}> 使用 LoRA</label>
-          <input class="wb-lora" placeholder="lora 文件名" value="${esc(((p.payload || {}).loras || [{}])[0].name || '')}" list="lora-list">
-          <label class="mut" style="font-size:12px">权重</label>
-          <input class="wb-loraw" type="number" step="0.05" value="${((p.payload || {}).loras || [{}])[0].weight ?? 0.8}" style="width:74px">
+        <div class="row" style="margin-top:8px">
+          <label class="fld" style="margin:0"><input type="checkbox" class="wb-uselora" style="width:auto" ${(pl.loras || []).length ? 'checked' : ''}> 用 LoRA</label>
+          <input class="wb-lora" placeholder="lora 文件名" value="${esc(l0.name || '')}" list="lora-list" style="max-width:280px">
+          <label class="fld" style="margin:0">权重</label>
+          <input class="wb-loraw" type="number" step="0.05" value="${l0.weight ?? 0.8}" style="width:80px">
         </div>
-        <div class="wb-cands" style="margin-top:10px"></div>
-      </div>`).join('');
-    // 全局 datalist（LoRA 候选）
+        <div class="wb-cands" style="margin-top:12px"></div></div>`;
+    }).join('');
     const dl = document.createElement('datalist'); dl.id = 'lora-list';
-    dl.innerHTML = loraOpts.split('\n').filter(Boolean).map((l) => `<option value="${esc(l)}">`).join('');
+    dl.innerHTML = loraOpts.map((l) => `<option value="${esc(l)}">`).join('');
     document.body.appendChild(dl);
     $('#wb-info').textContent = `${prompts.length} 格`;
     bindWorkbench(prompts);
@@ -82,179 +332,46 @@ async function loadWorkbench() {
 function bindWorkbench(prompts) {
   $$('#wb-list .card').forEach((card) => {
     const ref = card.dataset.ref;
+    const art = prompts.find((p) => p.ref === ref);
     card.querySelector('.wb-save').addEventListener('click', async () => {
-      const pos = card.querySelector('.wb-pos').value;
-      const neg = card.querySelector('.wb-neg').value;
       const useLora = card.querySelector('.wb-uselora').checked;
       const lname = card.querySelector('.wb-lora').value.trim();
       const lw = +card.querySelector('.wb-loraw').value;
-      const art = prompts.find((p) => p.ref === ref);
-      // 写一个新版本提示词产物（触发下游失效传播）
       await api(`/api/artifacts/${art.id}/payload`, { method: 'PATCH', body: JSON.stringify({
-        prompt_pos: pos, prompt_neg: neg,
+        prompt_pos: card.querySelector('.wb-pos').value, prompt_neg: card.querySelector('.wb-neg').value,
         loras: useLora && lname ? [{ name: lname, weight: lw }] : [] }) });
-      toast(`${ref} 提示词已保存（下游标记需重跑）`, 'ok'); refreshGates();
+      toast(`${ref} 已保存（下游需重跑）`, 'ok'); refreshGates();
     });
     card.querySelector('.wb-gen').addEventListener('click', async () => {
       const count = +card.querySelector('.wb-count').value || 4;
-      const r = await api(`/api/projects/${state.projectId}/panels/${encodeURIComponent(ref)}/generate`,
-        { method: 'POST', body: JSON.stringify({ count }) });
+      const r = await api(`/api/projects/${state.projectId}/panels/${encodeURIComponent(ref)}/generate`, { method: 'POST', body: JSON.stringify({ count }) });
       toast(`${ref} 出图已入队 #${r.job_id}（${count} 张）`);
     });
   });
 }
 
-async function renderWbCands(promptArt) {
-  const card = document.querySelector(`#wb-list .card[data-ref="${CSS.escape(promptArt.ref)}"]`);
+async function renderWbCands(pa) {
+  const card = document.querySelector(`#wb-list .card[data-ref="${CSS.escape(pa.ref)}"]`);
   if (!card) return;
   const box = card.querySelector('.wb-cands');
-  const imgs = await api(`/api/projects/${state.projectId}/artifacts?kind=image&ref_prefix=${encodeURIComponent(promptArt.ref)}`);
-  if (!imgs.length) { box.innerHTML = '<div class="empty" style="font-size:12px">还没有候选图，点“出图”</div>'; return; }
+  const imgs = await api(`/api/projects/${state.projectId}/artifacts?kind=image&ref_prefix=${encodeURIComponent(pa.ref)}`);
+  if (!imgs.length) { box.innerHTML = '<div class="empty" style="font-size:12px">还没有候选图，点「出图」</div>'; return; }
   const a = await api('/api/artifacts/' + imgs[0].id);
   const cands = (a.payload && a.payload.candidates) || [];
   const sel = a.payload && a.payload.selected_index;
   box.innerHTML = `<div class="candgrid">${cands.map((c, i) => `
     <div class="cand ${i === sel ? 'sel' : ''}" data-art="${a.id}" data-idx="${i}">
       <img src="/api/artifacts/${a.id}/candidate/${i}" loading="lazy">
-      <div class="lbl"><span>#${i + 1}</span>${i === sel ? '<span style="color:var(--ok)">已选</span>' : ''}</div>
-    </div>`).join('')}</div>`;
-  box.querySelectorAll('.cand').forEach((el) => el.addEventListener('click', async () => {
-    await api(`/api/artifacts/${el.dataset.art}/select`, { method: 'POST', body: JSON.stringify({ index: +el.dataset.idx }) });
-    toast('已采用', 'ok'); renderWbCands(promptArt); refreshGates();
+      <div class="lbl"><span>#${i + 1}</span>${i === sel ? '<span style="color:var(--ok)">已选</span>' : ''}</div></div>`).join('')}</div>`;
+  box.querySelectorAll('.cand').forEach((el) => el.addEventListener('click', () => {
+    openLightbox(`/api/artifacts/${el.dataset.art}/candidate/${el.dataset.idx}`, async () => {
+      await api(`/api/artifacts/${el.dataset.art}/select`, { method: 'POST', body: JSON.stringify({ index: +el.dataset.idx }) });
+      toast('已采用', 'ok'); renderWbCands(pa); refreshGates();
+    });
   }));
 }
 
-// ---------- Tab ----------
-$$('.nav button[data-tab]').forEach((b) => b.addEventListener('click', () => {
-  $$('.nav button[data-tab]').forEach((x) => x.classList.remove('active'));
-  b.classList.add('active');
-  const tab = b.dataset.tab;
-  ['projects', 'pipeline', 'workbench', 'candidates', 'settings'].forEach((t) =>
-    $('#tab-' + t).classList.toggle('hidden', t !== tab));
-  const titles = { projects: ['项目', '选择或新建一部漫画'], pipeline: ['流水线 S1–S7', '按阶段推进，每阶段后可审查'],
-    workbench: ['出图工作台', '逐格改词 / 勾选 LoRA / 调批量张数 / 挑图'],
-    candidates: ['候选图 / 审查', '人工挑图；自动模式取首张'], settings: ['设置', 'LLM 供应商 / ComfyUI / 阶段绑定'] };
-  $('#view-title').textContent = titles[tab][0];
-  $('#view-sub').textContent = titles[tab][1];
-  if (tab === 'settings') { loadProviders(); loadStageBinding(); }
-  if (tab === 'workbench') loadWorkbench();
-}));
-
-// ---------- 健康 ----------
-async function checkHealth() {
-  try { await api('/api/health'); $('#health').textContent = '后端：在线'; $('#health').className = 'pill ok'; }
-  catch { $('#health').textContent = '后端：离线'; $('#health').className = 'pill err'; }
-}
-
-// ---------- 项目 ----------
-async function loadProjects() {
-  const rows = await api('/api/projects');
-  const box = $('#plist');
-  if (!rows.length) { box.innerHTML = '<div class="empty">还没有项目</div>'; return; }
-  box.innerHTML = rows.map((p) => `
-    <div class="pitem"><div><b>${esc(p.title)}</b>
-      <div class="meta">${p.target_pages} 页 · ${p.review_mode === 'auto' ? '全自动' : '人工审查'}</div></div>
-      <div class="spacer"></div>
-      <button class="sm" data-pick="${p.id}">打开</button></div>`).join('');
-  $$('[data-pick]').forEach((b) => b.addEventListener('click', () => pickProject(+b.dataset.pick)));
-  if (!state.projectId && rows.length) pickProject(rows[0].id);
-}
-
-function esc(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
-
-async function pickProject(id) {
-  state.projectId = id;
-  const p = await api('/api/projects/' + id);
-  $('#cur-proj').innerHTML = `<b>${esc(p.title)}</b><br><span class="mut">${p.target_pages} 页</span>`;
-  $('#automode').checked = p.review_mode === 'auto';
-  refreshGates();
-}
-
-$('#btn-new').addEventListener('click', async () => {
-  try {
-    const p = await api('/api/projects', { method: 'POST', body: JSON.stringify({
-      title: $('#np-title').value || '未命名漫画',
-      outline: $('#np-outline').value,
-      target_pages: +$('#np-pages').value || 16,
-    }) });
-    toast('项目已创建', 'ok'); $('#np-title').value = ''; $('#np-outline').value = '';
-    await loadProjects(); pickProject(p.id);
-  } catch (e) { toast('创建失败：' + e.message, 'err'); }
-});
-
-// ---------- 全自动开关 ----------
-$('#automode').addEventListener('change', async () => {
-  if (!state.projectId) { toast('先选择项目', 'err'); $('#automode').checked = false; return; }
-  try {
-    await api(`/api/projects/${state.projectId}/review-mode`, { method: 'PATCH',
-      body: JSON.stringify({ mode: $('#automode').checked ? 'auto' : 'manual' }) });
-    toast($('#automode').checked ? '已切到全自动（门自动通过）' : '已切到人工审查', 'ok');
-  } catch (e) { toast(e.message, 'err'); }
-});
-
-// ---------- 阶段运行 ----------
-function bindRun(btn, fn) { $(btn).addEventListener('click', async () => {
-  if (!state.projectId) return toast('先选择项目', 'err');
-  try { await fn(); } catch (e) { toast(e.message, 'err'); }
-});}
-
-bindRun('#run-S1', async () => { const r = await api(`/api/projects/${state.projectId}/run/S1`, { method: 'POST', body: '{}' }); toast(`S1 已入队 #${r.job_id}`); });
-bindRun('#run-S2', async () => { const r = await api(`/api/projects/${state.projectId}/prose/request`, { method: 'POST',
-  body: JSON.stringify({ scene_id: +$('#s2-scene').value, instruction: $('#s2-instr').value }) });
-  toast(`已请求酒馆生成 #${r.job_id}（需酒馆标签页打开）`); });
-bindRun('#run-S3', async () => { const r = await api(`/api/projects/${state.projectId}/run/S3`, { method: 'POST',
-  body: JSON.stringify({ scene_id: +$('#s3-scene').value, page_budget: +$('#s3-budget').value }) });
-  toast(`S3 已入队 #${r.job_id}`); });
-bindRun('#run-S4', async () => { const r = await api(`/api/projects/${state.projectId}/run/S4`, { method: 'POST',
-  body: JSON.stringify({ page_ref: $('#s4-page').value }) });
-  toast(`S4 已入队 #${r.job_id}`); });
-bindRun('#run-S5', async () => {
-  const ref = $('#s5-panel').value; if (!ref) return toast('请填格 ref，如 panel:1.1', 'err');
-  const r = await api(`/api/projects/${state.projectId}/panels/${encodeURIComponent(ref)}/generate`, { method: 'POST',
-    body: JSON.stringify({ count: +$('#s5-count').value, params: {} }) });
-  toast(`S5 出图已入队 #${r.job_id}`); });
-bindRun('#run-S6', async () => {
-  const ref = $('#s6-page').value; if (!ref) return toast('请填页 ref，如 page:1', 'err');
-  const r = await api(`/api/projects/${state.projectId}/run/S6`, { method: 'POST', body: JSON.stringify({ page_ref: ref }) });
-  toast(`S6 合成已入队 #${r.job_id}`); });
-
-// ---------- 门状态 ----------
-async function refreshGates() {
-  if (!state.projectId) return;
-  try {
-    const g = await api(`/api/projects/${state.projectId}/gates`);
-    for (const [stage, key] of [['S1', 'structure'], ['S3', 'page_script'], ['S4', 'panel_prompt'], ['S5', 'image'], ['S6', 'page_image']]) {
-      const el = $('#st-' + stage); if (!el) continue;
-      const s = g.stages[stage] || {};
-      const total = s.count || 0;
-      const cls = total === 0 ? '' : (s.review ? 'warn' : s.stale ? 'stale' : 'ok');
-      const label = total === 0 ? '未开始' : `${s.approved}/${total} 通过${s.review ? ` · ${s.review} 待审` : ''}${s.stale ? ` · ${s.stale} 需重跑` : ''}`;
-      el.className = 'pill ' + cls; el.textContent = label;
-    }
-  } catch { /* 忽略 */ }
-}
-
-// ---------- 作业 SSE ----------
-function startJobsSSE() {
-  const src = new EventSource(API + '/api/jobs/events' + (state.projectId ? `?project_id=${state.projectId}` : ''));
-  src.onmessage = (ev) => {
-    try { renderJobs(JSON.parse(ev.data)); } catch { /* keep-alive */ }
-  };
-  src.onerror = () => { /* 自动重连 */ };
-}
-function renderJobs(jobs) {
-  const box = $('#jobs');
-  if (!jobs.length) { box.innerHTML = '<div class="empty">暂无作业</div>'; return; }
-  box.innerHTML = jobs.slice(0, 12).map((j) => `
-    <div class="job"><span class="pill">${j.stage || j.kind}</span>
-      <span class="mut" style="min-width:64px">#${j.id}</span>
-      ${statusPill(j.status)}
-      <div class="bar"><i style="width:${j.total ? Math.round(100 * j.progress / j.total) : (j.status === 'done' ? 100 : 8)}%"></i></div>
-      <span class="mut" style="font-size:12px">${esc(j.message || '')}</span></div>`).join('');
-  refreshGates();
-}
-
-// ---------- 候选图 / 审查 ----------
+// ---------- 通用产物列表 ----------
 $('#reload-art').addEventListener('click', loadArtifacts);
 async function loadArtifacts() {
   if (!state.projectId) return toast('先选择项目', 'err');
@@ -263,23 +380,31 @@ async function loadArtifacts() {
   const box = $('#artbox');
   if (!rows.length) { box.innerHTML = '<div class="empty">暂无产物</div>'; return; }
   if (kind === 'image') {
-    box.innerHTML = rows.map((r) => candBlock(r)).join('');
-    for (const r of rows) { await fillCandidates(r.id); }
+    box.innerHTML = rows.map((r) => `<div style="margin-bottom:16px"><div class="row" style="margin-bottom:8px">
+      <b>${esc(r.ref)}</b> v${r.version} ${pill(r.status)}</div>
+      <div class="candgrid" id="cand-${r.id}"><div class="empty">加载…</div></div></div>`).join('');
+    for (const r of rows) await fillCandidates(r.id);
   } else {
-    box.innerHTML = `<table><thead><tr><th>ref</th><th>版本</th><th>状态</th><th>操作</th></tr></thead><tbody>` +
-      rows.map((r) => `<tr><td>${esc(r.ref)}</td><td>v${r.version}</td><td>${statusPill(r.status)}</td>
+    box.innerHTML = `<table><thead><tr><th>ref</th><th>版本</th><th>状态</th><th>操作</th></tr></thead><tbody>
+      ${rows.map((r) => `<tr><td>${esc(r.ref)}</td><td>v${r.version}</td><td>${pill(r.status)}</td>
         <td><button class="sm" data-detail="${r.id}">详情</button>
         <button class="sm" data-approve="${r.id}">通过</button>
-        <button class="sm" data-reject="${r.id}">驳回</button></td></tr>`).join('') + '</tbody></table>';
-    bindArtActions();
+        <button class="sm danger" data-reject="${r.id}">驳回</button></td></tr>`).join('')}</tbody></table>
+      <div id="detail-box"></div>`;
+    $$('[data-detail]').forEach((b) => b.addEventListener('click', async () => {
+      const a = await api('/api/artifacts/' + b.dataset.detail);
+      $('#detail-box').innerHTML = `<div class="divider"></div><pre>${esc(JSON.stringify(a.payload, null, 2))}</pre>`;
+    }));
+    $$('[data-approve]').forEach((b) => b.addEventListener('click', async () => {
+      await api(`/api/artifacts/${b.dataset.approve}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'approve' }) });
+      toast('已通过', 'ok'); loadArtifacts(); refreshGates();
+    }));
+    $$('[data-reject]').forEach((b) => b.addEventListener('click', async () => {
+      const comment = prompt('驳回批注：') || '';
+      await api(`/api/artifacts/${b.dataset.reject}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'reject', comment }) });
+      toast('已驳回', 'ok'); loadArtifacts(); refreshGates();
+    }));
   }
-}
-function candBlock(r) {
-  return `<div style="margin-bottom:16px"><div class="row" style="margin-bottom:6px">
-    <b>${esc(r.ref)}</b> v${r.version} ${statusPill(r.status)}
-    <div class="spacer"></div>
-    <button class="sm" data-detail="${r.id}">详情</button></div>
-    <div class="candgrid" id="cand-${r.id}"><div class="empty">加载候选…</div></div></div>`;
 }
 async function fillCandidates(id) {
   const a = await api('/api/artifacts/' + id);
@@ -290,29 +415,26 @@ async function fillCandidates(id) {
   if (!cands.length) { box.innerHTML = '<div class="empty">无候选</div>'; return; }
   box.innerHTML = cands.map((c, i) => `
     <div class="cand ${i === sel ? 'sel' : ''}" data-art="${id}" data-idx="${i}">
-      <img src="/api/artifacts/${id}/candidate/${i}" alt="候选 ${i + 1}" loading="lazy">
-      <div class="lbl"><span>#${i + 1}</span>${i === sel ? '<span style="color:var(--ok)">已选</span>' : ''}</div>
-    </div>`).join('');
-  box.querySelectorAll('.cand').forEach((el) => el.addEventListener('click', async () => {
-    await api(`/api/artifacts/${el.dataset.art}/select`, { method: 'POST', body: JSON.stringify({ index: +el.dataset.idx }) });
-    toast('已采用该候选', 'ok'); loadArtifacts();
+      <img src="/api/artifacts/${id}/candidate/${i}" loading="lazy">
+      <div class="lbl"><span>#${i + 1}</span>${i === sel ? '<span style="color:var(--ok)">已选</span>' : ''}</div></div>`).join('');
+  box.querySelectorAll('.cand').forEach((el) => el.addEventListener('click', () => {
+    openLightbox(`/api/artifacts/${el.dataset.art}/candidate/${el.dataset.idx}`, async () => {
+      await api(`/api/artifacts/${el.dataset.art}/select`, { method: 'POST', body: JSON.stringify({ index: +el.dataset.idx }) });
+      toast('已采用', 'ok'); loadArtifacts();
+    });
   }));
 }
-function bindArtActions() {
-  $$('[data-detail]').forEach((b) => b.addEventListener('click', async () => {
-    const a = await api('/api/artifacts/' + b.dataset.detail);
-    const pre = document.createElement('pre'); pre.textContent = JSON.stringify(a.payload, null, 2);
-    $('#artbox').appendChild(pre);
-  }));
-  $$('[data-approve]').forEach((b) => b.addEventListener('click', async () => {
-    await api(`/api/artifacts/${b.dataset.approve}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'approve' }) });
-    toast('已通过', 'ok'); loadArtifacts();
-  }));
-  $$('[data-reject]').forEach((b) => b.addEventListener('click', async () => {
-    const comment = prompt('驳回批注（会随任务回流重跑）：') || '';
-    await api(`/api/artifacts/${b.dataset.reject}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'reject', comment }) });
-    toast('已驳回', 'ok'); loadArtifacts();
-  }));
+
+// ---------- 灯箱 ----------
+function openLightbox(src, onSelect) {
+  const box = document.createElement('div'); box.className = 'modal';
+  box.innerHTML = `<div class="box"><h3>候选图</h3><img src="${src}">
+    <div class="row" style="margin-top:12px"><div class="spacer"></div>
+      <button class="sm" data-close>关闭</button><button class="primary sm" data-use>采用这张</button></div></div>`;
+  document.body.appendChild(box);
+  box.querySelector('[data-close]').addEventListener('click', () => box.remove());
+  box.addEventListener('click', (e) => { if (e.target === box) box.remove(); });
+  box.querySelector('[data-use]').addEventListener('click', async () => { box.remove(); await onSelect(); });
 }
 
 // ---------- 设置 ----------
@@ -333,9 +455,8 @@ async function loadProviders() {
 $('#btn-addpv').addEventListener('click', async () => {
   try {
     await api('/api/providers', { method: 'POST', body: JSON.stringify({
-      name: $('#pv-name').value, base_url: $('#pv-url').value,
-      model: $('#pv-model').value, api_key: $('#pv-key').value }) });
-    toast('供应商已添加', 'ok'); loadProviders(); loadStageBinding();
+      name: $('#pv-name').value, base_url: $('#pv-url').value, model: $('#pv-model').value, api_key: $('#pv-key').value }) });
+    toast('已添加', 'ok'); loadProviders(); loadStageBinding();
   } catch (e) { toast(e.message, 'err'); }
 });
 $('#btn-reloadpv').addEventListener('click', loadProviders);
@@ -343,25 +464,23 @@ $('#btn-reloadpv').addEventListener('click', loadProviders);
 async function loadStageBinding() {
   const providers = await api('/api/providers');
   const opts = providers.map((p) => `<option value="${p.id}">${esc(p.name)} · ${esc(p.model)}</option>`).join('');
-  $('#stagelist').innerHTML = ['S1', 'S3', 'S4'].map((s) =>
-    `<div><label class="mut">${s}</label>
-      <select data-stage="${s}" class="stage-bind">${providers.length ? opts : '<option value="">（先添加供应商）</option>'}</select></div>`).join('');
+  $('#stagelist').innerHTML = ['S2', 'S3'].map((s) =>
+    `<div><label class="fld">${s}</label><select data-stage="${s}" class="stage-bind">${providers.length ? opts : '<option value="">（先添加供应商）</option>'}</select></div>`).join('');
   $$('.stage-bind').forEach((sel) => sel.addEventListener('change', async () => {
-    if (!sel.value) return;
-    await api(`/api/projects/${state.projectId || 0}/stage-models`, { method: 'PATCH', body: JSON.stringify({ [sel.dataset.stage]: +sel.value }) });
+    if (!sel.value || !state.projectId) return;
+    await api(`/api/projects/${state.projectId}/stage-models`, { method: 'PATCH', body: JSON.stringify({ [sel.dataset.stage]: +sel.value }) });
     toast(`${sel.dataset.stage} 已绑定`, 'ok');
   }));
 }
 
 $('#cf-assets').addEventListener('click', async () => {
-  $('#cf-state').textContent = '拉取中…'; $('#cf-state').className = 'pill run';
+  $('#cf-state').className = 'pill run'; $('#cf-state').innerHTML = '<i class="dotm"></i>拉取中…';
   try {
     const r = await api('/api/comfy/assets?backend=' + $('#cf-backend').value);
     $('#cf-out').classList.remove('hidden');
     $('#cf-out').textContent = JSON.stringify({ loras: r.loras, checkpoints: r.checkpoints }, null, 2);
-    $('#cf-state').textContent = `LoRA ${r.loras.length} · ckpt ${r.checkpoints.length}`;
-    $('#cf-state').className = 'pill ok';
-  } catch (e) { $('#cf-state').textContent = '失败：' + e.message; $('#cf-state').className = 'pill err'; }
+    $('#cf-state').className = 'pill ok'; $('#cf-state').innerHTML = `<i class="dotm"></i>LoRA ${r.loras.length} · ckpt ${r.checkpoints.length}`;
+  } catch (e) { $('#cf-state').className = 'pill err'; $('#cf-state').innerHTML = '<i class="dotm"></i>失败'; toast(e.message, 'err'); }
 });
 $('#cf-guess').addEventListener('click', async () => {
   try { const r = await api('/api/comfy/mapping/guess', { method: 'POST' });
@@ -373,9 +492,10 @@ $('#cf-guess').addEventListener('click', async () => {
 // ---------- 启动 ----------
 (async () => {
   await checkHealth();
+  state.meta = await api('/api/meta');
+  state.templates = state.meta.templates; state.techniques = state.meta.techniques;
   await loadProjects();
-  const meta = await api('/api/meta');
-  state.templates = meta.templates; state.techniques = meta.techniques;
+  renderFlow();
   startJobsSSE();
   setInterval(refreshGates, 5000);
 })();

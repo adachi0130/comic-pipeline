@@ -6,104 +6,150 @@
 <title>AI 漫画生产线</title>
 <style>
 :root{
-  --bg:#0f1115;--bg2:#151922;--card:#1a1f29;--line:#262d39;--line2:#323b4a;
-  --ink:#e9ecf1;--muted:#8b95a7;--accent:#5b8cff;--accent2:#7c5cff;
-  --ok:#35d0a0;--warn:#ffb454;--err:#ff6b6b;--stale:#c084fc;
-  --r:10px;--shadow:0 4px 24px rgba(0,0,0,.35);
+  --bg:#f6f7f9; --bg2:#ffffff; --card:#ffffff; --line:#e6e8ec; --line2:#d3d7de;
+  --ink:#1c2530; --ink2:#43505f; --muted:#7b8794; --accent:#2f6bff; --accent2:#6e56ff;
+  --ok:#0f9d63; --okbg:#e7f6ef; --warn:#b7791f; --warnbg:#fdf5e3; --err:#d93a3a; --errbg:#fdecec;
+  --stale:#7a4ddb; --staleb:#f1ebfe; --run:#2f6bff; --runbg:#e9f0ff;
+  --r:12px; --shadow:0 1px 2px rgba(16,24,40,.05),0 6px 20px -8px rgba(16,24,40,.12);
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
-  font:14px/1.65 "Inter","Segoe UI","Microsoft YaHei",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  font:14.5px/1.65 "Inter","Segoe UI","Microsoft YaHei",system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
 a{color:var(--accent);text-decoration:none}
-button{font:inherit;cursor:pointer;border-radius:var(--r);border:1px solid var(--line2);
-  background:var(--card);color:var(--ink);padding:7px 14px;transition:.15s}
-button:hover{border-color:var(--accent);transform:translateY(-1px)}
-button.primary{background:linear-gradient(135deg,var(--accent),var(--accent2));border:0;color:#fff;font-weight:600}
-button.ghost{background:transparent}
-button.sm{padding:4px 10px;font-size:12.5px}
-input,select,textarea{font:inherit;background:#0b0e13;color:var(--ink);border:1px solid var(--line2);
-  border-radius:8px;padding:7px 10px;width:100%}
-textarea{resize:vertical;min-height:70px}
-.app{display:grid;grid-template-columns:248px 1fr;min-height:100vh}
+button{font:inherit;cursor:pointer;border-radius:10px;border:1px solid var(--line2);background:#fff;color:var(--ink);padding:8px 14px;transition:.15s}
+button:hover{border-color:#b9c2cf;background:#fbfcfe}
+button:disabled{opacity:.5;cursor:not-allowed}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;box-shadow:0 1px 2px rgba(47,107,255,.25)}
+button.primary:hover{background:#2559db;border-color:#2559db}
+button.ghost{background:transparent;border-color:transparent;color:var(--muted)}
+button.ghost:hover{background:#f0f2f5;color:var(--ink)}
+button.sm{padding:5px 11px;font-size:13px;border-radius:8px}
+button.danger{color:var(--err);border-color:#f0c4c4}
+button.danger:hover{background:#fdecec}
+input,select,textarea{font:inherit;background:#fff;color:var(--ink);border:1px solid var(--line2);border-radius:9px;padding:8px 11px;width:100%}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(47,107,255,.12)}
+textarea{resize:vertical;min-height:78px;line-height:1.7}
+
+.app{display:grid;grid-template-columns:236px 1fr;min-height:100vh}
 /* 侧栏 */
-.side{background:var(--bg2);border-right:1px solid var(--line);padding:16px 14px;position:sticky;top:0;height:100vh;overflow:auto}
-.brand{display:flex;align-items:center;gap:10px;margin-bottom:18px}
-.brand .dot{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,var(--accent),var(--accent2))}
-.brand b{font-size:15px;letter-spacing:.02em}
-.brand span{display:block;font-size:11px;color:var(--muted)}
-.nav{display:flex;flex-direction:column;gap:3px;margin:6px 0 16px}
-.nav button{text-align:left;background:transparent;border:0;padding:8px 10px;border-radius:8px;color:var(--muted)}
-.nav button.active{background:var(--card);color:var(--ink)}
-.nav button:hover{color:var(--ink);transform:none}
-.sidetitle{font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:var(--muted);margin:16px 0 8px}
+.side{background:var(--bg2);border-right:1px solid var(--line);padding:18px 14px;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{display:flex;align-items:center;gap:10px;margin-bottom:20px;padding:0 4px}
+.brand .dot{width:28px;height:28px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px}
+.brand b{font-size:15px}
+.brand span{display:block;font-size:11.5px;color:var(--muted)}
+.nav{display:flex;flex-direction:column;gap:2px;margin:6px 0 14px}
+.nav button{text-align:left;background:transparent;border:0;padding:9px 11px;border-radius:9px;color:var(--ink2);display:flex;align-items:center;gap:9px}
+.nav button.active{background:#eef3ff;color:var(--accent);font-weight:600}
+.nav button:hover{background:#f2f4f8;color:var(--ink)}
+.nav button.active:hover{background:#eef3ff}
+.nav .ic{width:16px;text-align:center;opacity:.85}
+.sidetitle{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);margin:18px 0 8px;padding:0 4px}
+.side-project{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:12.5px}
+.side-project b{display:block;font-size:13.5px;margin-bottom:2px}
 /* 主区 */
-.main{padding:22px 26px 60px;max-width:1180px}
-.head{display:flex;align-items:flex-end;gap:14px;margin-bottom:20px;flex-wrap:wrap}
-.head h1{font-size:22px;margin:0}
-.head .sub{color:var(--muted);font-size:13px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:var(--shadow);margin-bottom:16px}
-.card h2{font-size:15px;margin:0 0 12px;display:flex;align-items:center;gap:8px}
-.card h2 .step{font-size:11px;background:var(--bg2);border:1px solid var(--line2);border-radius:6px;padding:1px 7px;color:var(--muted)}
+.main{padding:24px 30px 70px;max-width:1200px}
+.head{display:flex;align-items:flex-end;gap:14px;margin-bottom:22px;flex-wrap:wrap}
+.head h1{font-size:22px;margin:0;font-weight:700}
+.head .sub{color:var(--muted);font-size:13px;margin-top:3px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:20px;box-shadow:var(--shadow);margin-bottom:16px}
+.card h2{font-size:15.5px;margin:0 0 4px;display:flex;align-items:center;gap:10px;font-weight:700}
+.card .h2sub{color:var(--muted);font-size:12.5px;font-weight:400;margin-bottom:14px}
+.step{font-size:11px;background:#eef3ff;color:var(--accent);border-radius:6px;padding:2px 8px;font-weight:700;letter-spacing:.02em}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .spacer{flex:1}
-.pill{font-size:11.5px;border:1px solid var(--line2);border-radius:999px;padding:2px 10px;color:var(--muted)}
-.pill.ok{color:var(--ok);border-color:var(--ok)}
-.pill.warn{color:var(--warn);border-color:var(--warn)}
-.pill.err{color:var(--err);border-color:var(--err)}
-.pill.stale{color:var(--stale);border-color:var(--stale)}
-.pill.run{color:var(--accent);border-color:var(--accent)}
-.switch{display:flex;align-items:center;gap:8px;background:var(--bg2);border:1px solid var(--line2);border-radius:999px;padding:5px 12px}
-.switch input{width:auto}
+label.fld{display:block;margin-bottom:4px;color:var(--ink2);font-size:12.5px;font-weight:500}
+/* 状态徽章 */
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;border-radius:999px;padding:2px 10px;background:#f1f3f6;color:var(--muted);white-space:nowrap}
+.pill.ok{background:var(--okbg);color:var(--ok)}
+.pill.warn{background:var(--warnbg);color:var(--warn)}
+.pill.err{background:var(--errbg);color:var(--err)}
+.pill.stale{background:var(--staleb);color:var(--stale)}
+.pill.run{background:var(--runbg);color:var(--run)}
+.pill.tag{background:#f0f2f5;color:var(--ink2);font-weight:500}
+.pill .dotm{width:6px;height:6px;border-radius:50%;background:currentColor}
+/* 阶段流程 */
+.flow{display:flex;flex-direction:column;gap:10px}
+.stage{display:grid;grid-template-columns:52px 1fr auto;gap:14px;align-items:center;border:1px solid var(--line);border-radius:12px;padding:12px 16px;background:#fff;transition:.15s}
+.stage:hover{border-color:var(--line2);box-shadow:var(--shadow)}
+.stage .idx{width:36px;height:36px;border-radius:10px;background:#eef3ff;color:var(--accent);font-weight:700;display:flex;align-items:center;justify-content:center;font-size:13px}
+.stage .nm{font-weight:600;font-size:14.5px}
+.stage .ds{color:var(--muted);font-size:12.5px;margin-top:1px}
+.stage .stat{display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+.stage .bar{height:5px;background:#eef1f5;border-radius:999px;overflow:hidden;margin-top:8px}
+.stage .bar>i{display:block;height:100%;background:var(--accent);width:0;transition:.3s}
+/* 表格 */
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line)}
+th{color:var(--muted);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.06em}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:#fafbfc}
 /* 项目列表 */
 .plist{display:grid;gap:8px}
-.pitem{display:flex;align-items:center;gap:12px;background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:10px 14px}
-.pitem:hover{border-color:var(--accent)}
-.pitem b{font-size:14px}
-.pitem .meta{color:var(--muted);font-size:12px}
-/* 表格 */
-table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
-th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.06em}
-tr:last-child td{border-bottom:0}
+.pitem{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:11px;padding:12px 15px;background:#fff;cursor:pointer;transition:.15s}
+.pitem:hover{border-color:var(--accent);box-shadow:var(--shadow)}
+.pitem.sel{border-color:var(--accent);background:#f7f9ff}
+.pitem b{font-size:14.5px}
+.pitem .meta{color:var(--muted);font-size:12.5px;margin-top:1px}
+.pitem .av{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#dbe6ff,#e9e2ff);display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--accent)}
 /* 作业 */
-.job{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px}
+.job{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-size:13px}
 .job:last-child{border-bottom:0}
-.bar{flex:1;height:6px;background:var(--bg2);border-radius:999px;overflow:hidden}
-.bar > i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));width:0}
-.empty{color:var(--muted);font-size:13px;padding:10px 0}
-pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;overflow:auto;max-height:280px}
+.job .bar{flex:1;height:6px;background:#eef1f5;border-radius:999px;overflow:hidden;min-width:60px}
+.job .bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));width:0;transition:.4s}
+.empty{color:var(--muted);font-size:13px;padding:14px;text-align:center;background:#fafbfc;border:1px dashed var(--line2);border-radius:10px}
+pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:12px;font-size:12.5px;overflow:auto;max-height:300px;margin:0;font-family:"JetBrains Mono",Consolas,monospace}
 .mut{color:var(--muted)}
-.candgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px}
-.cand{border:2px solid var(--line2);border-radius:10px;overflow:hidden;background:#0b0e13;cursor:pointer}
-.cand.sel{border-color:var(--ok)}
-.cand img{width:100%;display:block;aspect-ratio:3/4;object-fit:cover}
-.cand .lbl{font-size:11px;padding:4px 6px;color:var(--muted);display:flex;justify-content:space-between}
+/* 小说视图 */
+.novel{max-height:460px;overflow:auto;background:#fcfcfd;border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+.novel p{margin:0 0 14px;line-height:1.9;font-size:15px;color:#2b3644}
+.novel p:last-child{margin-bottom:0}
+.seg{border:1px solid var(--line);border-radius:11px;padding:14px 16px;background:#fff;margin-bottom:10px}
+.seg .segh{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.seg .txt{color:#2b3644;line-height:1.8;white-space:pre-wrap;font-size:14px;max-height:220px;overflow:auto}
+.seg .txt.clip{display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}
+/* 候选图 */
+.candgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+.cand{border:2px solid var(--line2);border-radius:10px;overflow:hidden;background:#fff;cursor:pointer;transition:.15s}
+.cand:hover{border-color:#b9c2cf}
+.cand.sel{border-color:var(--ok);box-shadow:0 0 0 3px var(--okbg)}
+.cand img{width:100%;display:block;aspect-ratio:3/4;object-fit:cover;background:#f1f3f6}
+.cand .lbl{font-size:11px;padding:5px 8px;color:var(--muted);display:flex;justify-content:space-between}
 .hidden{display:none}
-.toast{position:fixed;right:18px;bottom:18px;background:var(--card);border:1px solid var(--line2);border-left:3px solid var(--accent);
-  border-radius:10px;padding:10px 14px;box-shadow:var(--shadow);max-width:340px;font-size:13px;z-index:50}
+.thumb{width:120px;border:1px solid var(--line2);border-radius:8px;cursor:pointer;display:block;background:#fff}
+.modal{position:fixed;inset:0;background:rgba(16,24,40,.55);display:flex;align-items:center;justify-content:center;z-index:60;padding:24px}
+.modal .box{background:#fff;border-radius:14px;max-width:min(920px,94vw);max-height:92vh;overflow:auto;padding:20px;box-shadow:0 20px 60px -12px rgba(16,24,40,.4)}
+.modal .box h3{margin:0 0 12px;font-size:16px}
+.modal img{max-width:100%;display:block;border-radius:8px}
+.toast{position:fixed;right:20px;bottom:20px;background:#fff;border:1px solid var(--line2);border-left:4px solid var(--accent);
+  border-radius:11px;padding:12px 16px;box-shadow:0 12px 30px -10px rgba(16,24,40,.3);max-width:360px;font-size:13.5px;z-index:80}
 .toast.err{border-left-color:var(--err)}
 .toast.ok{border-left-color:var(--ok)}
+.switch{display:flex;align-items:center;gap:9px;background:#f8fafc;border:1px solid var(--line);border-radius:999px;padding:6px 14px}
+.switch input{width:auto}
+.divider{height:1px;background:var(--line);margin:16px 0}
+@media(max-width:820px){.app{grid-template-columns:1fr}.side{position:static;height:auto}.grid2,.grid3{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <div class="app">
   <aside class="side">
-    <div class="brand"><div class="dot"></div><div><b>AI 漫画生产线</b><span>大纲 → 成书</span></div></div>
+    <div class="brand"><div class="dot">漫</div><div><b>AI 漫画生产线</b><span>写小说 → 出漫画</span></div></div>
     <div class="nav">
-      <button data-tab="projects" class="active">项目</button>
-      <button data-tab="pipeline">流水线 S1–S7</button>
-      <button data-tab="workbench">出图工作台</button>
-      <button data-tab="candidates">候选图 / 审查</button>
-      <button data-tab="settings">设置</button>
+      <button data-tab="projects" class="active"><span class="ic">▦</span>项目</button>
+      <button data-tab="novel"><span class="ic">✎</span>正文</button>
+      <button data-tab="pipeline"><span class="ic">≡</span>流水线</button>
+      <button data-tab="images"><span class="ic">▤</span>出图</button>
+      <button data-tab="settings"><span class="ic">⚙</span>设置</button>
     </div>
     <div class="sidetitle">当前项目</div>
-    <div id="cur-proj" class="mut" style="font-size:12.5px">未选择</div>
+    <div class="side-project" id="cur-proj"><span class="mut">未选择</span></div>
     <div class="sidetitle">快捷入口</div>
     <div class="nav">
-      <button onclick="window.open('/editor/','_blank')">打开 MED 编辑器 ↗</button>
-      <button onclick="window.open('/ui/editor_bridge/index.html','_blank')">MED 桥自检 ↗</button>
-      <button onclick="window.open('http://localhost:8000','_blank')">酒馆 ↗</button>
+      <button onclick="window.open('/editor/','_blank')"><span class="ic">↗</span>MED 编辑器</button>
+      <button onclick="window.open('/ui/editor_bridge/index.html','_blank')"><span class="ic">↗</span>MED 桥自检</button>
+      <button onclick="window.open('http://localhost:8000','_blank')"><span class="ic">↗</span>酒馆</button>
     </div>
   </aside>
 
@@ -112,9 +158,9 @@ pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:10
       <div><h1 id="view-title">项目</h1><div class="sub" id="view-sub">选择或新建一部漫画</div></div>
       <div class="spacer"></div>
       <div class="pill" id="health">后端：检测中</div>
-      <div class="switch">
+      <div class="switch" title="开=所有审查门自动通过；关=到门停住等你人工审">
         <span class="mut" style="font-size:12.5px">全自动</span>
-        <input type="checkbox" id="automode" title="开=所有门自动通过；关=到门停住等人工审查">
+        <input type="checkbox" id="automode">
       </div>
     </div>
 
@@ -122,121 +168,126 @@ pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:10
     <section id="tab-projects">
       <div class="card">
         <h2>新建漫画</h2>
+        <div class="h2sub">只需写一段大纲；正文用酒馆生成，逐段审核。</div>
         <div class="grid2">
-          <div><label class="mut">标题</label><input id="np-title" placeholder="如：废墟上的机械少女"></div>
-          <div><label class="mut">目标页数（10–20）</label><input id="np-pages" type="number" value="16" min="1"></div>
+          <div><label class="fld">标题</label><input id="np-title" placeholder="如：废墟上的机械少女"></div>
+          <div><label class="fld">目标页数</label><input id="np-pages" type="number" value="16" min="1"></div>
         </div>
-        <div style="margin-top:10px"><label class="mut">故事大纲</label>
-          <textarea id="np-outline" placeholder="写几百字的大纲即可，AI 会扩写成漫画。"></textarea></div>
-        <div class="row" style="margin-top:10px"><button class="primary" id="btn-new">创建项目</button></div>
+        <div style="margin-top:12px"><label class="fld">故事大纲</label>
+          <textarea id="np-outline" placeholder="写几百字的大纲即可；酒馆会据此扩写成小说。"></textarea></div>
+        <div class="row" style="margin-top:12px"><button class="primary" id="btn-new">创建项目</button></div>
       </div>
-      <div class="card"><h2>我的项目</h2><div class="plist" id="plist"><div class="empty">还没有项目</div></div></div>
+      <div class="card"><h2>我的项目</h2><div class="h2sub">每个项目的流水线、正文、图库彼此隔离。</div>
+        <div class="plist" id="plist"><div class="empty">还没有项目</div></div></div>
+    </section>
+
+    <!-- 正文（小说） -->
+    <section id="tab-novel" class="hidden">
+      <div class="card">
+        <h2><span class="step">S1</span>正文 · 用酒馆写</h2>
+        <div class="h2sub">配好角色卡 / 世界书后，把任务发给酒馆；正文回传后你逐段审核，通过后继续写。</div>
+        <div class="grid2">
+          <div><label class="fld">写作/续写提示（可空）</label>
+            <input id="nv-instr" placeholder="如：突出机械少女的疏离感；或「接着写两人逃出封锁区」"></div>
+          <div style="display:flex;align-items:flex-end;gap:10px">
+            <button class="primary" id="nv-start">开始写作</button>
+            <button id="nv-continue">续写</button>
+            <span class="pill" id="nv-state">—</span>
+          </div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <span class="mut" style="font-size:12.5px">需酒馆标签页打开且扩展已启用；生成会走完整角色卡/世界书管线。</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>分段审核</h2>
+        <div class="h2sub">通过后该段即计入小说；有未通过分段时不能续写，避免把未审内容接上去。</div>
+        <div id="nv-segs"><div class="empty">还没有正文分段</div></div>
+      </div>
+
+      <div class="card">
+        <h2>小说全文</h2>
+        <div class="h2sub" id="nv-fullmeta">—</div>
+        <div class="novel" id="nv-full"><div class="empty">暂无全文</div></div>
+        <div class="row" style="margin-top:12px">
+          <button class="sm" id="nv-copy">复制全文</button>
+          <button class="sm" id="nv-export">导出 TXT</button>
+        </div>
+      </div>
     </section>
 
     <!-- 流水线 -->
     <section id="tab-pipeline" class="hidden">
       <div class="card">
-        <h2><span class="step">S1</span>结构规划 <span class="mut" style="font-size:12px;font-weight:400">大纲 → 章/场（含页预算）</span></h2>
-        <div class="row"><button class="primary" id="run-S1">运行 S1</button>
-          <button class="sm" id="gate-S1">查看产物</button><span class="pill" id="st-S1">未开始</span></div>
+        <h2>流水线</h2>
+        <div class="h2sub">当前项目的各阶段与中间产物；点「查看」可预览产物内容。</div>
+        <div class="flow" id="flow"><div class="empty">选择项目后显示</div></div>
       </div>
       <div class="card">
-        <h2><span class="step">S2</span>正文扩写 <span class="mut" style="font-size:12px;font-weight:400">经酒馆扩展桥，走角色卡/世界书</span></h2>
-        <div class="grid2">
-          <div><label class="mut">场 ID</label><input id="s2-scene" type="number" value="1"></div>
-          <div><label class="mut">引导词（可空）</label><input id="s2-instr" placeholder="如：这场要突出机械少女的疏离感"></div>
-        </div>
-        <div class="row" style="margin-top:10px"><button class="primary" id="run-S2">请求酒馆生成正文</button>
-          <span class="pill" id="st-S2">未开始</span>
-          <span class="mut" style="font-size:12px">需酒馆标签页打开、扩展启用</span></div>
-      </div>
-      <div class="card">
-        <h2><span class="step">S3</span>分页分格 <span class="mut" style="font-size:12px;font-weight:400">AI 按当页内容自选 69 模板之一</span></h2>
-        <div class="row"><label class="mut">场 ID</label><input id="s3-scene" type="number" value="1" style="width:80px">
-          <label class="mut">页预算</label><input id="s3-budget" type="number" value="3" style="width:80px">
-          <button class="primary" id="run-S3">运行 S3</button><span class="pill" id="st-S3">未开始</span></div>
-      </div>
-      <div class="card">
-        <h2><span class="step">S4</span>分镜提示词 <span class="mut" style="font-size:12px;font-weight:400">每格正/负向 + LoRA 绑定</span></h2>
-        <div class="row"><label class="mut">页 ref</label><input id="s4-page" placeholder="page:1" style="width:120px">
-          <button class="primary" id="run-S4">运行 S4</button><span class="pill" id="st-S4">未开始</span></div>
-      </div>
-      <div class="card">
-        <h2><span class="step">S5</span>逐格出图 &amp; <span class="step">S6</span>分页合成</h2>
-        <div class="row">
-          <label class="mut">格 ref</label><input id="s5-panel" placeholder="panel:1.1" style="width:130px">
-          <label class="mut">候选张数</label><input id="s5-count" type="number" value="4" min="1" max="8" style="width:70px">
-          <button class="primary" id="run-S5">出图</button>
-          <label class="mut">页 ref</label><input id="s6-page" placeholder="page:1" style="width:120px">
-          <button class="primary" id="run-S6">合成整页</button>
-        </div>
-        <div class="row" style="margin-top:8px"><span class="pill" id="st-S5">未开始</span><span class="pill" id="st-S6">未开始</span></div>
-      </div>
-      <div class="card">
-        <h2>作业进度 <span class="mut" style="font-size:12px;font-weight:400">（SSE 实时）</span></h2>
+        <h2>作业进度</h2>
+        <div class="h2sub">SSE 实时刷新</div>
         <div id="jobs"><div class="empty">暂无作业</div></div>
       </div>
     </section>
 
-    <!-- 出图工作台 -->
-    <section id="tab-workbench" class="hidden">
+    <!-- 出图 -->
+    <section id="tab-images" class="hidden">
       <div class="card">
-        <h2>出图工作台 <span class="mut" style="font-size:12px;font-weight:400">逐格改词 / 勾选 LoRA / 调批量张数 / 挑图</span></h2>
+        <h2>出图工作台</h2>
+        <div class="h2sub">逐格改提示词 / 勾选 LoRA / 调批量张数 / 挑图</div>
         <div class="row">
           <button class="sm" id="wb-reload">刷新格列表</button>
-          <label class="mut" style="font-size:12.5px">每格批量张数</label>
-          <input id="wb-count" type="number" value="4" min="1" max="8" style="width:70px">
-          <label class="mut" style="font-size:12.5px"><input type="checkbox" id="wb-all-first" checked style="width:auto"> 自动模式取首张</label>
-          <div class="spacer"></div>
+          <label class="fld" style="margin:0">每格批量张数</label>
+          <input id="wb-count" type="number" value="4" min="1" max="8" style="width:74px">
+          <span class="spacer"></span>
           <span class="pill" id="wb-info">—</span>
         </div>
-        <div id="wb-list" style="margin-top:14px"><div class="empty">点“刷新格列表”加载（需先跑 S3/S4）</div></div>
+        <div id="wb-list" style="margin-top:14px"><div class="empty">点「刷新格列表」加载（需先跑 S2/S3）</div></div>
       </div>
-    </section>
-
-    <!-- 候选图 -->
-    <section id="tab-candidates" class="hidden">
       <div class="card">
-        <h2>候选图与审查 <span class="mut" style="font-size:12px;font-weight:400">点选采用；自动模式下默认取首张</span></h2>
+        <h2>候选图与审查</h2>
+        <div class="h2sub">选类型后加载；点图放大，点「采用」选定</div>
         <div class="row"><button class="sm" id="reload-art">刷新产物</button>
-          <label class="mut" style="font-size:12.5px">类型</label>
-          <select id="art-kind" style="width:190px">
-            <option value="image">图像（S5 候选）</option>
-            <option value="page_script">分页脚本（S3）</option>
-            <option value="panel_prompt">提示词（S4）</option>
-            <option value="page_image">整页（S6）</option>
-            <option value="structure">结构（S1）</option>
-            <option value="prose">正文（S2）</option>
+          <select id="art-kind" style="width:200px">
+            <option value="image">候选图（S4）</option>
+            <option value="page_script">分页分格（S2）</option>
+            <option value="panel_prompt">提示词（S3）</option>
+            <option value="page_image">整页成图（S5）</option>
+            <option value="prose">正文分段（S1）</option>
           </select></div>
-        <div id="artbox" style="margin-top:12px"><div class="empty">点“刷新产物”加载</div></div>
+        <div id="artbox" style="margin-top:12px"><div class="empty">点「刷新产物」加载</div></div>
       </div>
     </section>
 
     <!-- 设置 -->
     <section id="tab-settings" class="hidden">
       <div class="card">
-        <h2>LLM 供应商 <span class="mut" style="font-size:12px;font-weight:400">任意 OpenAI 兼容，按阶段可选</span></h2>
+        <h2>LLM 供应商</h2>
+        <div class="h2sub">任意 OpenAI 兼容；按阶段可选</div>
         <div class="grid2">
-          <div><label class="mut">名称</label><input id="pv-name" placeholder="deepseek / dashscope / kimi …"></div>
-          <div><label class="mut">base_url</label><input id="pv-url" placeholder="https://api.deepseek.com/v1"></div>
-          <div><label class="mut">模型</label><input id="pv-model" placeholder="deepseek-chat"></div>
-          <div><label class="mut">api_key</label><input id="pv-key" type="password" placeholder="sk-..."></div>
+          <div><label class="fld">名称</label><input id="pv-name" placeholder="deepseek / dashscope / kimi …"></div>
+          <div><label class="fld">base_url</label><input id="pv-url" placeholder="https://api.deepseek.com/v1"></div>
+          <div><label class="fld">模型</label><input id="pv-model" placeholder="deepseek-chat"></div>
+          <div><label class="fld">api_key</label><input id="pv-key" type="password" placeholder="sk-..."></div>
         </div>
-        <div class="row" style="margin-top:10px"><button class="primary" id="btn-addpv">添加供应商</button>
+        <div class="row" style="margin-top:12px"><button class="primary" id="btn-addpv">添加供应商</button>
           <button class="sm" id="btn-reloadpv">刷新</button></div>
-        <div id="pvlist" style="margin-top:12px"><div class="empty">尚未配置</div></div>
+        <div id="pvlist" style="margin-top:14px"><div class="empty">尚未配置</div></div>
       </div>
       <div class="card">
         <h2>ComfyUI 与 LoRA</h2>
-        <div class="row"><label class="mut">后端</label>
-          <select id="cf-backend" style="width:150px"><option value="cloud">仙宫云（隧道）</option><option value="local">本机 ComfyUI</option></select>
-          <button class="sm" id="cf-assets">拉取 LoRA / checkpoint</button>
-          <button class="sm" id="cf-guess">自动映射工作流参数</button>
+        <div class="h2sub">拉取出图后端上的 LoRA / checkpoint，并自动映射工作流参数</div>
+        <div class="row"><label class="fld" style="margin:0">后端</label>
+          <select id="cf-backend" style="width:160px"><option value="cloud">仙宫云（隧道）</option><option value="local">本机 ComfyUI</option></select>
+          <button class="sm" id="cf-assets">拉取资产</button>
+          <button class="sm" id="cf-guess">自动映射工作流</button>
           <span class="pill" id="cf-state">—</span></div>
-        <div style="margin-top:10px"><pre id="cf-out" class="hidden"></pre></div>
+        <div style="margin-top:12px"><pre id="cf-out" class="hidden"></pre></div>
       </div>
       <div class="card">
         <h2>阶段 → 供应商绑定</h2>
+        <div class="h2sub">故事分格(S2) / 提示词(S3) 可各用不同模型</div>
         <div class="grid2" id="stagelist"></div>
       </div>
     </section>
