@@ -74,6 +74,7 @@ def novel_state(session: Session, project_id: int) -> dict:
                 "instruction": (a.payload or {}).get("instruction", ""),
                 "text": (a.payload or {}).get("text", ""),
                 "chars": len((a.payload or {}).get("text", "")),
+                "receipt": (a.payload or {}).get("receipt", {}),
                 "created_at": a.created_at.isoformat() if a.created_at else None,
             }
             for a in segs
@@ -92,8 +93,13 @@ def append_segment(
     mode: str = "start",
     instruction: str = "",
     status: str = ArtifactStatus.REVIEW.value,
+    receipt: dict | None = None,
 ) -> Artifact:
-    """把酒馆回传的一段正文追加为新的分段产物。"""
+    """把酒馆回传的一段正文追加为新的分段产物。
+
+    ``receipt`` 是本次生成的依据（角色卡 / 世界书 / 预设 / 模型），随正文一起存下来，
+    供前端「本次生成依据」展示与回看。
+    """
     idx = next_index(session, project_id)
     # 依赖上一段，形成血缘：改上一段 → 下一段标记需重跑复核
     segs = segments(session, project_id)
@@ -103,7 +109,12 @@ def append_segment(
         project_id=project_id,
         kind=ArtifactKind.PROSE.value,
         ref=f"seg:{idx}",
-        payload={"text": text, "mode": mode, "instruction": instruction},
+        payload={
+            "text": text,
+            "mode": mode,
+            "instruction": instruction,
+            "receipt": receipt or {},
+        },
         inputs=inputs,
         status=status,
     )

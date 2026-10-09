@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -104,7 +105,7 @@ def claim(session: Session = Depends(get_session)) -> dict:
 
 @router.post("/bridge/result")
 def result(body: dict, session: Session = Depends(get_session)) -> dict:
-    """扩展回传生成结果。body: {job_id, text}"""
+    """扩展回传生成结果。body: {job_id, text, receipt?}"""
     job_id = body.get("job_id")
     text = (body.get("text") or "").strip()
     job = session.get(Job, int(job_id)) if job_id else None
@@ -120,6 +121,7 @@ def result(body: dict, session: Session = Depends(get_session)) -> dict:
         mode=(job.payload or {}).get("mode", "start"),
         instruction=(job.payload or {}).get("instruction", ""),
         status="approved" if auto else "review",
+        receipt=body.get("receipt") or {},
     )
 
     job.status = JobStatus.DONE.value
@@ -127,6 +129,104 @@ def result(body: dict, session: Session = Depends(get_session)) -> dict:
     job.finished_at = datetime.now(timezone.utc)
     session.commit()
     return {"ok": True, "artifact_id": art.id, "ref": art.ref, "chars": len(text)}
+
+
+@router.post("/bridge/mirror")
+def push_mirror(body: dict, session: Session = Depends(get_session)) -> dict:
+    """扩展推送酒馆当前对话快照 + 生成依据。前端可见「你正用哪张卡/哪本世界书」。
+
+    body: {"context": {...}, "messages": [...], "receipt": {...}}
+    """
+    from ...models import TavernMirror
+
+    row = session.get(TavernMirror, 1)
+    if row is None:
+        row = TavernMirror(id=1)
+        session.add(row)
+    row.payload = {
+        "context": body.get("context") or {},
+        "messages": body.get("messages") or [],
+        "receipt": body.get("receipt") or {},
+    }
+    session.commit()
+    return {"ok": True, "messages": len(row.payload["messages"])}
+
+
+@router.get("/tavern/live")
+def tavern_live(session: Session = Depends(get_session)) -> dict:
+    """酒馆当前对话镜像（前端「酒馆对话」面板读取）。"""
+    from ...models import TavernMirror
+
+    row = session.get(TavernMirror, 1)
+    if row is None:
+        return {"available": False, "messages": [], "context": {}, "receipt": {}, "updated_at": None}
+    p = row.payload or {}
+    return {
+        "available": True,
+        "context": p.get("context") or {},
+        "messages": p.get("messages") or [],
+        "receipt": p.get("receipt") or {},
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+@router.get("/tavern/events")
+async def tavern_events() -> StreamingResponse:
+    """SSE：酒馆镜像有变化就推送一次（前端「酒馆对话」实时刷新）。"""
+    import asyncio
+    import json
+
+    from fastapi.responses import StreamingResponse
+
+    from ...db import SessionLocal
+    from ...models import TavernMirror
+
+    async def gen():
+        last = ""
+        while True:
+            session = SessionLocal()
+            try:
+                row = session.get(TavernMirror, 1)
+                snap = {
+                    "available": row is not None,
+                    "context": (row.payload or {}).get("context") if row else {},
+                    "messages": (row.payload or {}).get("messages") if row else [],
+                    "receipt": (row.payload or {}).get("receipt") if row else {},
+                    "updated_at": row.updated_at.isoformat() if (row and row.updated_at) else None,
+                }
+                text = json.dumps(snap, ensure_ascii=False)
+            finally:
+                session.close()
+            if text != last:
+                last = text
+                yield f"data: {text}\n\n"
+            else:
+                yield ": keep-alive\n\n"
+            await asyncio.sleep(1.5)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@router.post("/projects/{project_id}/tavern/send")
+def tavern_send(project_id: int, body: dict, session: Session = Depends(get_session)) -> dict:
+    """从我们前端直接给酒馆发一条消息并触发生成（无需切回酒馆窗口）。
+
+    body: {"text": "..."}  —— 原文发送；生成的回复会作为本项目的正文分段保存。
+    """
+    p = session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(404, "项目不存在")
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "消息不能为空")
+
+    job = jobq.enqueue_deferred(
+        KIND,
+        project_id=project_id,
+        stage="S1",
+        payload={"project_id": project_id, "mode": "raw", "instruction": text, "context_tail": ""},
+    )
+    return {"job_id": job.id, "status": job.status}
 
 
 @router.get("/projects/{project_id}/novel")

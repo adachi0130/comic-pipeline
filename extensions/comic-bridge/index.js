@@ -1,83 +1,191 @@
 /**
- * comic-bridge —— 让外部自研后端驱动酒馆生成故事正文。
+ * comic-bridge —— 让自研后端驱动酒馆写作，并把「酒馆对话」镜像回后端。
  *
  * 为什么是前端扩展：已核实 SillyTavern 1.13.3 的 server plugin 只拿到一个 Express router，
- * 接触不到生成大脑——角色卡格式化、世界书激活与预算、Prompt Manager 组装全在浏览器端。
- * 所以必须把扩展跑在酒馆页面里，通过 SillyTavern.getContext() 调原生生成。
+ * 接触不到生成大脑——角色卡格式化、世界书激活、Prompt Manager 组装全在浏览器端。
  *
- * 数据流：
- *   后端入队 → 本扩展轮询 /api/bridge/tasks/claim 领取 → 酒馆原生生成（完整管线） →
- *   监听 GENERATION_ENDED 抓新段落 → POST /api/bridge/result 回传 → 后端置「待审」。
+ * 功能：
+ * 1) 轮询后端任务，领取后调用酒馆原生管线生成（完整角色卡 + 世界书 + 预设）；
+ * 2) 生成时收集「生成依据」（角色卡名/世界书名/激活条目标题/预设名/模型），随正文回传；
+ * 3) 定期把当前对话镜像（消息列表 + 当前角色）推给后端，前端可直接看酒馆对话、直接发消息。
  *
- * 免构建：直接用 ES module，import 酒馆自己的模块。
+ * 免构建：ES module。第三方扩展在 /scripts/extensions/third-party/<name>/，故相对路径多退一级。
  */
 
-// 第三方扩展位于 /scripts/extensions/third-party/<name>/，比内置扩展深一层，
-// 故相对路径要多退一级：script.js 在站点根，extensions.js 在 /scripts/。
 import { getContext } from '../../../../scripts/extensions.js';
-import { eventSource, event_types } from '../../../../script.js';
+import { eventSource, event_types, sendMessageAsUser } from '../../../../script.js';
 
 const DEFAULT_BACKEND = 'http://127.0.0.1:8770';
 const POLL_INTERVAL_MS = 3000;
+const MIRROR_INTERVAL_MS = 2500;
+const MIRROR_MAX_MESSAGES = 200;
 
 let polling = false;
 let currentTask = null;
 let backendUrl = DEFAULT_BACKEND;
-// 记录本次任务开始前的聊天长度，用于识别“新生成的那条”
 let chatLenBefore = 0;
+// 本次生成的依据（由事件填充）
+let currentReceipt = {};
 
 function getSettings() {
   const ctx = getContext();
   ctx.extensionSettings.comicBridge ??= { enabled: false, backend: DEFAULT_BACKEND };
   return ctx.extensionSettings.comicBridge;
 }
-
-function saveSettings() {
-  getContext().saveSettingsDebounced();
-}
+function saveSettings() { getContext().saveSettingsDebounced(); }
 
 async function api(path, opts = {}) {
-  const res = await fetch(backendUrl + path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
+  const res = await fetch(backendUrl + path, { headers: { 'Content-Type': 'application/json' }, ...opts });
   if (!res.ok) throw new Error(`${path} -> HTTP ${res.status}`);
   return res.json();
 }
 
-/** 领取一个待办任务；没有返回 null。 */
+// ---------------- 生成依据收集 ----------------
+/**
+ * 读取“名字级”生成依据。刻意只取稳定字段，保证直观可靠：
+ * - 角色卡名：优先 name2（酒馆当前角色名），回退 characters[characterId].name
+ * - 世界书名：角色卡绑定的世界书（data.extensions.world / character_book.name）
+ * - 预设名：getPresetManager().getSelectedPresetName()
+ * - 模型 / 供应商：chatCompletionSettings
+ * 世界书“激活了几条”由 WORLD_INFO_ACTIVATED 事件补充（可能为 0，属正常）。
+ */
+function collectStaticReceipt() {
+  const ctx = getContext();
+  const receipt = { at: new Date().toISOString() };
+  try {
+    let ch = null;
+    if (ctx.characterId !== null && ctx.characterId !== undefined) {
+      ch = (ctx.characters || [])[ctx.characterId] || null;
+    }
+    receipt.character_name = (ch && ch.name) || ctx.name2 || '';
+    receipt.character_avatar = ch?.avatar || '';
+    // 角色卡绑定的世界书
+    const world = ch?.data?.extensions?.world || ch?.data?.character_book?.name || '';
+    receipt.world_books = world ? [world] : [];
+  } catch (e) { /* 忽略 */ }
+  try {
+    const pm = ctx.getPresetManager?.();
+    if (pm?.getSelectedPresetName) receipt.preset_name = pm.getSelectedPresetName() || '';
+  } catch (e) { /* 忽略 */ }
+  try {
+    const s = ctx.chatCompletionSettings;
+    if (s?.chat_completion_source) receipt.api = s.chat_completion_source;
+    receipt.model = s?.custom_model || s?.openai_model || '';
+  } catch (e) { /* 忽略 */ }
+  return receipt;
+}
+
+/** 世界书激活事件：补充“激活了几条 / 哪些条目”。 */
+function attachReceiptListeners() {
+  eventSource.on(event_types.WORLD_INFO_ACTIVATED, (entries) => {
+    if (!currentTask || !Array.isArray(entries)) return;
+    const books = new Set(currentReceipt.world_books || []);
+    const titles = [];
+    for (const e of entries) {
+      if (e?.world) books.add(e.world);
+      const t = e?.comment || (Array.isArray(e?.key) ? e.key[0] : '') || '';
+      const s = String(t).trim();
+      if (s && !/^\d+$/.test(s)) titles.push(s);
+    }
+    currentReceipt.world_books = [...books];
+    currentReceipt.world_entries = titles.slice(0, 30);
+    currentReceipt.world_count = entries.length;
+  });
+
+  // 组合后的最终 prompt：只记字数与指纹，避免把大段隐私文本传出去
+  const onCombined = (data) => {
+    if (!currentTask) return;
+    try {
+      const msgs = data?.chat ?? data?.prompt ?? [];
+      const text = Array.isArray(msgs)
+        ? msgs.map((m) => (typeof m === 'string' ? m : m?.content || '')).join('\n')
+        : String(msgs || '');
+      currentReceipt.prompt_chars = text.length;
+      currentReceipt.prompt_hash = simpleHash(text);
+    } catch (e) { /* 忽略 */ }
+  };
+  eventSource.on(event_types.GENERATE_AFTER_COMBINE_PROMPTS, onCombined);
+  eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, onCombined);
+}
+
+function simpleHash(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return h.toString(16);
+}
+
+// ---------------- 对话镜像 ----------------
+function snapshotMessages() {
+  const ctx = getContext();
+  const chat = ctx.chat || [];
+  return chat.slice(-MIRROR_MAX_MESSAGES).map((m) => ({
+    name: m.name || '',
+    is_user: !!m.is_user,
+    is_system: !!m.is_system,
+    mes: m.mes || '',
+    send_date: m.send_date || '',
+  }));
+}
+
+function snapshotContext() {
+  const ctx = getContext();
+  const ch = ctx.characters?.[ctx.characterId];
+  return {
+    character_name: ch?.name || '',
+    character_avatar: ch?.avatar || '',
+    chat_id: ctx.chatId || '',
+    message_count: (ctx.chat || []).length,
+    characters: (ctx.characters || []).map((c) => c.name).filter(Boolean),
+  };
+}
+
+async function pushMirror() {
+  if (!getSettings().enabled) return;
+  try {
+    await api('/api/bridge/mirror', {
+      method: 'POST',
+      body: JSON.stringify({ context: snapshotContext(), messages: snapshotMessages(), receipt: currentReceipt }),
+    });
+  } catch (e) { /* 后端没开时静默 */ }
+}
+
+// ---------------- 任务执行 ----------------
 async function claimTask() {
   const data = await api('/api/bridge/tasks/claim');
   return data.task || null;
 }
 
-/**
- * 执行一个任务：把引导词注入当前角色对话并触发生成。
- * 走完整管线：角色卡 + 世界书 + 预设 + Prompt Manager。
- *
- * mode='start'：用引导词（或大纲）作为用户消息开始写。
- * mode='continue'：把“续写提示 + 已有小说尾部”作为用户消息，让酒馆接着往下写。
- */
 async function runTask(task) {
   const ctx = getContext();
   currentTask = task;
+  currentReceipt = collectStaticReceipt();
   chatLenBefore = ctx.chat.length;
 
   const mode = task.mode || 'start';
   let message;
-  if (mode === 'continue') {
+  if (mode === 'raw') {
+    // 前端直接发来的原话，照原样发给酒馆
+    message = task.instruction || '';
+  } else if (mode === 'continue') {
     const hint = task.instruction || '请自然地接着往下写，保持文风与人称一致。';
     const tail = task.context_tail || '';
     message = tail
-      ? `【续写】以下是已写好的前文结尾（仅供你衔接，不要重复它）：\n……${tail}\n\n续写要求：${hint}`
+      ? `【续写】以下是已写好的前文结尾（仅供衔接，不要重复）：\n……${tail}\n\n续写要求：${hint}`
       : `【续写】${hint}`;
   } else {
     const base = task.instruction ? `写作要求：${task.instruction}` : '请根据设定开始写作。';
     message = task.outline ? `故事大纲：${task.outline}\n\n${base}` : base;
   }
 
-  const quoted = message.replace(/"/g, '\\"').replace(/\n/g, '\\n');
-  await ctx.executeSlashCommandsWithOptions(`/send ${quoted}`);
+  // 程序化发送（不用斜杠命令，避免转义问题），然后触发生成
+  try {
+    await sendMessageAsUser(message);
+  } catch (e) {
+    // 兜底：退回斜杠命令
+    const quoted = message.replace(/"/g, '\\"').replace(/\n/g, '\\n');
+    await ctx.executeSlashCommandsWithOptions(`/send ${quoted}`);
+  }
+  pushMirror(); // 让前端尽快看到“我们发出去的那条”
   await ctx.executeSlashCommandsWithOptions('/trigger await=true');
 
   if (currentTask === task) {
@@ -85,12 +193,10 @@ async function runTask(task) {
   }
 }
 
-/** 取本次任务新生成的助手消息文本。 */
 function extractNewText() {
   const ctx = getContext();
   const added = ctx.chat.slice(chatLenBefore);
-  const assistant = added.filter((m) => m.is_user === false);
-  return assistant.map((m) => m.mes || '').join('\n\n').trim();
+  return added.filter((m) => m.is_user === false).map((m) => m.mes || '').join('\n\n').trim();
 }
 
 async function reportResult(task, text) {
@@ -99,22 +205,21 @@ async function reportResult(task, text) {
   try {
     await api('/api/bridge/result', {
       method: 'POST',
-      body: JSON.stringify({ job_id: task.job_id, scene_id: task.scene_id, text }),
+      body: JSON.stringify({ job_id: task.job_id, text, receipt: currentReceipt }),
     });
     toastr?.success?.('漫画桥：正文已回传后端');
   } catch (e) {
     console.error('[comic-bridge] 回传失败', e);
     toastr?.error?.(`漫画桥：回传失败 ${e.message}`);
   }
+  pushMirror();
 }
 
+// ---------------- 循环 ----------------
 async function tick() {
   if (!polling) return;
   const s = getSettings();
-  if (!s.enabled || currentTask) {
-    setTimeout(tick, POLL_INTERVAL_MS);
-    return;
-  }
+  if (!s.enabled || currentTask) { setTimeout(tick, POLL_INTERVAL_MS); return; }
   try {
     const task = await claimTask();
     if (task) {
@@ -122,34 +227,31 @@ async function tick() {
       await runTask(task);
     }
   } catch (e) {
-    // 后端没开时静默重试
     console.debug('[comic-bridge]', e.message);
   }
   setTimeout(tick, POLL_INTERVAL_MS);
 }
 
-function startPolling() {
-  if (polling) return;
-  polling = true;
-  tick();
+async function mirrorTick() {
+  if (polling) { await pushMirror(); }
+  setTimeout(mirrorTick, MIRROR_INTERVAL_MS);
 }
 
-function stopPolling() {
-  polling = false;
-}
+function start() { if (!polling) { polling = true; tick(); mirrorTick(); } }
+function stop() { polling = false; }
 
-// 生成结束时抓文本回传
-eventSource.on(event_types.GENERATION_ENDED, async () => {
+// 生成结束时兜底回传
+eventSource.on(event_types.GENERATION_ENDED, () => {
   if (!currentTask) return;
   const task = currentTask;
-  // 稍等一拍，等消息写入 chat
   setTimeout(() => reportResult(task, extractNewText()), 300);
 });
 
-// ---------- UI ----------
+// ---------------- UI ----------------
 jQuery(async () => {
   const s = getSettings();
   backendUrl = s.backend || DEFAULT_BACKEND;
+  attachReceiptListeners();
 
   const html = `
   <div class="comic-bridge-settings">
@@ -164,26 +266,23 @@ jQuery(async () => {
         </label>
         <label class="checkbox_label">
           <input id="cb-enabled" type="checkbox" ${s.enabled ? 'checked' : ''}>
-          <span>启用轮询（领取并生成正文任务）</span>
+          <span>启用（领取写作任务 + 推送对话镜像）</span>
         </label>
-        <div class="cb-hint">启用后需保持本标签页打开；生成会走完整角色卡/世界书/预设管线。</div>
+        <div class="cb-hint">启用后保持本标签页打开；生成走完整角色卡/世界书/预设管线。</div>
       </div>
     </div>
   </div>`;
 
   jQuery('#extensions_settings2').append(html);
-
   jQuery('#cb-backend').on('input', function () {
     backendUrl = String(this.value || DEFAULT_BACKEND).trim();
-    getSettings().backend = backendUrl;
-    saveSettings();
+    getSettings().backend = backendUrl; saveSettings();
   });
   jQuery('#cb-enabled').on('change', function () {
-    getSettings().enabled = this.checked;
-    saveSettings();
-    this.checked ? startPolling() : stopPolling();
+    getSettings().enabled = this.checked; saveSettings();
+    if (this.checked) { start(); pushMirror(); } else { stop(); }
   });
 
-  if (s.enabled) startPolling();
+  if (s.enabled) start();
   console.log('[comic-bridge] 已加载，后端 =', backendUrl);
 });
