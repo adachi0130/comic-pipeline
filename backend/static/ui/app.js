@@ -1113,15 +1113,29 @@ function renderJobs(jobs) {
 
 // ---------- 出图工作台 ----------
 $('#wb-reload').addEventListener('click', loadWorkbench);
+$('#wb-comfy').addEventListener('click', openComfySettings);
 
 async function loadWorkbench() {
-  if (!state.projectId) { $('#wb-list').innerHTML = '<div class="empty">请先选择项目</div>'; return; }
+  if (!state.projectId) {
+    $('#wb-list').innerHTML = '<div class="card"><div class="empty">请先选择项目</div></div>';
+    $('#wb-pages').innerHTML = '<div class="empty">请先选择项目</div>';
+    $('#wb-info').textContent = '—';
+    return;
+  }
   const box = $('#wb-list');
   try {
+    // 1) 先渲染 S2 分格产物（出图的依据），让主人直观看到分出来的版式和格子
+    await renderWorkbenchPages();
+
+    // 2) 再渲染逐格提示词出图卡片
     const prompts = await api(`/api/projects/${state.projectId}/artifacts?kind=panel_prompt`);
-    if (!prompts.length) { box.innerHTML = '<div class="empty">还没有提示词产物（先跑 S2 分页分格、S3 提示词）</div>'; $('#wb-info').textContent = '0 格'; return; }
+    if (!prompts.length) {
+      box.innerHTML = '<div class="card"><div class="empty">还没有提示词产物（先跑 S2 分页分格、S3 提示词）</div></div>';
+      $('#wb-info').textContent = '0 格';
+      return;
+    }
     let loraOpts = [];
-    try { const r = await api('/api/comfy/assets?backend=cloud'); loraOpts = r.loras || []; } catch { /* ComfyUI 未启动 */ }
+    try { const r = await api('/api/comfy/assets'); loraOpts = r.loras || []; } catch { /* ComfyUI 未启动 */ }
 
     box.innerHTML = prompts.map((p) => {
       const pl = p.payload || {}; const l0 = (pl.loras || [])[0] || {};
@@ -1143,6 +1157,7 @@ async function loadWorkbench() {
         </div>
         <div class="wb-cands" style="margin-top:12px"></div></div>`;
     }).join('');
+    const old = document.getElementById('lora-list'); if (old) old.remove();
     const dl = document.createElement('datalist'); dl.id = 'lora-list';
     dl.innerHTML = loraOpts.map((l) => `<option value="${esc(l)}">`).join('');
     document.body.appendChild(dl);
@@ -1151,6 +1166,56 @@ async function loadWorkbench() {
     for (const p of prompts) await renderWbCands(p);
   } catch (e) { toast(e.message, 'err'); }
 }
+
+/** 渲染 S2 分格产物：每页一张卡（真版式缩略图 + 每格摘要 + 出图进度）。 */
+async function renderWorkbenchPages() {
+  const box = $('#wb-pages');
+  const d = await api(`/api/projects/${state.projectId}/pages`);
+  const pages = d.pages || [];
+  $('#wb-pages-info').textContent = `${pages.length} 页 · 目标 ${d.target_pages} 页`;
+  if (!pages.length) {
+    box.innerHTML = '<div class="empty">还没有分好的页。去「分格」页加一页或让 AI 选版式。</div>';
+    return;
+  }
+  // 每页已有候选图数量（按 ref 前缀 panel:page. → 不好统计，改用 S3 提示词数）
+  box.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">
+    ${pages.map((p) => `
+      <div class="mini-card" style="padding:12px" data-wbpage="${esc(p.page_ref)}">
+        <div class="row" style="gap:8px">
+          <div class="tplthumb-sm" title="${esc(p.template_id || '')}">
+            ${p.template_id ? `<img src="/api/templates/${encodeURIComponent(p.template_id)}/svg" alt="">` : ''}
+          </div>
+          <div>
+            <div class="row" style="gap:6px"><b>${esc(p.page_ref)}</b> ${pill(p.status)}
+              <span class="pill tag">${p.panels.length} 格</span></div>
+            <div class="mut" style="font-size:11.5px">${esc(p.template_id || '')}</div>
+            <div class="mut" style="font-size:11.5px" data-tpldesc="${esc(p.page_ref)}"></div>
+          </div>
+          <div class="spacer"></div>
+          <button class="sm" data-wbpick="${esc(p.page_ref)}">看这页候选图</button>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:6px;margin-top:10px">
+          ${p.panels.map((x) => `<div class="mini-card" style="padding:6px 8px">
+            <div class="mut" style="font-size:11px">第 ${x.panel_order} 格 · ${esc(x.shot || '')}</div>
+            <div style="font-size:11.5px;margin-top:2px">${esc((x.action || x.scene_desc || '（空）').slice(0, 24))}</div>
+          </div>`).join('')}
+        </div>
+      </div>`).join('')}
+  </div>`;
+  // 补齐版式文字描述
+  for (const p of pages) {
+    const el = box.querySelector(`[data-tpldesc="${CSS.escape(p.page_ref)}"]`);
+    if (!el || !p.template_id) continue;
+    const t = (d.templates || []).find((x) => x.id === p.template_id);
+    if (t) el.textContent = t.layout_desc || '';
+  }
+  box.querySelectorAll('[data-wbpick]').forEach((b) => b.addEventListener('click', () => {
+    const el = document.querySelector(`#wb-list .card[data-ref^="${CSS.escape(b.dataset.wbpick.replace('page:', 'panel:'))}"]`);
+    if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.style.boxShadow = '0 0 0 3px var(--accent)'; setTimeout(() => { el.style.boxShadow = ''; }, 1400); }
+    else toast('这页还没有对应的分镜提示词（先跑 S3）');
+  }));
+}
+
 
 function bindWorkbench(prompts) {
   $$('#wb-list .card').forEach((card) => {
@@ -1315,16 +1380,234 @@ $('#cf-assets').addEventListener('click', async () => {
   try {
     const r = await api('/api/comfy/assets?backend=' + $('#cf-backend').value);
     $('#cf-out').classList.remove('hidden');
-    $('#cf-out').textContent = JSON.stringify({ loras: r.loras, checkpoints: r.checkpoints }, null, 2);
+    $('#cf-out').textContent = JSON.stringify({ url: r.url, loras: r.loras, checkpoints: r.checkpoints }, null, 2);
     $('#cf-state').className = 'pill ok'; $('#cf-state').innerHTML = `<i class="dotm"></i>LoRA ${r.loras.length} · ckpt ${r.checkpoints.length}`;
   } catch (e) { $('#cf-state').className = 'pill err'; $('#cf-state').innerHTML = '<i class="dotm"></i>失败'; toast(e.message, 'err'); }
 });
-$('#cf-guess').addEventListener('click', async () => {
-  try { const r = await api('/api/comfy/mapping/guess', { method: 'POST' });
-    $('#cf-out').classList.remove('hidden'); $('#cf-out').textContent = JSON.stringify(r, null, 2);
-    toast('工作流参数已自动映射', 'ok'); }
-  catch (e) { toast(e.message, 'err'); }
-});
+$('#cf-open').addEventListener('click', openComfySettings);
+
+// ---------- 出图设置（仙宫云 + 工作流 + 参数 + LoRA + 试跑）----------
+async function openComfySettings() {
+  let cfg, wfs;
+  try {
+    [cfg, wfs] = await Promise.all([api('/api/comfy/config'), api('/api/comfy/workflows')]);
+  } catch (e) { return toast(e.message, 'err'); }
+  const wp = (cfg.default_params || {});
+
+  const box = document.createElement('div');
+  box.className = 'modal';
+  box.innerHTML = `<div class="box" style="width:min(980px,95vw)">
+    <h3>出图设置 <span class="mut" style="font-size:12px;font-weight:400">仙宫云连接 · 工作流 · 参数 · LoRA</span></h3>
+
+    <div class="divider"></div>
+    <div><b>① 连接</b>
+      <span class="mut" style="font-size:12px">　用哪台出图后端</span></div>
+    <div class="row" style="margin-top:8px">
+      <label class="fld" style="margin:0">后端</label>
+      <select id="cs-backend" style="width:150px">
+        <option value="cloud" ${cfg.backend === 'cloud' ? 'selected' : ''}>仙宫云</option>
+        <option value="local" ${cfg.backend === 'local' ? 'selected' : ''}>本机 ComfyUI</option>
+      </select>
+      <span class="pill" id="cs-cloud-pill"><i class="dotm"></i>仙宫云 …</span>
+      <span class="pill" id="cs-local-pill"><i class="dotm"></i>本机 …</span>
+    </div>
+    <div class="grid2" style="margin-top:8px">
+      <div><label class="fld">仙宫云地址（ComfyUI 的网址）</label>
+        <input id="cs-cloud" placeholder="https://xxxx.xiangongyun.com" value="${esc(cfg.cloud_url || '')}"></div>
+      <div><label class="fld">API Key（需要鉴权才填；留空=不改）</label>
+        <input id="cs-key" type="password" placeholder="${cfg.has_api_key ? '已保存（留空不改）' : '通常不需要'}" value=""></div>
+      <div><label class="fld">本机 ComfyUI 地址（备用调试）</label>
+        <input id="cs-local" value="${esc(cfg.local_url || '')}"></div>
+      <div></div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="sm" id="cs-save-conn">保存连接</button>
+      <button class="sm" id="cs-ping">测试连通</button>
+      <span class="mut" id="cs-conn-msg" style="font-size:12px"></span>
+    </div>
+
+    <div class="divider"></div>
+    <div><b>② 工作流</b>
+      <span class="mut" style="font-size:12px">　选一个作为出图流程（API 格式；UI 格式会自动转）</span></div>
+    <div class="row" style="margin-top:8px">
+      <select id="cs-wf" style="min-width:280px">
+        ${(cfg.workflows || []).length
+          ? (cfg.workflows || []).map((n) => `<option value="${esc(n)}" ${n === cfg.workflow_name ? 'selected' : ''}>${esc(n)}${n === cfg.workflow_name ? '（当前）' : ''}</option>`).join('')
+          : '<option value="">（还没有工作流，先导入）</option>'}
+      </select>
+      <button class="sm primary" id="cs-wf-use">设为当前</button>
+      <button class="sm" id="cs-wf-guess">自动映射参数</button>
+      <button class="sm" id="cs-wf-del">删除</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input id="cs-wf-name" placeholder="新工作流名字，如 anima_t2i" style="min-width:200px">
+      <label class="fld" style="margin:0;display:inline-flex;align-items:center;gap:6px">
+        <input type="file" id="cs-wf-file" accept=".json,.txt" style="width:auto"> 选文件</label>
+      <button class="sm" id="cs-wf-import">导入</button>
+    </div>
+    <div class="mut" style="font-size:12px;margin-top:4px">也支持粘贴：直接在下框贴完整 JSON 再点导入。</div>
+    <textarea id="cs-wf-json" placeholder='{"3":{"class_type":"KSampler",...}} 或 ComfyUI 的 UI 格式 JSON'
+      style="min-height:70px;font-family:ui-monospace,Consolas,monospace;font-size:12px;margin-top:6px"></textarea>
+    <div id="cs-wf-info" class="mut" style="font-size:12px;margin-top:6px"></div>
+
+    <div class="divider"></div>
+    <div><b>③ 参数</b>
+      <span class="mut" style="font-size:12px">　映射表（哪个参数写到工作流哪个节点）；一般「自动映射」就够了</span></div>
+    <div class="grid2" style="margin-top:8px">
+      <div><label class="fld">步数 steps</label><input id="cs-steps" type="number" value="${wp.steps ?? 26}"></div>
+      <div><label class="fld">CFG</label><input id="cs-cfg" type="number" step="0.5" value="${wp.cfg ?? 6}"></div>
+      <div><label class="fld">采样器 sampler</label><input id="cs-sampler" value="${esc(wp.sampler || 'euler')}"></div>
+      <div><label class="fld">scheduler</label><input id="cs-sched" value="${esc(wp.scheduler || 'karras')}"></div>
+      <div><label class="fld">宽 width</label><input id="cs-w" type="number" value="${wp.width ?? 832}"></div>
+      <div><label class="fld">高 height</label><input id="cs-h" type="number" value="${wp.height ?? 1216}"></div>
+      <div><label class="fld">checkpoint（可留空用工作流里的）</label><input id="cs-ckpt" value="${esc(wp.ckpt_name || '')}"></div>
+      <div><label class="fld">出图后端 LoRA 列表（拉取后可选）</label>
+        <select id="cs-lora-list"><option value="">（点右侧拉取）</option></select></div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="sm" id="cs-save-params">保存参数</button>
+      <button class="sm" id="cs-pull-loras">拉取 LoRA 列表</button>
+      <span class="mut" id="cs-params-msg" style="font-size:12px"></span>
+    </div>
+    <pre id="cs-mapping" class="mut" style="font-size:11px;max-height:150px;overflow:auto;margin-top:8px"></pre>
+
+    <div class="divider"></div>
+    <div><b>④ 试跑一张</b>
+      <span class="mut" style="font-size:12px">　验证连接+工作流+参数+LoRA 是否通（会真的出 1 张图）</span></div>
+    <div class="grid2" style="margin-top:8px">
+      <div><label class="fld">正向提示词</label>
+        <textarea id="cs-t-pos" style="min-height:60px">1girl, solo, masterpiece, best quality</textarea></div>
+      <div><label class="fld">负向提示词</label>
+        <textarea id="cs-t-neg" style="min-height:60px">worst quality, low quality</textarea></div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="sm primary" id="cs-test">试跑</button>
+      <span class="mut" id="cs-test-msg" style="font-size:12px"></span>
+    </div>
+    <div id="cs-test-out" style="margin-top:10px"></div>
+
+    <div class="row" style="margin-top:16px"><div class="spacer"></div>
+      <button class="sm" data-close>关闭</button></div>
+  </div>`;
+  document.body.appendChild(box);
+  box.querySelector('[data-close]').addEventListener('click', () => box.remove());
+  box.addEventListener('click', (e) => { if (e.target === box) box.remove(); });
+
+  // 连通状态异步补上（探测后端比较慢，不阻塞弹窗出现）
+  api('/api/comfy/status').then((st) => {
+    const setPill = (sel, ok, label) => {
+      const el = box.querySelector(sel); if (!el) return;
+      el.className = 'pill ' + (ok ? 'ok' : 'err');
+      el.innerHTML = `<i class="dotm"></i>${label} ${ok ? '在线' : '未连上'}`;
+    };
+    setPill('#cs-cloud-pill', !!(st.cloud && st.cloud.reachable), '仙宫云');
+    setPill('#cs-local-pill', !!(st.local && st.local.reachable), '本机');
+  }).catch(() => {});
+
+  const wfInfo = () => {
+    const name = $('#cs-wf').value;
+    const item = (wfs.workflows || []).find((x) => x.name === name);
+    $('#cs-wf-info').innerHTML = item
+      ? `节点 ${item.node_count} 个 · ${item.api_format ? 'API 格式' : '非 API 格式'} · 提示词占位符 ${item.prompt_placeholder || '无（按字段映射）'} · LoRA 方式 ${esc(item.lora_mode || '无')}`
+      : '';
+    return name;
+  };
+  const loadMapping = async (name) => {
+    if (!name) { $('#cs-mapping').textContent = ''; return; }
+    try { const m = await api(`/api/comfy/workflows/${encodeURIComponent(name)}/mapping`);
+      $('#cs-mapping').textContent = '参数映射：' + JSON.stringify(m.bindings || {}, null, 0); }
+    catch { $('#cs-mapping').textContent = ''; }
+  };
+  wfInfo(); loadMapping($('#cs-wf').value);
+  $('#cs-wf').addEventListener('change', () => { wfInfo(); loadMapping($('#cs-wf').value); });
+
+  $('#cs-save-conn').addEventListener('click', async () => {
+    try {
+      await api('/api/comfy/config', { method: 'PUT', body: JSON.stringify({
+        backend: $('#cs-backend').value, cloud_url: $('#cs-cloud').value.trim(),
+        cloud_api_key: $('#cs-key').value, local_url: $('#cs-local').value.trim() }) });
+      $('#cs-conn-msg').textContent = '已保存'; toast('连接配置已保存', 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+  });
+  $('#cs-ping').addEventListener('click', async () => {
+    // 先存再测，避免测的是旧地址
+    try {
+      await api('/api/comfy/config', { method: 'PUT', body: JSON.stringify({
+        backend: $('#cs-backend').value, cloud_url: $('#cs-cloud').value.trim(),
+        cloud_api_key: $('#cs-key').value, local_url: $('#cs-local').value.trim() }) });
+    } catch { /* ignore */ }
+    $('#cs-conn-msg').textContent = '测试中…';
+    try {
+      const r = await api('/api/comfy/status');
+      const reach = $('#cs-backend').value === 'local' ? r.local.reachable : r.cloud.reachable;
+      $('#cs-conn-msg').textContent = reach ? '连通 ✅' : '连不上（检查地址/隧道）';
+    } catch (e) { $('#cs-conn-msg').textContent = e.message; }
+  });
+
+  $('#cs-wf-use').addEventListener('click', async () => {
+    const name = $('#cs-wf').value; if (!name) return toast('先选一个工作流', 'err');
+    try { await api(`/api/comfy/workflows/${encodeURIComponent(name)}/activate`, { method: 'POST' });
+      toast(`已设为当前：${name}`, 'ok'); loadMapping(name); } catch (e) { toast(e.message, 'err'); }
+  });
+  $('#cs-wf-guess').addEventListener('click', async () => {
+    const name = $('#cs-wf').value; if (!name) return toast('先选一个工作流', 'err');
+    try { await api(`/api/comfy/workflows/${encodeURIComponent(name)}/mapping/guess`, { method: 'POST' });
+      toast('已自动映射参数', 'ok'); loadMapping(name); } catch (e) { toast(e.message, 'err'); }
+  });
+  $('#cs-wf-del').addEventListener('click', async () => {
+    const name = $('#cs-wf').value; if (!name) return;
+    if (!confirm(`删除工作流「${name}」？`)) return;
+    try { await api(`/api/comfy/workflows/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      toast('已删除', 'ok'); box.remove(); openComfySettings(); } catch (e) { toast(e.message, 'err'); }
+  });
+  $('#cs-wf-import').addEventListener('click', async () => {
+    const name = $('#cs-wf-name').value.trim();
+    if (!name) return toast('先给工作流起个名字', 'err');
+    let wf = null;
+    const f = $('#cs-wf-file').files[0];
+    try {
+      if (f) wf = await f.text();
+      else if ($('#cs-wf-json').value.trim()) wf = $('#cs-wf-json').value.trim();
+      else return toast('选文件或粘贴 JSON', 'err');
+      $('#cs-wf-info').textContent = '导入中（UI 格式需要向后端拉节点定义，稍等）…';
+      const r = await api('/api/comfy/workflows', { method: 'POST', body: JSON.stringify({ name, workflow: wf }) });
+      toast(`已导入：${name}`, 'ok');
+      if (r.warnings && r.warnings.length) toast('提示：' + r.warnings.join('；'), 'err');
+      box.remove(); openComfySettings();
+    } catch (e) { toast('导入失败：' + e.message, 'err'); $('#cs-wf-info').textContent = ''; }
+  });
+
+  const paramsPayload = () => ({
+    steps: +$('#cs-steps').value || null, cfg: +$('#cs-cfg').value || null,
+    sampler: $('#cs-sampler').value.trim() || null, scheduler: $('#cs-sched').value.trim() || null,
+    width: +$('#cs-w').value || null, height: +$('#cs-h').value || null,
+    ckpt_name: $('#cs-ckpt').value.trim() || null,
+  });
+  $('#cs-save-params').addEventListener('click', async () => {
+    try { await api('/api/comfy/config', { method: 'PUT', body: JSON.stringify({ default_params: paramsPayload() }) });
+      $('#cs-params-msg').textContent = '已保存'; toast('出图参数已保存', 'ok'); } catch (e) { toast(e.message, 'err'); }
+  });
+  $('#cs-pull-loras').addEventListener('click', async () => {
+    $('#cs-params-msg').textContent = '拉取中…';
+    try {
+      const r = await api('/api/comfy/assets?backend=' + $('#cs-backend').value);
+      $('#cs-lora-list').innerHTML = (r.loras || []).map((l) => `<option value="${esc(l)}">${esc(l)}</option>`).join('') || '<option value="">（这台后端没读到 LoRA）</option>';
+      $('#cs-params-msg').textContent = `LoRA ${r.loras.length} · ckpt ${r.checkpoints.length}`;
+    } catch (e) { $('#cs-params-msg').textContent = '失败：' + e.message; }
+  });
+  $('#cs-test').addEventListener('click', async () => {
+    // 试跑前先把参数存下来，保证用的就是界面上填的
+    try { await api('/api/comfy/config', { method: 'PUT', body: JSON.stringify({ default_params: paramsPayload() }) }); } catch { /* ignore */ }
+    $('#cs-test-msg').textContent = '出图中…（可能要几十秒）';
+    try {
+      const r = await api('/api/comfy/test-run', { method: 'POST', body: JSON.stringify({
+        prompt_pos: $('#cs-t-pos').value, prompt_neg: $('#cs-t-neg').value, params: paramsPayload() }) });
+      $('#cs-test-msg').textContent = '完成';
+      $('#cs-test-out').innerHTML = `<img src="${r.url}" style="max-width:100%;border-radius:10px;border:1px solid var(--line2)">`;
+    } catch (e) { $('#cs-test-msg').textContent = ''; toast('试跑失败：' + e.message, 'err'); }
+  });
+}
+
 
 // ---------- 启动 ----------
 (async () => {

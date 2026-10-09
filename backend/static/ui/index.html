@@ -360,16 +360,25 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
     <!-- 出图 -->
     <section id="tab-images" class="hidden">
       <div class="card">
-        <h2>出图工作台</h2>
-        <div class="h2sub">逐格改提示词 / 勾选 LoRA / 调批量张数 / 挑图</div>
+        <h2>出图工作台 <span class="mut" style="font-size:12px;font-weight:400">分格产物 → 逐格出图</span></h2>
+        <div class="h2sub">先看 S2 分出来的版式与格子，再逐格改提示词 / 勾选 LoRA / 调批量张数 / 挑图。
+          点右上角「出图设置」配仙宫云地址与工作流。</div>
         <div class="row">
-          <button class="sm" id="wb-reload">刷新格列表</button>
+          <button class="sm" id="wb-reload">刷新</button>
           <label class="fld" style="margin:0">每格批量张数</label>
           <input id="wb-count" type="number" value="4" min="1" max="8" style="width:74px">
           <span class="spacer"></span>
           <span class="pill" id="wb-info">—</span>
+          <button class="sm primary" id="wb-comfy">出图设置</button>
         </div>
-        <div id="wb-list" style="margin-top:14px"><div class="empty">点「刷新格列表」加载（需先跑 S2/S3）</div></div>
+      </div>
+      <div class="card" id="wb-pages-card">
+        <h2>分格产物 <span class="pill" id="wb-pages-info">—</span>
+          <span class="mut" style="font-size:12px;font-weight:400">来自 S2，是出图的依据</span></h2>
+        <div id="wb-pages" style="margin-top:12px"><div class="empty">点「刷新」加载（需先跑 S2 分格）</div></div>
+      </div>
+      <div id="wb-list">
+        <div class="card"><div class="empty">点「刷新」加载逐格提示词（需先跑 S3 提示词）</div></div>
       </div>
       <div class="card">
         <h2>候选图与审查</h2>
@@ -405,12 +414,13 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
         <div id="pvlist" style="margin-top:14px"><div class="empty">尚未配置</div></div>
       </div>
       <div class="card">
-        <h2>ComfyUI 与 LoRA</h2>
-        <div class="h2sub">拉取出图后端上的 LoRA / checkpoint，并自动映射工作流参数</div>
-        <div class="row"><label class="fld" style="margin:0">后端</label>
-          <select id="cf-backend" style="width:160px"><option value="cloud">仙宫云（隧道）</option><option value="local">本机 ComfyUI</option></select>
-          <button class="sm" id="cf-assets">拉取资产</button>
-          <button class="sm" id="cf-guess">自动映射工作流</button>
+        <h2>ComfyUI / 仙宫云（出图后端）</h2>
+        <div class="h2sub">地址、工作流、参数映射与 LoRA 都集中在「出图 → 出图设置」里改；
+          这里只做快速体检。</div>
+        <div class="row">
+          <select id="cf-backend" style="width:160px"><option value="cloud">仙宫云</option><option value="local">本机 ComfyUI</option></select>
+          <button class="sm" id="cf-assets">拉取资产（LoRA/ckpt）</button>
+          <button class="sm primary" id="cf-open">打开出图设置</button>
           <span class="pill" id="cf-state">—</span></div>
         <div style="margin-top:12px"><pre id="cf-out" class="hidden"></pre></div>
       </div>
@@ -422,6 +432,6 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=27"></script>
+<script type="module" src="/ui/app.js?v=29"></script>
 </body>
 </html>

@@ -28,6 +28,13 @@ secrets.json
 *.pt
 *.pth
 
+# --- 出图后端配置与工作流（可能含 API Key / 个人工作流，不入库）---
+# 只用 config/comfy.example.yaml 作模板
+config/comfy.yaml
+config/workflow_params.yaml
+config/workflows/*.json
+config/workflows/*.params.yaml
+
 # --- vendor 的第三方编辑器（99MB，按 pin 版本用脚本拉取，不入 git）---
 backend/static/editor/
 

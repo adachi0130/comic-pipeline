@@ -1,0 +1,33 @@
+# 出图后端配置模板。
+# 复制为 config/comfy.yaml 使用（该文件已 .gitignore，不会提交，可安全填 API Key）。
+# 也可以完全不动这里——直接在「出图 → 出图设置」里填，前端会写回 config/comfy.yaml。
+
+# 用哪台出图后端：cloud=仙宫云 / local=本机 ComfyUI
+backend: cloud
+
+# 仙宫云：填控制台给的 ComfyUI 访问地址（形如 https://xxxx.xiangongyun.com）
+cloud_url: ''
+# 需要鉴权时填（会以 Authorization: Bearer 发送）；一般留空
+cloud_api_key: ''
+
+# 本机 ComfyUI（备用调试）
+local_url: http://127.0.0.1:8188
+
+# 当前活动工作流名称 = config/workflows/<name>.json 的主干
+workflow_name: ''
+
+# 占位符：工作流里出现这个字符串就整体替换（沿用 Manga Editor Desu 的写法）
+prompt_placeholder: '%prompt%'
+negative_placeholder: '%negative%'
+
+# 出图默认参数（单格/项目仍可覆盖）
+default_params:
+  steps: 28
+  cfg: 6.5
+  width: 832
+  height: 1216
+  sampler: euler
+  scheduler: karras
+
+# 每格默认批量张数
+candidates_per_panel: 4

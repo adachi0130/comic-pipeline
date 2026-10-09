@@ -68,11 +68,19 @@ cd backend && ../.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0
 
 ## M0 最小闭环（已验证）
 
-1. **读工作流 → 自动映射**：把 Anima 工作流导出为 API 格式放到 `config/workflows/anima_t2i.json`，然后
-   `POST /api/comfy/mapping/guess` 自动生成 `config/workflow_params.yaml`（正/负提示词、seed、尺寸、checkpoint、LoRA 链、输出节点）。
-2. **拉 LoRA 列表**：`GET /api/comfy/assets` → 出图后端上的 LoRA / checkpoint / 采样器候选（来自 `/object_info`）。
-3. **出几格**：`POST /api/projects/{id}/panels/{panel_ref}/generate` 入队 S5 出图，`GET /api/jobs/events` 看进度。
-4. **MED 拼第一页**：桥把模板 SVG `loadSVGPlusReset` 装上，按阅读顺序落提示词、`putImageInFrame` 贴图，`canvas2DataURL` 导出整页 PNG。
+1. **连出图后端**：`PUT /api/comfy/config` 填仙宫云地址（可带 API Key）/切本机；`GET /api/comfy/status` 体检。
+2. **导入工作流 → 自动映射**：`POST /api/comfy/workflows {name, workflow}`。
+   - API 格式 JSON 直接存；**ComfyUI「UI 格式」会自动转 API 格式**（靠 `/object_info` 把控件位置对应到输入名）。
+   - 每个工作流各自的映射表落在 `config/workflows/<name>.params.yaml`。
+   - 支持两种出图工作流写法：**`%prompt%` 占位符**（沿用 MED 风格）或**字段映射**（CLIPTextEncode.text 等）。
+   - LoRA 支持**多 LoraLoader 串联**与**堆加载节点**（如 rgthree 的 `Lora Loader Stack (rgthree)`，`lora_01`+`strength_01` 成对，空槽填 `None`）。
+3. **拉 LoRA 列表**：`GET /api/comfy/assets` → 出图后端上的 LoRA / checkpoint / 采样器候选（来自 `/object_info`）。
+4. **试跑一张**：`POST /api/comfy/test-run` → 验证连接+工作流+参数+LoRA 是否通，返回可预览图片 URL。
+5. **出几格**：`POST /api/projects/{id}/panels/{panel_ref}/generate` 入队 S5 出图，`GET /api/jobs/events` 看进度。
+6. **MED 拼第一页**：桥把模板 SVG `loadSVGPlusReset` 装上，按阅读顺序落提示词、`putImageInFrame` 贴图，`canvas2DataURL` 导出整页 PNG。
+
+> 前端入口：**「出图 → 出图设置」**（连接 / 工作流 / 参数 / LoRA / 试跑 一次配好），
+> 「出图」页本身会先把 **S2 分格产物**（每页版式缩略图 + 每格摘要）画出来，再列逐格出图卡片。
 
 ## 实施进度
 
@@ -89,6 +97,7 @@ cd backend && ../.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0
 | MED 桥装模板/落词/贴图/导出 | `tests/test_med_bridge.py`（无头） | 装 3 格 → 落词 3/3 → 贴图 → 导出 PNG ✅ |
 | MED 集中线/运动线叠加 | 无头调 `applyMangaTone` | 两者均 `ok`，导出图明显变化 ✅ |
 | 工作流参数映射 + LoRA 链/旁路 | `tests/test_workflow_mapping.py` | 全通过 ✅ |
+| 占位符 `%prompt%` + LoRA 堆加载 + UI→API 转换 | `tests/test_workflow_mapping.py` | 全通过 ✅ |
 | 版本化 + 血缘 + 失效传播 | `tests/test_artifacts.py` | 改上游 → 下游标 stale ✅ |
 | 分页合成（S6） | 真实服务 + 桥 | 3 格成页并落盘 ✅ |
 | 整册导出（S7） | 真实服务 | PDF + CBZ 均生成 ✅ |
