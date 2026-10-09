@@ -46,9 +46,10 @@ function switchTab(tab) {
   $('#view-title').textContent = TITLES[tab][0];
   $('#view-sub').textContent = TITLES[tab][1];
   if (tab === 'novel') loadNovel();
-  if (tab === 'pipeline') { renderFlow(); refreshGates(); }
+  if (tab === 'pipeline') renderFlow().then(refreshGates);
   if (tab === 'images') loadWorkbench();
   if (tab === 'settings') { loadProviders(); loadStageBinding(); }
+  if (tab === 'projects') { if (state.projectId) api('/api/projects/' + state.projectId).then((p) => { state.project = p; renderProjectDetail(); }); }
 }
 
 // ---------- 健康 ----------
@@ -80,11 +81,49 @@ async function pickProject(id) {
   $('#automode').checked = state.project.review_mode === 'auto';
   // 项目隔离：切项目时全量刷新所有视图
   await loadProjects();
-  renderFlow();
+  await ensureMeta();
+  renderProjectDetail();
+  await renderFlow();
   refreshGates();
   const active = document.querySelector('.nav button.active')?.dataset.tab;
   if (active === 'novel') loadNovel();
   if (active === 'images') loadWorkbench();
+}
+
+// 元信息（阶段定义/模板/技法）懒加载 + 自愈：初次失败时下次重试
+async function ensureMeta() {
+  if (state.meta) return state.meta;
+  try {
+    state.meta = await api('/api/meta');
+    state.templates = state.meta.templates; state.techniques = state.meta.techniques;
+  } catch (e) { console.warn('加载 /api/meta 失败，稍后重试', e); }
+  return state.meta;
+}
+
+// 项目详情卡片
+function renderProjectDetail() {
+  const box = $('#proj-detail');
+  if (!box) return;
+  const p = state.project;
+  if (!p) { box.innerHTML = '<div class="empty">未选择项目</div>'; return; }
+  const g = state._gates || {};
+  const rows = (state.meta?.stages || []).map((s) => {
+    const x = g[s.id] || { count: 0, approved: 0, review: 0 };
+    return `<tr><td><span class="pill tag">${s.id}</span> ${esc(s.name)}</td>
+      <td>${x.count || 0}</td><td>${x.approved ? `<span class="pill ok"><i class="dotm"></i>${x.approved}</span>` : '—'}</td>
+      <td>${x.review ? `<span class="pill warn"><i class="dotm"></i>${x.review}</span>` : '—'}</td>
+      <td>${x.stale ? `<span class="pill stale"><i class="dotm"></i>${x.stale}</span>` : '—'}</td></tr>`;
+  }).join('');
+  box.innerHTML = `
+    <div class="grid3" style="margin-bottom:14px">
+      <div><div class="mut" style="font-size:12px">标题</div><b>${esc(p.title)}</b></div>
+      <div><div class="mut" style="font-size:12px">目标页数</div><b>${p.target_pages}</b></div>
+      <div><div class="mut" style="font-size:12px">审查模式</div><b>${p.review_mode === 'auto' ? '全自动' : '人工审查'}</b></div>
+    </div>
+    <div style="margin-bottom:14px"><div class="mut" style="font-size:12px">大纲</div>
+      <div style="white-space:pre-wrap;line-height:1.8">${esc(p.outline || '（未填写）')}</div></div>
+    <table><thead><tr><th>阶段</th><th>产物数</th><th>已通过</th><th>待审</th><th>需重跑</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
 }
 
 $('#btn-new').addEventListener('click', async () => {
@@ -197,10 +236,13 @@ $('#nv-export').addEventListener('click', () => {
 });
 
 // ---------- 流水线 ----------
-function renderFlow() {
+async function renderFlow() {
   const box = $('#flow');
-  if (!state.project || !state.meta) { box.innerHTML = '<div class="empty">选择项目后显示</div>'; return; }
-  const stages = state.meta.stages || [];
+  if (!state.projectId) { box.innerHTML = '<div class="empty">请先在「项目」页选择或新建一个项目</div>'; return; }
+  const meta = await ensureMeta();
+  if (!meta) { box.innerHTML = '<div class="empty">元信息加载失败，请稍后重试或刷新页面</div>'; return; }
+  if (!state._gates) await refreshGates();
+  const stages = meta.stages || [];
   const gates = state._gates || {};
   box.innerHTML = stages.map((s) => {
     const g = gates[s.id] || { count: 0, approved: 0, review: 0, stale: 0 };
@@ -234,7 +276,7 @@ async function runStage(stage) {
 }
 
 async function openStageArtifacts(stage) {
-  if (!state.projectId) return;
+  if (!state.projectId) return toast('先选择项目', 'err');
   const d = await api(`/api/projects/${state.projectId}/stage-artifacts`);
   const blk = d[stage] || { label: stage, items: [] };
   const box = document.createElement('div');
@@ -259,10 +301,10 @@ async function openStageArtifacts(stage) {
 
 async function refreshGates() {
   if (!state.projectId) return;
-  if (!state.meta) state.meta = await api('/api/meta');
   try {
     const g = await api(`/api/projects/${state.projectId}/gates`);
     state._gates = g.stages;
+    renderProjectDetail();
     if (document.querySelector('.nav button.active')?.dataset.tab === 'pipeline') renderFlow();
   } catch { /* 忽略 */ }
 }
@@ -492,10 +534,13 @@ $('#cf-guess').addEventListener('click', async () => {
 // ---------- 启动 ----------
 (async () => {
   await checkHealth();
-  state.meta = await api('/api/meta');
-  state.templates = state.meta.templates; state.techniques = state.meta.techniques;
+  await ensureMeta();
   await loadProjects();
-  renderFlow();
+  // 自动选中第一个项目，这样一进来就能看到详情（不用手动点）
+  if (!state.projectId) {
+    const rows = await api('/api/projects');
+    if (rows.length) await pickProject(rows[0].id);
+  }
   startJobsSSE();
   setInterval(refreshGates, 5000);
 })();
