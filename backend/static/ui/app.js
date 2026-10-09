@@ -969,20 +969,20 @@ async function loadCharacterPresetPanel() {
   const presetCard = (kind, list) => `
     <div style="flex:1;min-width:280px">
       <div class="row" style="gap:6px"><b style="font-size:13px">${kind === 'positive' ? '正向预设' : '负向预设'}</b>
-        <span class="mut" style="font-size:11.5px">（${kind === 'positive' ? '风格骨架' : '基础负向'}）</span>
+        <span class="mut" style="font-size:11.5px">（${kind === 'positive' ? '正向基础提示词：AI 以它为骨架再补每格内容' : '负向基础提示词：AI 以它为基础' }）</span>
         <div class="spacer"></div>
         <button class="sm" data-addpreset="${kind}">＋ 加</button></div>
       ${(list || []).map((p) => `
         <div class="mini-card" style="padding:8px 10px;margin-top:6px" data-preset="${p.id}">
           <div class="row" style="gap:6px">
-            <input class="pres-name" value="${esc(p.name)}" placeholder="名称" style="width:120px">
+            <input class="pres-name" value="${esc(p.name)}" placeholder="预设名称（随便起）" style="width:150px">
             <label class="mut" style="font-size:11.5px"><input type="checkbox" class="pres-def" ${p.is_default ? 'checked' : ''} style="width:auto"> 默认</label>
             <span class="pill tag">${p.scope === 'project' ? '本项目' : '全局'}</span>
             <div class="spacer"></div>
             <button class="sm pres-save">保存</button>
             <button class="sm danger pres-del">删</button>
           </div>
-          <textarea class="pres-text" style="margin-top:6px;min-height:52px;font-size:12px">${esc(p.text)}</textarea>
+          <textarea class="pres-text" style="margin-top:6px;min-height:60px;font-size:12px;resize:vertical">${esc(p.text)}</textarea>
         </div>`).join('') || '<div class="mut" style="font-size:12px;margin-top:6px">还没有预设</div>'}
     </div>`;
 
@@ -993,11 +993,12 @@ async function loadCharacterPresetPanel() {
     </div>
     <div class="divider"></div>
     <b style="font-size:13px">角色（触发词 ↔ 角色 LoRA）</b>
+    <div class="mut" style="font-size:12px;margin-top:2px">角色出场时，<b>触发词一定会被写进正向提示词</b>；外观词按画面裁剪（特写看不到的、远景看不清的会被去掉）。</div>
     ${chars.map((c) => `
       <div class="mini-card" style="padding:10px 12px;margin-top:8px" data-char="${c.id}">
         <div class="row" style="gap:8px">
           <input class="ch-name" value="${esc(c.name)}" placeholder="角色名（要和分格里一致）" style="width:160px">
-          <input class="ch-trig" value="${esc(c.trigger_words || '')}" placeholder="触发词，如 trig1, trig2" style="flex:1;min-width:180px">
+          <input class="ch-trig" value="${esc(c.trigger_words || '')}" placeholder="触发词（角色出场必写），如 trig1, trig2" style="flex:1;min-width:180px">
           <label class="mut" style="font-size:11.5px"><input type="checkbox" class="ch-uselora" ${c.use_lora ? 'checked' : ''} style="width:auto"> 用 LoRA</label>
           <div class="spacer"></div>
           <button class="sm primary ch-save">保存</button>
@@ -1008,7 +1009,9 @@ async function loadCharacterPresetPanel() {
           <label class="fld" style="margin:0">权重</label>
           <input class="ch-w" type="number" step="0.05" value="${c.lora_weight ?? 0.8}" style="width:80px">
         </div>
-        <input class="ch-block" value="${esc(c.prompt_block || '')}" placeholder="固定外观词块（可选），如 silver hair, blue eyes, ..." style="width:100%;margin-top:6px">
+        <label class="fld" style="margin:8px 0 3px">外观词块（不依赖 LoRA 时用；可按画面保留/裁剪）</label>
+        <textarea class="ch-block" rows="4" placeholder="如 silver hair, mechanical arms, glowing blue eyes, android girl, ..."
+          style="width:100%;min-height:88px;resize:vertical;font-size:12px">${esc(c.prompt_block || '')}</textarea>
       </div>`).join('') || '<div class="mut" style="font-size:12px;margin-top:8px">还没有角色。点右上「＋ 加角色」。</div>'}`;
 
   // 预设按钮
@@ -1030,7 +1033,7 @@ async function loadCharacterPresetPanel() {
   box.querySelectorAll('[data-addpreset]').forEach((b) => b.addEventListener('click', async () => {
     try {
       await api('/api/prompt-presets', { method: 'POST', body: JSON.stringify({
-        kind: b.dataset.addpreset, name: b.dataset.addpreset === 'positive' ? '新正向预设' : '新负向预设',
+        kind: b.dataset.addpreset, name: '',
         scope: 'project', project_id: state.projectId, text: '', is_default: false }) });
       loadCharacterPresetPanel();
     } catch (e) { toast(e.message, 'err'); }
