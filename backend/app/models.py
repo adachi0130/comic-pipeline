@@ -225,6 +225,23 @@ class Job(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class TavernMirror(Base):
+    """酒馆对话镜像（供前端直接查看酒馆对话列表，无需切回酒馆窗口）。
+
+    酒馆是全局单一“当前对话”，故只用一行（id=1）保存最新快照：
+    - context：角色名 / 对话 id / 酒馆可用角色
+    - messages：当前对话消息列表（name / is_user / is_system / mes / send_date）
+    - receipt：本次生成依据（角色卡字段、激活的世界书条目、预设名、模型）
+    由页面内的 comic-bridge 扩展推送，前端通过 SSE 读取。
+    """
+
+    __tablename__ = "tavern_mirror"
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class Character(Base):
     """角色资产库：角色 id -> LoRA / 参考图 / 固定词块 / 权重。"""
 

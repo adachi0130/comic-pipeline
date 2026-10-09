@@ -206,6 +206,21 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
       </div>
 
       <div class="card">
+        <h2>酒馆对话 <span class="mut" style="font-size:12.5px;font-weight:400">直接在这里看与发，不用切回酒馆</span></h2>
+        <div class="h2sub" id="tv-meta">正在读取酒馆状态…</div>
+        <div class="row" style="margin-bottom:10px">
+          <span class="pill" id="tv-receipt">生成依据：—</span>
+          <button class="sm" id="tv-refresh">刷新</button>
+        </div>
+        <div class="novel" id="tv-chat" style="max-height:380px"><div class="empty">等待酒馆扩展推送…</div></div>
+        <div class="row" style="margin-top:12px;align-items:flex-end">
+          <div style="flex:1"><label class="fld">直接发一条给酒馆（会作为本项目正文保存）</label>
+            <textarea id="tv-input" style="min-height:64px" placeholder="例：写一段雨夜追车，节奏快一点。Ctrl+Enter 发送"></textarea></div>
+          <button class="primary" id="tv-send">发送</button>
+        </div>
+      </div>
+
+      <div class="card">
         <h2>分段审核</h2>
         <div class="h2sub">通过后该段即计入小说；有未通过分段时不能续写，避免把未审内容接上去。</div>
         <div id="nv-segs"><div class="empty">还没有正文分段</div></div>
@@ -298,6 +313,6 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=3"></script>
+<script type="module" src="/ui/app.js?v=4"></script>
 </body>
 </html>

@@ -146,6 +146,56 @@ $('#automode').addEventListener('change', async () => {
   } catch (e) { toast(e.message, 'err'); }
 });
 
+// ---------- 酒馆对话面板 ----------
+$('#tv-refresh').addEventListener('click', loadTavern);
+$('#tv-send').addEventListener('click', sendToTavern);
+$('#tv-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendToTavern(); }
+});
+
+async function sendToTavern() {
+  if (!state.projectId) return toast('先选择项目', 'err');
+  const text = $('#tv-input').value.trim();
+  if (!text) return toast('消息不能为空', 'err');
+  try {
+    const r = await api(`/api/projects/${state.projectId}/tavern/send`, { method: 'POST', body: JSON.stringify({ text }) });
+    $('#tv-input').value = '';
+    toast(`已发给酒馆 #${r.job_id}，生成后回传为正文`, 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function loadTavern() {
+  try {
+    const d = await api('/api/tavern/live');
+    if (!d.available) {
+      $('#tv-meta').textContent = '还没有收到酒馆推送——请打开酒馆并启用 comic-bridge 扩展';
+      $('#tv-chat').innerHTML = '<div class="empty">等待酒馆扩展推送…</div>';
+      return;
+    }
+    const c = d.context || {};
+    $('#tv-meta').innerHTML = `当前角色：<b>${esc(c.character_name || '—')}</b>
+      · 对话 ${c.message_count || 0} 条${c.chat_id ? ` · 会话 ${esc(c.chat_id)}` : ''}
+      <span class="mut" style="font-size:12px">（更新于 ${(d.updated_at || '').replace('T', ' ').slice(0, 19)}）</span>`;
+
+    // 生成依据（简单版：角色卡 / 世界书 / 预设）
+    const rc = d.receipt || {};
+    const bits = [];
+    if (rc.character_name) bits.push(`角色卡 ${rc.character_name}`);
+    if (rc.world_books?.length) bits.push(`世界书 ${rc.world_books.join('、')}${rc.world_count ? `(${rc.world_count}条)` : ''}`);
+    if (rc.preset_name) bits.push(`预设 ${rc.preset_name}`);
+    if (rc.model) bits.push(`模型 ${rc.model}`);
+    $('#tv-receipt').textContent = '生成依据：' + (bits.length ? bits.join(' · ') : '尚未生成');
+
+    const msgs = d.messages || [];
+    $('#tv-chat').innerHTML = msgs.length ? msgs.map((m) => `
+      <div class="seg" style="margin-bottom:8px">
+        <div class="segh"><b>${esc(m.name || (m.is_user ? '我' : '角色'))}</b>
+          <span class="pill tag">${m.is_user ? '用户' : m.is_system ? '系统' : '角色'}</span>
+          <span class="mut" style="font-size:11.5px">${esc(m.send_date || '')}</span></div>
+        <div class="txt">${esc(m.mes || '')}</div></div>`).join('') : '<div class="empty">对话为空</div>';
+  } catch (e) { $('#tv-meta').textContent = '读取失败：' + e.message; }
+}
+
 // ---------- 正文（小说） ----------
 $('#nv-start').addEventListener('click', () => requestProse('start'));
 $('#nv-continue').addEventListener('click', () => requestProse('continue'));
@@ -161,6 +211,7 @@ async function requestProse(mode) {
 
 async function loadNovel() {
   if (!state.projectId) { $('#nv-segs').innerHTML = '<div class="empty">请先选择项目</div>'; return; }
+  loadTavern();
   try {
     const n = await api(`/api/projects/${state.projectId}/novel`);
     $('#nv-state').className = 'pill ' + (n.total_count === 0 ? '' : n.can_continue ? 'ok' : 'warn');
@@ -170,18 +221,28 @@ async function loadNovel() {
     // 分段
     const box = $('#nv-segs');
     if (!n.segments.length) box.innerHTML = '<div class="empty">还没有正文分段，点上面「开始写作」</div>';
-    else box.innerHTML = n.segments.map((s) => `
+    else box.innerHTML = n.segments.map((s) => {
+      const rc = s.receipt || {};
+      const bits = [];
+      if (rc.character_name) bits.push(`角色卡 ${esc(rc.character_name)}`);
+      if (rc.world_books?.length) bits.push(`世界书 ${esc(rc.world_books.join('、'))}${rc.world_count ? `(${rc.world_count}条)` : ''}`);
+      if (rc.preset_name) bits.push(`预设 ${esc(rc.preset_name)}`);
+      if (rc.model) bits.push(`模型 ${esc(rc.model)}`);
+      if (rc.prompt_chars) bits.push(`提示词 ${rc.prompt_chars} 字`);
+      return `
       <div class="seg" data-id="${s.id}">
         <div class="segh"><b>第 ${s.index} 段</b> ${pill(s.status)}
-          <span class="pill tag">${s.mode === 'continue' ? '续写' : '起笔'}</span>
+          <span class="pill tag">${s.mode === 'continue' ? '续写' : s.mode === 'raw' ? '直发' : '起笔'}</span>
           <span class="mut" style="font-size:12px">${s.chars} 字</span>
           <div class="spacer"></div>
           <button class="sm" data-edit="${s.id}">编辑</button>
           <button class="sm" data-approve="${s.id}">通过</button>
           <button class="sm danger" data-reject="${s.id}">驳回</button>
         </div>
+        ${bits.length ? `<div class="mut" style="font-size:12px;margin-bottom:6px">生成依据：${bits.join(' · ')}</div>` : ''}
         <div class="txt clip">${esc(s.text)}</div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
     bindSegments();
 
     // 全文
