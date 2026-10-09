@@ -19,11 +19,21 @@
 你要为**每一格**生成正向/负向提示词，并给出该格应绑定的 LoRA 列表。
 
 ## 正向提示词构成（按顺序拼接，逗号分隔）
-1. 主人偏好的正向预设（见【主人偏好的正向预设】）——若给了就**以它为风格骨架放在最前**，
-   再按下面顺序补该格独有的内容；没给就用默认质量词块 `masterpiece, best quality`
+1. 主人偏好的正向预设（见【主人偏好的正向预设】）——它就是**主人的正向基础提示词**，
+   若给了就**以它为骨架放在最前**，再按下面顺序补该格独有的内容；没给就用默认质量词块 `masterpiece, best quality`
 2. 场景与构图：景别（如 closeup / wide shot）、场景（scene_desc）
-3. 出场角色：**优先使用角色资产里给的 `prompt_block` 固定外观词块**（保证角色一致性），
-   并把该角色的 `trigger_words`（触发词）原样拼进去；不要自己编造角色外观，资产里没有的才补充
+3. 出场角色（**重要，分两步**）：
+   a. **触发词必写**：只要该格出场角色在角色资产里，它的 `trigger_words` **必须原样拼进正向提示词**
+      （这是角色能被认出的关键，**任何情况下都不能省略、不能改写**）。
+   b. **外貌词按画面裁剪**：从该角色的 `prompt_block` 里，**只保留这一格画面里看得见的**外貌特征，
+      看不见的**删掉**。判断依据 = 该格 `shot`（景别）与 `action`/`scene_desc`：
+      - `closeup` / `extreme_closeup`（脸或局部特写）：只留脸部特征（发型、瞳色、脸型），
+        **删掉**腰部以下、腿、脚、背面等看不到的部位；
+      - `medium` / `medium_close`（半身）：留上半身特征，**删掉**腿、脚；
+      - `wide` / `extreme_wide` / `establishing`（全景）：细节五官（如瞳色）可删，
+        保留整体外观（发色、服装、体型、轮廓）；
+      - 背对/侧对镜头、被遮挡的部位（如 `action` 写明背对），其正面特征也要删。
+   c. 角色资产里没有的外观，才允许补充；不要自己编造资产已给的外观。
 4. 动作与表情：来自该格 action
 5. 技法词块：该格 technique 里每个技法，从技法库取对应的 prompt_block 拼进来
 6. 风格词块：monochrome, manga, screentone（黑白漫画风时）
@@ -33,7 +43,8 @@ lowres, bad anatomy, bad hands, extra fingers, fused fingers, extra limbs,
 missing limbs, watermark, signature, text, speech bubble, multiple views,
 worst quality, jpeg artifacts, 3d, realistic
 （注意：一定要包含 text, speech bubble —— 不让模型画台词和气泡，台词由排版环节嵌）
-若【主人偏好的负向预设】给了，**以它为基础**，但仍必须保留 text 与 speech bubble。
+若【主人偏好的负向预设】给了（那是主人的**负向基础提示词**），**以它为基础**，
+但仍必须保留 text 与 speech bubble。
 
 ## LoRA 绑定
 - 该格出场角色若在角色资产里、`use_lora=true` 且**有 lora_name**，则把其 lora_name 与 lora_weight 放进 loras。
@@ -121,6 +132,8 @@ worst quality, jpeg artifacts, 3d, realistic
 ## 自检项
 - panels 条数 == 分格数，panel_ref 与分格一一对应
 - 负向提示词必须含 text 与 speech bubble
-- 出场且启用 LoRA 的角色，其 LoRA 已出现在 loras
-- 未启用 LoRA 的角色，改用 prompt_block 描述
+- **每个出场角色的 trigger_words 都出现在正向提示词里**（一个都不能漏）
+- **正向提示词里没有“画面看不到”的外貌词**（按景别裁剪过）
+- 出场且启用 LoRA（且配了 lora_name）的角色，其 LoRA 已出现在 loras
+- 角色没配 lora_name 或未启用 LoRA 时，改用 prompt_block + trigger_words 描述
 - 输出是纯 JSON
