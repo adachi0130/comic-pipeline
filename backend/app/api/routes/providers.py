@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from pathlib import Path
+
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -12,6 +14,72 @@ from ...models import LLMCall, LLMProvider
 from ...schemas import ProviderCreate
 
 router = APIRouter(tags=["providers"])
+
+
+def _find_tavern_data_dir() -> Path | None:
+    """定位酒馆的 data/default-user 目录（用于导入模型配置）。"""
+    import glob as _glob
+
+    from ...config import get_settings
+
+    s = get_settings()
+    cands: list[str] = []
+    if s.tavern_data_dir:
+        cands.append(s.tavern_data_dir)
+    for base in ("E:/jiuguan", "E:/ai生图", "E:/", str(Path.home())):
+        cands.extend(_glob.glob(f"{base}/*SillyTavern*/SillyTavern-*/data/default-user"))
+        cands.extend(_glob.glob(f"{base}/*SillyTavern-*/data/default-user"))
+        cands.extend(_glob.glob(f"{base}/SillyTavern-*/data/default-user"))
+    for c in cands:
+        p = Path(c)
+        if (p / "settings.json").exists():
+            return p
+    return None
+
+
+@router.post("/providers/import-tavern")
+def import_from_tavern(body: dict | None = None) -> dict:
+    """把酒馆里正在用的模型配置（端点 / 模型 / key）导入为本系统的 LLM 供应商。
+
+    S2（分页分格）和 S3（分镜提示词）走的是本系统自己的 LLM，需要在这里配置供应商；
+    直接从酒馆导入最省事，也能保证和写正文用的是同一套模型。
+    """
+    import json
+
+    data_dir = _find_tavern_data_dir()
+    if data_dir is None:
+        raise HTTPException(400, "没找到酒馆的 data/default-user 目录；请手动填供应商信息")
+
+    try:
+        settings = json.loads((data_dir / "settings.json").read_text(encoding="utf-8"))
+        secrets = json.loads((data_dir / "secrets.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise HTTPException(400, f"读取酒馆配置失败：{e}") from e
+
+    oai = settings.get("oai_settings") or {}
+    base_url = (oai.get("custom_url") or "").rstrip("/")
+    model = oai.get("custom_model") or ""
+    if not base_url or not model:
+        raise HTTPException(400, "酒馆里没有配置自定义端点/模型（custom_url / custom_model）")
+
+    key = ""
+    for it in secrets.get("api_key_custom") or []:
+        if isinstance(it, dict):
+            for v in it.values():
+                if isinstance(v, str) and v.startswith("sk-"):
+                    key = v
+        elif isinstance(it, str) and it.startswith("sk-"):
+            key = it
+
+    return {
+        "found": True,
+        "source_dir": str(data_dir),
+        "name": f"酒馆导入 · {oai.get('chat_completion_source', 'custom')}",
+        "base_url": base_url,
+        "model": model,
+        "has_key": bool(key),
+        "api_key": key,
+    }
 
 
 @router.get("/providers")

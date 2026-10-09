@@ -94,6 +94,9 @@ class Settings(BaseSettings):
     # 页面规格
     page_spec: PageSpec = Field(default_factory=PageSpec)
 
+    # 酒馆数据目录（用于「导入酒馆的模型配置」，留空则自动探测）
+    tavern_data_dir: str = ""
+
     # 审查门默认模式：auto=全部自动通过 / manual=到门停住
     default_review_mode: Literal["auto", "manual"] = "manual"
 

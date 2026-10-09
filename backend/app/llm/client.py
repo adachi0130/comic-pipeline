@@ -87,19 +87,41 @@ class LLMClient:
         if extra_body:
             body.update(extra_body)
 
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            # 部分中转站（如 newapi + Cloudflare）会拦截非浏览器 UA（403 error code 1010），
+            # 必须伪装成浏览器请求，否则酒馆能通、我们直连却被拒。
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            ),
+            "Accept": "application/json",
+        }
         if p.api_key:
             headers["Authorization"] = f"Bearer {p.api_key}"
 
         started = time.perf_counter()
+        max_attempts = int(p.extra.get("max_retries", 3)) if p.extra else 3
+        backoff = 0.8
         with httpx.Client(timeout=p.timeout_s) as client:
-            try:
-                resp = client.post(p.endpoint, headers=headers, json=body)
-            except httpx.HTTPError as e:
-                raise LLMError(f"请求失败：{e}") from e
+            resp = None
+            for attempt in range(max_attempts):
+                try:
+                    resp = client.post(p.endpoint, headers=headers, json=body)
+                except httpx.HTTPError as e:
+                    if attempt + 1 >= max_attempts:
+                        raise LLMError(f"请求失败：{e}") from e
+                    time.sleep(backoff * (2 ** attempt))
+                    continue
+
+                # 中转站常见 429/5xx 抖动：退避重试
+                if resp.status_code in (429, 500, 502, 503, 504) and attempt + 1 < max_attempts:
+                    time.sleep(backoff * (2 ** attempt))
+                    continue
+                break
 
             # 部分供应商不支持 response_format：降级重试一次
-            if resp.status_code >= 400 and json_mode:
+            if resp is not None and resp.status_code >= 400 and json_mode:
                 body.pop("response_format", None)
                 try:
                     resp = client.post(p.endpoint, headers=headers, json=body)
