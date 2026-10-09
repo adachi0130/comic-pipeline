@@ -812,11 +812,21 @@ async function loadPages() {
     box.innerHTML = d.pages.map((p) => `
       <div class="card" style="padding:14px" data-page="${esc(p.page_ref)}">
         <div class="row">
-          <b>${esc(p.page_ref)}</b> ${pill(p.status)}
-          <span class="pill tag">${esc(p.template_id || '?')} · ${p.panels.length} 格</span>
-          <span class="pill tag">${p.source === 'ai' ? 'AI 选' : '手动'}</span>
-          <span class="mut" style="font-size:12px">v${p.version}</span>
+          <div class="tplthumb-sm" title="${esc(p.template_id || '')}">
+            ${p.template_id ? `<img src="/api/templates/${encodeURIComponent(p.template_id)}/svg" alt="">` : ''}
+          </div>
+          <div>
+            <div class="row" style="gap:6px"><b>${esc(p.page_ref)}</b> ${pill(p.status)}
+              <span class="pill tag">${esc(p.template_id || '?')} · ${p.panels.length} 格</span>
+              <span class="pill tag">${p.source === 'ai' ? 'AI 选' : '手动'}</span>
+              <span class="mut" style="font-size:12px">v${p.version}</span></div>
+            <div class="mut" style="font-size:12px" id="tpl-desc-${esc(p.page_ref)}"></div>
+          </div>
           <div class="spacer"></div>
+          ${p.status === 'approved' ? '<span class="pill ok"><i class="dotm"></i>已通过</span>'
+                                    : `<button class="sm primary" data-ok="${esc(p.page_ref)}">通过</button>`}
+          ${p.status === 'rejected' ? '<span class="pill err"><i class="dotm"></i>已驳回</span>'
+                                    : `<button class="sm" data-no="${esc(p.page_ref)}">驳回</button>`}
           <button class="sm" data-aigen="${esc(p.page_ref)}">让 AI 选</button>
           <button class="sm" data-edit="${esc(p.page_ref)}">编辑/换模板</button>
           <button class="sm danger" data-del="${esc(p.page_ref)}">删除</button>
@@ -830,7 +840,29 @@ async function loadPages() {
           </div>`).join('')}
         </div>
       </div>`).join('');
+    // 补齐每页的版式文字描述（如“竖版3格；第1行2格；第2行单格(63%)”）
+    for (const p of d.pages) {
+      const el = document.getElementById(`tpl-desc-${p.page_ref}`);
+      if (!el || !p.template_id) continue;
+      const t = (d.templates || []).find((x) => x.id === p.template_id);
+      if (t) el.textContent = t.layout_desc || '';
+    }
     box.querySelectorAll('[data-aigen]').forEach((b) => b.addEventListener('click', () => aiFillPage(b.dataset.aigen, b)));
+    box.querySelectorAll('[data-ok]').forEach((b) => b.addEventListener('click', async () => {
+      const art = await api(`/api/projects/${state.projectId}/pages`).then((d) =>
+        (d.pages.find((x) => x.page_ref === b.dataset.ok) || {}).artifact_id);
+      if (!art) return toast('找不到该页产物', 'err');
+      await api(`/api/artifacts/${art}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'approve' }) });
+      toast(`${b.dataset.ok} 已通过`, 'ok'); loadPages(); refreshGates();
+    }));
+    box.querySelectorAll('[data-no]').forEach((b) => b.addEventListener('click', async () => {
+      const comment = prompt('驳回批注（可留空）：') || '';
+      const art = await api(`/api/projects/${state.projectId}/pages`).then((d) =>
+        (d.pages.find((x) => x.page_ref === b.dataset.no) || {}).artifact_id);
+      if (!art) return toast('找不到该页产物', 'err');
+      await api(`/api/artifacts/${art}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'reject', comment }) });
+      toast(`${b.dataset.no} 已驳回`, 'ok'); loadPages(); refreshGates();
+    }));
     box.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => openPageDetail(b.dataset.edit)));
     box.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', async () => {
       if (!confirm(`删除 ${b.dataset.del}？`)) return;
