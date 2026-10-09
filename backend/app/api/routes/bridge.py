@@ -175,6 +175,15 @@ def result(body: dict, session: Session = Depends(get_session)) -> dict:
     if job is None:
         raise HTTPException(404, "作业不存在")
 
+    # 非正文任务（例如切换对话）或空文本：只更新作业状态，**不创建正文产物**。
+    # 否则会出现 project_id 为空却要写 prose 的错误（曾经导致 500 循环）。
+    if job.kind != KIND or not text or not job.project_id:
+        job.status = JobStatus.DONE.value
+        job.result = {"op": body.get("op", ""), "skipped": True}
+        job.finished_at = datetime.now(timezone.utc)
+        session.commit()
+        return {"ok": True, "skipped": True}
+
     project = session.get(Project, job.project_id) if job.project_id else None
     auto = bool(project and project.review_mode == "auto")
     art = prose.append_segment(
@@ -292,21 +301,27 @@ async def tavern_events() -> StreamingResponse:
             session = SessionLocal()
             try:
                 row = session.get(TavernMirror, 1)
+                p = (row.payload or {}) if row else {}
                 snap = {
                     "available": row is not None,
-                    "context": (row.payload or {}).get("context") if row else {},
-                    "messages": (row.payload or {}).get("messages") if row else [],
-                    "receipt": (row.payload or {}).get("receipt") if row else {},
-                    "chats": (row.payload or {}).get("chats") if row else [],
-                    "live": (row.payload or {}).get("live") if row else {},
+                    "context": p.get("context") or {},
+                    "messages": p.get("messages") or [],
+                    "receipt": p.get("receipt") or {},
+                    "chats": p.get("chats") or [],
+                    "live": p.get("live") or {},
                     "updated_at": row.updated_at.isoformat() if (row and row.updated_at) else None,
                 }
-                text = json.dumps(snap, ensure_ascii=False)
+                # 用“内容签名”判断变化：不能算 updated_at，否则扩展每 2.5s 心跳都会让
+                # 快照看起来变了，前端跟着整块重绘，表现就是一闪一闪。
+                signature = json.dumps(
+                    {k: snap[k] for k in ("available", "context", "messages", "receipt", "chats", "live")},
+                    ensure_ascii=False, sort_keys=True,
+                )
             finally:
                 session.close()
-            if text != last:
-                last = text
-                yield f"data: {text}\n\n"
+            if signature != last:
+                last = signature
+                yield f"data: {json.dumps(snap, ensure_ascii=False)}\n\n"
             else:
                 yield ": keep-alive\n\n"
             await asyncio.sleep(1.5)

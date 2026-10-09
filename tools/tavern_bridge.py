@@ -19,11 +19,51 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
 DEFAULT_TAVERN = "http://127.0.0.1:8000"
 
+
+
+def _tavern_chats_root() -> Path | None:
+    """定位酒馆的 chats 目录（SillyTavern < 版本 > /data/default-user/chats）。"""
+    import glob as _glob
+    for base in ("E:/jiuguan", "E:/", str(Path.home())):
+        for root in _glob.glob(f"{base}/*SillyTavern*"):
+            sub = _glob.glob(f"{root}/SillyTavern-*")
+            for st in sub:
+                d = Path(st) / "data" / "default-user" / "chats"
+                if d.is_dir():
+                    return d
+    return None
+
+
+def clean_empty_chats(verbose: bool = True) -> int:
+    """删除“空会话”文件（只有 1 行元数据、没有消息）。
+
+    背景：酒馆在切换角色时可能自动新建 `<角色名> - 时间戳.jsonl` 的空会话，
+    这些空文件会干扰“最新会话”的判断。它们没有任何内容，删除是安全的。
+    """
+    root = _tavern_chats_root()
+    if root is None:
+        return 0
+    n = 0
+    for f in root.rglob("*.jsonl"):
+        try:
+            lines = [l for l in f.read_text(encoding="utf-8", errors="ignore").splitlines() if l.strip()]
+        except OSError:
+            continue
+        if len(lines) <= 1:           # 只有元数据行 -> 空会话
+            try:
+                f.unlink()
+                n += 1
+                if verbose:
+                    print(f"  [清理空会话] {f.parent.name}/{f.name}")
+            except OSError:
+                pass
+    return n
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -31,6 +71,10 @@ def main() -> int:
     ap.add_argument("--headful", action="store_true", help="显示浏览器窗口（调试用）")
     ap.add_argument("--check-interval", type=float, default=20.0, help="健康检查间隔（秒）")
     args = ap.parse_args()
+
+    print("清理空会话：")
+    n = clean_empty_chats()
+    print(f"  清理 {n} 个" if n else "  无")
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=not args.headful)
