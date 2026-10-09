@@ -103,30 +103,96 @@ async function ensureMeta() {
 }
 
 // 项目详情卡片
-function renderProjectDetail() {
+async function renderProjectDetail() {
   const box = $('#proj-detail');
   if (!box) return;
   const p = state.project;
-  if (!p) { box.innerHTML = '<div class="empty">未选择项目</div>'; return; }
+  if (!p || !state.projectId) { box.innerHTML = '<div class="empty">未选择项目</div>'; return; }
   const g = state._gates || {};
-  const rows = (state.meta?.stages || []).map((s) => {
-    const x = g[s.id] || { count: 0, approved: 0, review: 0 };
-    return `<tr><td><span class="pill tag">${s.id}</span> ${esc(s.name)}</td>
-      <td>${x.count || 0}</td><td>${x.approved ? `<span class="pill ok"><i class="dotm"></i>${x.approved}</span>` : '—'}</td>
-      <td>${x.review ? `<span class="pill warn"><i class="dotm"></i>${x.review}</span>` : '—'}</td>
-      <td>${x.stale ? `<span class="pill stale"><i class="dotm"></i>${x.stale}</span>` : '—'}</td></tr>`;
+
+  // 小说状态（全文只看已通过）
+  let novel = { chars: 0, total_count: 0, approved_count: 0, text: '' };
+  try { novel = await api(`/api/projects/${state.projectId}/novel`); } catch { /* 忽略 */ }
+
+  // 各阶段产物明细
+  let arts = {};
+  try { arts = await api(`/api/projects/${state.projectId}/stage-artifacts`); } catch { /* 忽略 */ }
+
+  const stageRows = (state.meta?.stages || []).map((s) => {
+    const x = g[s.id] || {};
+    const blk = arts[s.id] || { items: [], label: s.name };
+    const items = blk.items || [];
+    const first = items.slice(0, 3).map((it) =>
+      `<div class="mut" style="font-size:12px">· ${esc(it.ref)} ${pill(it.status)} ${esc(it.summary || '')}</div>`).join('');
+    const more = items.length > 3 ? `<div class="mut" style="font-size:12px">…共 ${items.length} 项</div>` : '';
+    return `<div class="pitem" style="display:block">
+      <div class="row" style="margin-bottom:4px">
+        <span class="pill tag">${s.id}</span><b>${esc(s.name)}</b>
+        <div class="spacer"></div>
+        <span class="pill tag">${x.count || 0} 项</span>
+        ${x.approved ? `<span class="pill ok"><i class="dotm"></i>${x.approved}</span>` : ''}
+        ${x.review ? `<span class="pill warn"><i class="dotm"></i>${x.review}</span>` : ''}
+        ${x.stale ? `<span class="pill stale"><i class="dotm"></i>${x.stale}</span>` : ''}
+        <button class="sm" data-jump="${s.id}">查看/编辑</button>
+      </div>
+      ${items.length ? first + more : '<div class="mut" style="font-size:12px">（暂无产物）</div>'}
+    </div>`;
   }).join('');
+
   box.innerHTML = `
-    <div class="grid3" style="margin-bottom:14px">
-      <div><div class="mut" style="font-size:12px">标题</div><b>${esc(p.title)}</b></div>
-      <div><div class="mut" style="font-size:12px">目标页数</div><b>${p.target_pages}</b></div>
-      <div><div class="mut" style="font-size:12px">审查模式</div><b>${p.review_mode === 'auto' ? '全自动' : '人工审查'}</b></div>
+    <div class="grid2" style="margin-bottom:10px">
+      <div><label class="fld">标题</label>
+        <div class="row"><input id="pd2-title" value="${esc(p.title)}" style="flex:1">
+          <button class="sm" data-save="title">保存</button></div></div>
+      <div><label class="fld">目标页数（可改）</label>
+        <div class="row"><input id="pd2-pages" type="number" min="1" value="${p.target_pages}" style="flex:1">
+          <button class="sm" data-save="target_pages">保存</button></div></div>
     </div>
-    <div style="margin-bottom:14px"><div class="mut" style="font-size:12px">大纲</div>
-      <div style="white-space:pre-wrap;line-height:1.8">${esc(p.outline || '（未填写）')}</div></div>
-    <table><thead><tr><th>阶段</th><th>产物数</th><th>已通过</th><th>待审</th><th>需重跑</th></tr></thead>
-      <tbody>${rows}</tbody></table>`;
+    <div style="margin-bottom:10px"><label class="fld">故事大纲</label>
+      <textarea id="pd2-outline" style="min-height:90px">${esc(p.outline || '')}</textarea>
+      <div class="row" style="margin-top:6px"><button class="sm" data-save="outline">保存大纲</button>
+        <span class="mut" style="font-size:12px">大纲会影响 S2 分格时对剧情的取舍</span></div></div>
+
+    <div class="divider"></div>
+    <div class="row" style="margin-bottom:6px">
+      <b>小说全文</b>
+      <span class="pill ${novel.chars ? 'ok' : ''}">已通过 ${novel.approved_count}/${novel.total_count} 段 · ${novel.chars} 字</span>
+      <div class="spacer"></div>
+      <button class="sm" data-goto="novel">去「正文」页编辑</button>
+    </div>
+    <div class="novel" style="max-height:260px">
+      ${novel.text ? novel.text.split(/\n{2,}/).map((t) => `<p>${esc(t)}</p>`).join('')
+                   : '<div class="empty">暂无已通过的正文（在「正文」页写并审核通过后才会计入）</div>'}
+    </div>
+
+    <div class="divider"></div>
+    <div class="row" style="margin-bottom:8px"><b>各阶段产物</b>
+      <span class="mut" style="font-size:12px">点「查看/编辑」进入该阶段</span></div>
+    <div class="plist">${stageRows}</div>`;
+
+  // 保存（标题 / 目标页数 / 大纲）
+  box.querySelectorAll('[data-save]').forEach((b) => b.addEventListener('click', async () => {
+    const field = b.dataset.save;
+    const map = { title: '#pd2-title', target_pages: '#pd2-pages', outline: '#pd2-outline' };
+    let v = box.querySelector(map[field]).value;
+    if (field === 'target_pages') v = +v || 1;
+    try {
+      await api('/api/projects/' + state.projectId, { method: 'PATCH', body: JSON.stringify({ [field]: v }) });
+      state.project = await api('/api/projects/' + state.projectId);
+      toast('已保存', 'ok');
+      // 同步侧栏当前项目信息
+      $('#cur-proj').innerHTML = `<b>${esc(state.project.title)}</b>
+        <span class="mut">${state.project.target_pages} 页 · ${state.project.review_mode === 'auto' ? '全自动' : '人工审查'}</span>`;
+      loadProjects();
+      refreshGates();
+      if (field === 'target_pages') renderProjectDetail();
+    } catch (e) { toast(e.message, 'err'); }
+  }));
+  // 跳阶段
+  box.querySelectorAll('[data-jump]').forEach((b) => b.addEventListener('click', () => openStageArtifacts(b.dataset.jump)));
+  box.querySelectorAll('[data-goto]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.goto)));
 }
+
 
 $('#btn-new').addEventListener('click', async () => {
   try {
