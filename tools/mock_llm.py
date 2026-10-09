@@ -62,7 +62,7 @@ class H(BaseHTTPRequestHandler):
         # 按字符分块，模拟真实流式
         for i in range(0, len(MOCK_TEXT), 12):
             chunk({"content": MOCK_TEXT[i:i + 12]})
-            time.sleep(0.01)
+            time.sleep(0.35)
         chunk({}, finish="stop")
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()

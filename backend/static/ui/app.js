@@ -159,6 +159,7 @@ async function sendToTavern() {
   if (!text) return toast('消息不能为空', 'err');
   try {
     state.chatLenAtSend = state.chatLenNow ?? null;
+    $('#tv-error').classList.add('hidden');
     const r = await api(`/api/projects/${state.projectId}/tavern/send`, { method: 'POST', body: JSON.stringify({ text }) });
     $('#tv-input').value = '';
     toast(`已发给酒馆 #${r.job_id}，生成后回传为正文`, 'ok');
@@ -267,6 +268,25 @@ function renderTavern(d) {
   if (rc.preset_name) bits.push(`预设 ${esc(rc.preset_name)}`);
   if (rc.model) bits.push(`模型 ${esc(rc.model)}`);
   $('#tv-receipt').textContent = '生成依据：' + (bits.length ? bits.join(' · ') : '尚未生成');
+
+  // 流式 / 错误展示
+  const live = d.live || {};
+  const liveBox = $('#tv-live'), errBox = $('#tv-error');
+  if (live.text) {
+    liveBox.classList.remove('hidden');
+    errBox.classList.add('hidden');
+    $('#tv-live-text').textContent = live.text;
+    $('#tv-live-chars').textContent = `${live.chars || 0} 字`;
+    const st = $('#tv-live-state');
+    if (live.done) { st.className = 'pill ok'; st.innerHTML = '<i class="dotm"></i>已完成，待审核'; }
+    else { st.className = 'pill run'; st.innerHTML = '<i class="dotm"></i>流式接收中…'; }
+  } else if (!live.error) {
+    liveBox.classList.add('hidden');
+  }
+  if (live.error) {
+    errBox.classList.remove('hidden');
+    $('#tv-error-text').textContent = live.error;
+  }
 
   const msgs = (d.messages || []).filter((m) => !isNoise(m));
   state.chatLenNow = msgs.length;

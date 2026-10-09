@@ -26,6 +26,9 @@ let backendUrl = DEFAULT_BACKEND;
 let chatLenBefore = 0;
 // 本次生成的依据（由事件填充）
 let currentReceipt = {};
+// 流式缓冲：酒馆的 STREAM_TOKEN_RECEIVED 给的是累积文本
+let streamBuffer = '';
+let streaming = false;
 
 function getSettings() {
   const ctx = getContext();
@@ -281,11 +284,50 @@ async function runTask(task) {
     await ctx.executeSlashCommandsWithOptions(`/send ${quoted}`);
   }
   pushMirror(); // 让前端尽快看到“我们发出去的那条”
-  await ctx.executeSlashCommandsWithOptions('/trigger await=true');
+
+  // 流式：把累积文本推给后端，前端实时渲染
+  streamBuffer = '';
+  streaming = true;
+  try {
+    await ctx.executeSlashCommandsWithOptions('/trigger await=true');
+  } catch (e) {
+    streaming = false;
+    await reportError(task, `生成失败：${e?.message || e}`);
+    return;
+  }
+  streaming = false;
 
   if (currentTask === task) {
-    await reportResult(task, extractNewText());
+    const text = streamBuffer.trim() || extractNewText();
+    if (!text) {
+      await reportError(task, '生成没有返回内容（可能是上游 API 报错或超时）');
+      return;
+    }
+    await reportResult(task, text);
   }
+}
+
+/** 推送一段流式文本（累积）给后端。 */
+async function pushStream(task, text) {
+  try {
+    await api('/api/bridge/stream', {
+      method: 'POST',
+      body: JSON.stringify({ job_id: task.job_id, text }),
+    });
+  } catch (e) { /* 后端没开时静默 */ }
+}
+
+/** 报告生成失败（不再“没反应”）。 */
+async function reportError(task, message) {
+  if (currentTask === task) currentTask = null;
+  try {
+    await api('/api/bridge/error', {
+      method: 'POST',
+      body: JSON.stringify({ job_id: task.job_id, error: message }),
+    });
+  } catch (e) { /* 忽略 */ }
+  toastr?.error?.(`漫画桥：${message}`);
+  pushMirror();
 }
 
 /**
@@ -351,11 +393,27 @@ async function mirrorTick() {
 function start() { if (!polling) { polling = true; tick(); mirrorTick(); } }
 function stop() { polling = false; }
 
+// 生成中：把累积文本推给后端（前端实时流式显示）
+let lastStreamPush = 0;
+eventSource.on(event_types.STREAM_TOKEN_RECEIVED, (text) => {
+  if (!currentTask || !streaming) return;
+  streamBuffer = typeof text === 'string' ? text : (text?.text ?? streamBuffer);
+  const now = Date.now();
+  if (now - lastStreamPush >= 400) {  // 节流，避免请求过密
+    lastStreamPush = now;
+    void pushStream(currentTask, streamBuffer);
+  }
+});
+
 // 生成结束时兜底回传
 eventSource.on(event_types.GENERATION_ENDED, () => {
   if (!currentTask) return;
   const task = currentTask;
-  setTimeout(() => reportResult(task, extractNewText()), 300);
+  setTimeout(async () => {
+    const text = streamBuffer.trim() || extractNewText();
+    if (!text) { await reportError(task, '生成没有返回内容'); return; }
+    await reportResult(task, text);
+  }, 300);
 });
 
 // ---------------- UI ----------------
