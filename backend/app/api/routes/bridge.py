@@ -223,16 +223,26 @@ def push_mirror(body: dict, session: Session = Depends(get_session)) -> dict:
 
     row = session.get(TavernMirror, 1)
     if row is None:
-        row = TavernMirror(id=1)
+        row = TavernMirror(id=1, payload={})
         session.add(row)
-    row.payload = {
+    # 合并而不是整体替换：**保留 live 字段**（流式/失败状态）。
+    # 之前这里是整体覆盖，导致 pushMirror（每 2.5s）把刚上报的失败信息冲掉，
+    # 前端因此看不到任何错误——就是“没反应”的由来。
+    payload = dict(row.payload or {})
+    payload.update({
         "context": body.get("context") or {},
         "messages": body.get("messages") or [],
         "receipt": body.get("receipt") or {},
         "chats": body.get("chats") or [],
-    }
+    })
+    row.payload = payload
     session.commit()
-    return {"ok": True, "messages": len(row.payload["messages"]), "chats": len(row.payload["chats"])}
+    return {
+        "ok": True,
+        "messages": len(payload["messages"]),
+        "chats": len(payload["chats"]),
+        "live_preserved": bool(payload.get("live")),
+    }
 
 
 @router.post("/bridge/stream")
