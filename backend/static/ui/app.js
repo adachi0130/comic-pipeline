@@ -347,6 +347,20 @@ async function loadTavern() {
   } catch (e) { $('#tv-meta').textContent = '读取失败：' + e.message; }
 }
 
+// 通用：点标题折叠（默认收起，不加按钮）
+function bindCollapse(toggleId, bodyId, arrowId) {
+  const tg = document.getElementById(toggleId);
+  if (!tg) return;
+  tg.addEventListener('click', () => {
+    const body = document.getElementById(bodyId);
+    const arrow = document.getElementById(arrowId);
+    const hidden = body.classList.toggle('hidden');
+    if (arrow) arrow.textContent = hidden ? '▸' : '▾';
+  });
+}
+bindCollapse('nv-segs-toggle', 'nv-segs-body', 'nv-segs-arrow');
+bindCollapse('nv-full-toggle', 'nv-full-body', 'nv-full-arrow');
+
 // ---------- 正文（小说） ----------
 $('#nv-start').addEventListener('click', () => requestProse('start'));
 $('#nv-continue').addEventListener('click', () => requestProse('continue'));
@@ -367,6 +381,8 @@ async function loadNovel() {
     const n = await api(`/api/projects/${state.projectId}/novel`);
     $('#nv-state').className = 'pill ' + (n.total_count === 0 ? '' : n.can_continue ? 'ok' : 'warn');
     $('#nv-state').innerHTML = `<i class="dotm"></i>${n.approved_count}/${n.total_count} 段已通过`;
+    const sc = $('#nv-segs-count'); if (sc) sc.textContent = `${n.approved_count}/${n.total_count} 已通过`;
+    const fc = $('#nv-full-count'); if (fc) fc.textContent = `${n.chars} 字`;
     $('#nv-continue').disabled = !(n.can_continue && n.total_count > 0);
 
     // 分段
@@ -382,35 +398,54 @@ async function loadNovel() {
       if (rc.prompt_chars) bits.push(`提示词 ${rc.prompt_chars} 字`);
       return `
       <div class="seg" data-id="${s.id}">
-        <div class="segh"><b>第 ${s.index} 段</b> ${pill(s.status)}
+        <div class="segh" style="cursor:pointer" data-fold="${s.id}">
+          <span class="mut" style="font-size:12px" id="seg-arrow-${s.id}">▸</span>
+          <b>第 ${s.index} 段</b> ${pill(s.status)}
           <span class="pill tag">${s.mode === 'continue' ? '续写' : s.mode === 'raw' ? '直发' : '起笔'}</span>
           <span class="mut" style="font-size:12px">${s.chars} 字</span>
+          <span class="mut" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:280px">${esc((s.text || '').slice(0, 40))}</span>
           <div class="spacer"></div>
           <button class="sm" data-edit="${s.id}">编辑</button>
           <button class="sm" data-approve="${s.id}">通过</button>
-          <button class="sm danger" data-reject="${s.id}">驳回</button>
+          <button class="sm" data-reject="${s.id}" title="标记不合格，不会自动重写">驳回</button>
+          <button class="sm danger" data-del="${s.id}" title="删除这一段">删除</button>
         </div>
-        ${bits.length ? `<div class="mut" style="font-size:12px;margin-bottom:6px">生成依据：${bits.join(' · ')}</div>` : ''}
-        <div class="txt clip">${esc(s.text)}</div>
+        <div id="seg-body-${s.id}" class="hidden">
+          ${bits.length ? `<div class="mut" style="font-size:12px;margin-bottom:6px">生成依据：${bits.join(' · ')}</div>` : ''}
+          <div class="txt">${esc(s.text)}</div>
+        </div>
       </div>`;
     }).join('');
     bindSegments();
 
     // 全文
-    $('#nv-fullmeta').textContent = `共 ${n.total_count} 段 · ${n.chars} 字`;
+    $('#nv-fullmeta').textContent = `已通过 ${n.approved_count} 段 · ${n.chars} 字（仅统计已通过）`;
     $('#nv-full').innerHTML = n.text ? n.text.split(/\n{2,}/).map((p) => `<p>${esc(p)}</p>`).join('') : '<div class="empty">暂无全文</div>';
   } catch (e) { toast(e.message, 'err'); }
 }
 
 function bindSegments() {
+  $$('[data-fold]').forEach((h) => h.addEventListener('click', (e) => {
+    if (e.target.closest('button')) return;  // 点按钮不触发折叠
+    const id = h.dataset.fold;
+    const body = document.getElementById('seg-body-' + id);
+    const arrow = document.getElementById('seg-arrow-' + id);
+    const hidden = body.classList.toggle('hidden');
+    if (arrow) arrow.textContent = hidden ? '▸' : '▾';
+  }));
+  $$('[data-del]').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm('删除这一段？')) return;
+    await api('/api/artifacts/' + b.dataset.del, { method: 'DELETE' });
+    toast('已删除该段', 'ok'); loadNovel(); refreshGates();
+  }));
   $$('[data-approve]').forEach((b) => b.addEventListener('click', async () => {
     await api(`/api/artifacts/${b.dataset.approve}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'approve' }) });
     toast('该段已通过', 'ok'); loadNovel(); refreshGates();
   }));
   $$('[data-reject]').forEach((b) => b.addEventListener('click', async () => {
-    const comment = prompt('驳回批注（可留空）：') || '';
+    const comment = prompt('驳回批注（可留空）：\n\n提示：驳回只是标记不合格，不会自动重写。可编辑后重审，或点删除重来。') || '';
     await api(`/api/artifacts/${b.dataset.reject}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'reject', comment }) });
-    toast('该段已驳回，可编辑后重审', 'ok'); loadNovel(); refreshGates();
+    toast('已驳回（仅标记，不会自动重写）', 'ok'); loadNovel(); refreshGates();
   }));
   $$('[data-edit]').forEach((b) => b.addEventListener('click', () => openSegEdit(+b.dataset.edit)));
 }
@@ -435,6 +470,14 @@ async function openSegEdit(id) {
     box.remove(); toast('已保存（下游标记需重跑）', 'ok'); loadNovel(); refreshGates();
   });
 }
+
+$('#nv-refresh').addEventListener('click', () => { loadNovel(); toast('已刷新'); });
+$('#nv-delall').addEventListener('click', async () => {
+  if (!state.projectId) return;
+  if (!confirm('清空本项目全部正文分段？此操作不可撤销。')) return;
+  await api(`/api/projects/${state.projectId}/prose`, { method: 'DELETE' });
+  toast('已清空全部正文', 'ok'); loadNovel(); refreshGates();
+});
 
 $('#nv-copy').addEventListener('click', async () => {
   if (!state.projectId) return;

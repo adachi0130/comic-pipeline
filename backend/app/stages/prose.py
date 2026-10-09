@@ -47,22 +47,35 @@ def next_index(session: Session, project_id: int) -> int:
     return (max(seg_index(a.ref) for a in segs) + 1) if segs else 1
 
 
-def novel_text(session: Session, project_id: int, *, only_approved: bool = False) -> str:
-    """小说全文（各段拼接）。``only_approved=True`` 时只取已通过的分段。"""
+def novel_text(session: Session, project_id: int, *, only_approved: bool = True) -> str:
+    """小说全文（各段拼接）。
+
+    默认**只取已通过的分段**——未审核的内容不进入小说正文。
+    内部需要草稿上下文时显式传 ``only_approved=False``。
+    """
     segs = approved_segments(session, project_id) if only_approved else segments(session, project_id)
     return "\n\n".join((a.payload or {}).get("text", "") for a in segs if (a.payload or {}).get("text"))
 
 
 def novel_state(session: Session, project_id: int) -> dict:
-    """给前端的小说状态：全文、分段、统计、能否续写。"""
+    """给前端的小说状态：全文、分段、统计、能否续写。
+
+    ``text`` 只包含**已通过**的分段——未审核的内容不进小说全文。
+    ``all_text`` 含草稿，仅供内部参考。
+    """
     segs = segments(session, project_id)
     approved = [a for a in segs if a.status == ArtifactStatus.APPROVED.value]
-    text = "\n\n".join((a.payload or {}).get("text", "") for a in segs if (a.payload or {}).get("text"))
+    approved_text = "\n\n".join(
+        (a.payload or {}).get("text", "") for a in approved if (a.payload or {}).get("text")
+    )
+    all_text = "\n\n".join((a.payload or {}).get("text", "") for a in segs if (a.payload or {}).get("text"))
     # 允许续写：无未通过的分段（全部已通过），或还没有任何分段
     can_continue = all(a.status == ArtifactStatus.APPROVED.value for a in segs)
     return {
-        "text": text,
-        "chars": len(text),
+        "text": approved_text,               # 小说全文 = 只含已通过
+        "chars": len(approved_text),
+        "all_text": all_text,
+        "all_chars": len(all_text),
         "segments": [
             {
                 "id": a.id,

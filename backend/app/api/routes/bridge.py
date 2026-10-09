@@ -59,7 +59,8 @@ def request_prose(project_id: int, body: dict, session: Session = Depends(get_se
 
     tail = ""
     if mode == "continue":
-        full = prose.novel_text(session, project_id)
+        # 续写上下文取已通过的正文（能续写说明已全部通过）
+        full = prose.novel_text(session, project_id, only_approved=True)
         tail = full[-1200:] if len(full) > 1200 else full
 
     job = jobq.enqueue_deferred(

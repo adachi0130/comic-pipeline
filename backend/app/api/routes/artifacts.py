@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from ... import artifacts as A
 from ...db import get_session
-from ...models import Artifact, ArtifactStatus
+from ...models import Artifact, ArtifactEdge, ArtifactKind, ArtifactStatus, Project
 from ...schemas import ReviewAction
 
 router = APIRouter(tags=["artifacts"])
@@ -45,6 +45,54 @@ def list_versions(
     project_id: int, kind: str, ref: str, session: Session = Depends(get_session)
 ) -> list[dict]:
     return [_full(a) for a in A.versions_of(session, project_id, kind, ref)]
+
+
+@router.delete("/artifacts/{artifact_id}")
+def delete_artifact(artifact_id: int, session: Session = Depends(get_session)) -> dict:
+    """删除某产物（含其所有版本与相关血缘边）。
+
+    用于“这一段写废了，删掉重写”。删除后该产物的下游血缘边一并清理。
+    """
+    a = session.get(Artifact, artifact_id)
+    if a is None:
+        raise HTTPException(404, "产物不存在")
+    ids = [x.id for x in A.versions_of(session, a.project_id, a.kind, a.ref)]
+    ids.append(a.id)
+    session.execute(
+        delete(ArtifactEdge).where(
+            or_(ArtifactEdge.from_artifact_id.in_(ids), ArtifactEdge.to_artifact_id.in_(ids))
+        )
+    )
+    session.execute(delete(Artifact).where(Artifact.id.in_(ids)))
+    session.commit()
+    return {"ok": True, "deleted": len(ids), "ref": a.ref}
+
+
+@router.delete("/projects/{project_id}/prose")
+def delete_all_prose(
+    project_id: int, ref_prefix: str | None = None, session: Session = Depends(get_session)
+) -> dict:
+    """删除本项目全部正文分段（或按 ref 前缀部分删除）。
+
+    删除后小说全文清空，可重新开始写。
+    """
+    if session.get(Project, project_id) is None:
+        raise HTTPException(404, "项目不存在")
+    rows = A.all_current(session, project_id, ArtifactKind.PROSE.value, ref_prefix=ref_prefix)
+    all_ids: list[int] = []
+    for a in rows:
+        all_ids.extend(x.id for x in A.versions_of(session, project_id, a.kind, a.ref))
+        all_ids.append(a.id)
+    if not all_ids:
+        return {"ok": True, "deleted": 0}
+    session.execute(
+        delete(ArtifactEdge).where(
+            or_(ArtifactEdge.from_artifact_id.in_(all_ids), ArtifactEdge.to_artifact_id.in_(all_ids))
+        )
+    )
+    session.execute(delete(Artifact).where(Artifact.id.in_(all_ids)))
+    session.commit()
+    return {"ok": True, "deleted": len(set(all_ids)), "segments": len(rows)}
 
 
 @router.post("/artifacts/{artifact_id}/review")
