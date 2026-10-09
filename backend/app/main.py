@@ -28,6 +28,7 @@ from .api.routes import jobs as jobs_routes
 from .api.routes import meta as meta_routes
 from .api.routes import pipeline as pipeline_routes
 from .api.routes import projects as projects_routes
+from .api.routes import prompts as prompts_routes
 from .api.routes import providers as providers_routes
 from .comfy.tunnel import SshTunnel
 from .stages import register_all
@@ -89,6 +90,7 @@ app.include_router(meta_routes.router, prefix="/api")
 app.include_router(projects_routes.router, prefix="/api")
 app.include_router(artifacts_routes.router, prefix="/api")
 app.include_router(providers_routes.router, prefix="/api")
+app.include_router(prompts_routes.router, prefix="/api")
 app.include_router(comfy_routes.router, prefix="/api")
 app.include_router(jobs_routes.router, prefix="/api")
 app.include_router(pipeline_routes.router, prefix="/api")

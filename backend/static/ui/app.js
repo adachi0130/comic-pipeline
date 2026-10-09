@@ -787,6 +787,10 @@ async function openTemplatePicker(onPick, currentId, title) {
 
 // ---------- 分格工作台（S2）----------
 $('#pg-reload').addEventListener('click', loadPages);
+document.addEventListener('click', (e) => {
+  const b = e.target.closest && e.target.closest('[data-prompt]');
+  if (b) { e.preventDefault(); openPromptEditor(b.dataset.prompt); }
+});
 $('#pg-add').addEventListener('click', async () => {
   if (!state.projectId) return toast('先选择项目', 'err');
   openTemplatePicker(async (tplId) => {
@@ -912,19 +916,93 @@ async function renderFlow() {
         ${g.stale ? `<span class="pill stale"><i class="dotm"></i>${g.stale} 需重跑</span>` : ''}
         <button class="sm" data-view="${s.id}">查看</button>
         ${isS1 ? '<button class="sm primary" data-go="novel">去写正文</button>' : `<button class="sm" data-run="${s.id}">运行</button>`}
+        ${PROMPT_OF_STAGE[s.id] ? `<button class="sm" data-prompt="${PROMPT_OF_STAGE[s.id]}">提示词</button>` : ''}
       </div></div>`;
   }).join('');
   $$('[data-view]').forEach((b) => b.addEventListener('click', () => openStageArtifacts(b.dataset.view)));
   $$('[data-run]').forEach((b) => b.addEventListener('click', () => runStage(b.dataset.run)));
   $$('[data-go]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.go)));
+  // 提示词按钮统一由全局 document 委托处理（见 loadPages 附近），避免重复弹窗
 }
 
 async function runStage(stage) {
   if (!state.projectId) return toast('先选择项目', 'err');
+  // 前端先查前置条件，缺什么就明确提示并给跳转
+  try {
+    const rd = await api(`/api/projects/${state.projectId}/readiness`);
+    const info = rd[stage] || {};
+    if (!info.ready) {
+      if (info.goto && confirm(`前置条件未满足：\n\n${info.missing}\n\n要现在去处理吗？`)) switchTab(info.goto);
+      else toast('前置未满足：' + info.missing, 'err');
+      return;
+    }
+  } catch { /* 检查失败就交给后端兜底 */ }
   try {
     const r = await api(`/api/projects/${state.projectId}/run/${stage}`, { method: 'POST', body: '{}' });
     toast(`${stage} 已入队 #${r.job_id}`);
   } catch (e) { toast(e.message, 'err'); }
+}
+
+// 阶段 -> 提示词名（只有走 LLM 的阶段才有）
+const PROMPT_OF_STAGE = { S2: 's2_script', S3: 's3_prompt' };
+
+// ---------- 提示词编辑器（前端可改可存，存数据库，重启不丢）----------
+async function openPromptEditor(name) {
+  let list;
+  try { list = await api('/api/prompts'); } catch (e) { return toast(e.message, 'err'); }
+  const item = list.find((x) => x.name === name);
+  if (!item) return toast('找不到该提示词', 'err');
+
+  const box = document.createElement('div');
+  box.className = 'modal';
+  box.innerHTML = `<div class="box" style="width:min(1040px,95vw)">
+    <h3>${esc(item.label)} · 提示词
+      ${item.overridden ? '<span class="pill warn"><i class="dotm"></i>已自定义</span>'
+                        : '<span class="pill tag">默认</span>'}</h3>
+    <div class="h2sub">这里的改动会立即用于该阶段后续的 LLM 调用，并保存在数据库（重启不丢）。
+      可随时点「还原默认」恢复仓库里的原始版本。</div>
+    <div style="margin-bottom:10px"><label class="fld">系统提示词（角色/规则/输出格式约束）</label>
+      <textarea id="pp-sys" style="min-height:240px;font-family:ui-monospace,Consolas,monospace;font-size:12.5px">${esc(item.system_text)}</textarea></div>
+    <div><label class="fld">用户提示词模板（用 {{KEY}} 占位，如 {{NOVEL}} / {{TEMPLATE_MENU}} / {{TECHNIQUES}}）</label>
+      <textarea id="pp-user" style="min-height:180px;font-family:ui-monospace,Consolas,monospace;font-size:12.5px">${esc(item.user_text)}</textarea></div>
+    <div class="row" style="margin-top:12px">
+      <span class="mut" style="font-size:12px" id="pp-hint">可用占位：${
+        name === 's2_script' ? 'NOVEL / START_PAGE / END_PAGE / TOTAL_PAGES / TEMPLATE_MENU / TECHNIQUES'
+                             : 'PAGE_SCRIPT_JSON / CHARACTERS_JSON / TECHNIQUES_JSON / PANEL_GEOMETRY_JSON'}</span>
+      <div class="spacer"></div>
+      <button class="sm" data-close>取消</button>
+      <button class="sm danger" id="pp-reset">还原默认</button>
+      <button class="primary sm" id="pp-save">保存</button>
+    </div></div>`;
+  document.body.appendChild(box);
+  box.querySelector('[data-close]').addEventListener('click', () => box.remove());
+  box.addEventListener('click', (e) => { if (e.target === box) box.remove(); });
+
+  box.querySelector('#pp-save').addEventListener('click', async () => {
+    try {
+      await api(`/api/prompts/${name}`, { method: 'PUT', body: JSON.stringify({
+        system_text: box.querySelector('#pp-sys').value,
+        user_text: box.querySelector('#pp-user').value }) });
+      toast('提示词已保存（后续调用立即生效）', 'ok');
+      box.remove();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+  box.querySelector('#pp-reset').addEventListener('click', async () => {
+    // 不用浏览器原生 confirm（部分环境会被拦截/阻断），改用二次点击确认
+    const btn = box.querySelector('#pp-reset');
+    if (btn.dataset.armed !== '1') {
+      btn.dataset.armed = '1';
+      btn.textContent = '再点一次确认还原';
+      toast('再点一次「再点一次确认还原」即恢复默认（你的自定义将被删除）');
+      setTimeout(() => { if (btn) { btn.dataset.armed = '0'; btn.textContent = '还原默认'; } }, 6000);
+      return;
+    }
+    try {
+      await api(`/api/prompts/${name}`, { method: 'DELETE' });
+      toast('已还原默认', 'ok');
+      box.remove(); openPromptEditor(name);
+    } catch (e) { toast(e.message, 'err'); }
+  });
 }
 
 async function openStageArtifacts(stage) {

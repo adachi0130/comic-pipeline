@@ -15,6 +15,7 @@ from ...models import (
     ArtifactKind,
     ArtifactStatus,
     Project,
+    LLMProvider,
     StageModel,
     Technique,
     Template,
@@ -140,6 +141,64 @@ def template_svg(template_id: str, session: Session = Depends(get_session)):
                     headers={"Cache-Control": "public, max-age=86400"})
 
 
+@router.get("/projects/{project_id}/readiness")
+def readiness(project_id: int, session: Session = Depends(get_session)) -> dict:
+    """各阶段的前置条件检查：缺什么就说清楚，前端据此提示/跳转。
+
+    规则（硬门槛）：
+    - S1 正文：需要项目有大纲
+    - S2 分格：需要**至少一段已通过**的正文
+    - S3 提示词：需要**至少一页已通过**的分格
+    - S4 出图：需要**至少一条已通过**的提示词
+    - S5 合成：需要**至少一页已通过的分格** + 该页有已选图
+    - S6 导出：需要**至少一页已通过**的整页图
+    """
+    from ...models import Character
+
+    project = session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "项目不存在")
+
+    def cnt(kind: str, status: str | None = None) -> int:
+        rows = A.all_current(session, project_id, kind)
+        return sum(1 for r in rows if status is None or r.status == status)
+
+    prose_all = cnt(ArtifactKind.PROSE.value)
+    prose_ok = cnt(ArtifactKind.PROSE.value, ArtifactStatus.APPROVED.value)
+    page_ok = cnt(ArtifactKind.PAGE_SCRIPT.value, ArtifactStatus.APPROVED.value)
+    prompt_ok = cnt(ArtifactKind.PANEL_PROMPT.value, ArtifactStatus.APPROVED.value)
+    img_ok = cnt(ArtifactKind.IMAGE.value, ArtifactStatus.APPROVED.value)
+    pageimg_ok = cnt(ArtifactKind.PAGE_IMAGE.value, ArtifactStatus.APPROVED.value)
+    has_provider = session.scalars(select(StageModel)).first() is not None or         session.scalars(select(LLMProvider)).first() is not None
+
+    def block(stage: str, ok: bool, missing: str, goto: str = "") -> dict:
+        return {"stage": stage, "ready": ok, "missing": "" if ok else missing, "goto": goto}
+
+    out = {
+        "S1": block("S1", bool((project.outline or "").strip()),
+                    "还没有故事大纲；请到「项目」页填写大纲", "projects"),
+        "S2": block("S2", prose_ok > 0,
+                    ("还没有已审核通过的正文（当前 %d 段待审）；请到「正文」页审核通过至少一段" % (prose_all - prose_ok))
+                    if prose_all else "还没有正文；请先到「正文」页写并审核通过", "novel"),
+        "S3": block("S3", page_ok > 0,
+                    "还没有已审核通过的分格页；请到「分格」页通过至少一页", "pages"),
+        "S4": block("S4", prompt_ok > 0,
+                    "还没有已审核通过的提示词；请到「流水线」页对 S3 产物审核通过", "pipeline"),
+        "S5": block("S5", page_ok > 0 and img_ok > 0,
+                    "需要：已通过的分格页 + 该页每格选定成图", "pages"),
+        "S6": block("S6", pageimg_ok > 0,
+                    "还没有已审核通过的整页成图；请先完成 S5 分页合成并审核", "pipeline"),
+        "counts": {
+            "prose_total": prose_all, "prose_approved": prose_ok,
+            "page_approved": page_ok, "prompt_approved": prompt_ok,
+            "image_approved": img_ok, "page_image_approved": pageimg_ok,
+        },
+        "has_llm_provider": has_provider,
+        "llm_hint": "" if has_provider else "尚未配置 LLM 供应商；请到「设置」页添加或从酒馆导入",
+    }
+    return out
+
+
 @router.get("/projects/{project_id}/pages")
 def pages_board(project_id: int, session: Session = Depends(get_session)) -> dict:
     """S2「分格」工作台数据：小说全文 + 已有页 + 模板菜单。"""
@@ -236,7 +295,7 @@ def auto_page(project_id: int, page_ref: str, body: dict, session: Session = Dep
         raise HTTPException(404, "项目不存在")
     novel = prose.novel_text(session, project_id, only_approved=True)
     if not novel.strip():
-        raise HTTPException(400, "还没有已审核通过的正文；请先在「正文」页写好并通过")
+        raise HTTPException(400, "前置条件未满足：还没有「已审核通过」的正文。请到「正文」页写并点「通过」，然后才能分格。")
 
     try:
         no = int(page_ref.split(":", 1)[1])
@@ -246,7 +305,7 @@ def auto_page(project_id: int, page_ref: str, body: dict, session: Session = Dep
 
     provider, cfg = promptlib.resolve_provider(session, "S2")
     client = LLMClient(cfg)
-    system, user_tpl = promptlib.load_prompt("s2_script")
+    system, user_tpl = promptlib.get_prompt(session, "s2_script")
     tpl_menu = _json.dumps(
         [{"id": r.id, "dir": r.dir, "panels": r.panels_count, "desc": r.layout_desc}
          for r in session.scalars(select(Template).order_by(Template.dir, Template.panels_count)).all()],
@@ -313,6 +372,12 @@ def run_stage(project_id: int, stage: str, body: dict | None = None, session: Se
     kinds = {s: k for s, k in STAGE_ORDER}
     if stage not in kinds:
         raise HTTPException(400, f"未知阶段：{stage}（S1 正文请用 /prose/request）")
+
+    # 前置条件硬校验：前置阶段没完成就不许跑，并明确告诉缺什么
+    rd = readiness(project_id, session)
+    info = rd.get(stage) or {}
+    if not info.get("ready", True):
+        raise HTTPException(400, f"前置条件未满足：{info.get('missing', '请先完成前一阶段')}")
     job = jobq.enqueue(kinds[stage], project_id=project_id, stage=stage, payload={"project_id": project_id, **(body or {})})
     return {"job_id": job.id, "stage": stage, "status": job.status}
 

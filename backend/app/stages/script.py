@@ -43,9 +43,9 @@ def handle(session: Session, job: Job) -> dict:
     if project is None:
         raise ValueError(f"项目不存在：{project_id}")
 
-    novel = prose.novel_text(session, project_id)
+    novel = prose.novel_text(session, project_id, only_approved=True)
     if not novel.strip():
-        raise ValueError("还没有正文（先在 S1 正文阶段用酒馆写出并审核通过）")
+        raise ValueError("前置条件未满足：还没有「已审核通过」的正文。请到「正文」页写并点「通过」。")
 
     # 已产出的页（避免重复）
     existing = {a.ref for a in all_current(session, project_id, ArtifactKind.PAGE_SCRIPT.value)}
@@ -54,7 +54,7 @@ def handle(session: Session, job: Job) -> dict:
 
     provider, cfg = promptlib.resolve_provider(session, "S2")
     client = LLMClient(cfg)
-    system, user_tpl = promptlib.load_prompt("s2_script")
+    system, user_tpl = promptlib.get_prompt(session, "s2_script")
     menu = _template_menu(session)
     techs = _techniques(session)
 
