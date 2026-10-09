@@ -211,14 +211,18 @@ def test_ui_to_api() -> None:
         ],
     }
     assert is_ui_format(ui_wf)
+    # object_info 的真实形状：["INT", {}] 标量、[["a","b"], {}] 下拉、"MODEL" 连线
     object_info = {
-        "CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": (["base.safetensors"],)}}},
-        "EmptyLatentImage": {"input": {"required": {"width": ("INT", {}), "height": ("INT", {}), "batch_size": ("INT", {})}}},
+        "CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": [["base.safetensors"], {}]}}},
+        "EmptyLatentImage": {"input": {"required": {
+            "width": ["INT", {}], "height": ["INT", {}], "batch_size": ["INT", {}]}}},
         "KSampler": {"input": {"required": {
-            "model": ("MODEL",), "seed": ("INT", {}), "steps": ("INT", {}), "cfg": ("FLOAT", {}),
-            "sampler_name": (["euler"],), "scheduler": (["normal"],), "denoise": ("FLOAT", {}),
+            "model": "MODEL", "seed": ["INT", {}], "steps": ["INT", {}], "cfg": ["FLOAT", {}],
+            "sampler_name": [["euler"], {}], "scheduler": [["normal"], {}],
+            "positive": "CONDITIONING", "negative": "CONDITIONING",
+            "latent_image": "LATENT", "denoise": ["FLOAT", {}],
         }}},
-        "SaveImage": {"input": {"required": {"images": ("IMAGE",), "filename_prefix": ("STRING", {})}}},
+        "SaveImage": {"input": {"required": {"images": "IMAGE", "filename_prefix": ["STRING", {}]}}},
     }
     api, warnings = ui_to_api(ui_wf, object_info)
     assert warnings == [], warnings
@@ -236,6 +240,34 @@ def test_ui_to_api() -> None:
     print("  [ok] UI 格式 → API 格式：控件对位、seed 后 JS 控件跳过、连线保留")
 
 
+def test_power_lora_loader() -> None:
+    """Power Lora Loader（对象式槽）：识别槽数、写入、关掉的槽保留名字。"""
+    wf = {
+        "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "b.safetensors"}},
+        "9": {
+            "class_type": "Power Lora Loader (rgthree)",
+            "inputs": {
+                "model": ["1", 0], "clip": ["1", 1],
+                "lora_1": {"on": False, "lora": "画风/A.safetensors", "strength": 0.9, "strengthTwo": None},
+                "lora_2": {"on": True, "lora": "画风/B.safetensors", "strength": 0.5, "strengthTwo": None},
+            },
+        },
+        "6": {"class_type": "KSampler", "inputs": {"seed": 1, "model": ["9", 0]}},
+        "8": {"class_type": "SaveImage", "inputs": {"images": ["6", 0]}},
+    }
+    p = guess_mapping(wf)
+    st = p.lora_stacker
+    assert st is not None and st.style == "dict", st
+    assert [s.name_input for s in st.slots] == ["lora_1", "lora_2"], st.slots
+
+    out = apply(wf, p, {"prompt_pos": "x", "prompt_neg": "y"}, loras=[{"name": "角色/C.safetensors", "weight": 1.2}])
+    inp = out["9"]["inputs"]
+    assert inp["lora_1"] == {"on": True, "lora": "角色/C.safetensors", "strength": 1.2, "strengthTwo": None}, inp["lora_1"]
+    # 多余槽关闭，但保留作者原来的 lora 名
+    assert inp["lora_2"]["on"] is False and inp["lora_2"]["lora"] == "画风/B.safetensors", inp["lora_2"]
+    print("  [ok] Power Lora Loader：对象式槽按序写入，多余槽关掉且保留名字")
+
+
 if __name__ == "__main__":
     print("工作流参数映射自测：")
     test_guess_mapping()
@@ -244,5 +276,6 @@ if __name__ == "__main__":
     test_lora_multi()
     test_placeholder_detection()
     test_lora_stacker()
+    test_power_lora_loader()
     test_ui_to_api()
     print("全部通过 ✅")

@@ -281,6 +281,93 @@ def create_page(project_id: int, body: dict, session: Session = Depends(get_sess
     return {"ok": True, "page_ref": ref, "template_id": tpl.id, "panels_count": tpl.panels_count}
 
 
+@router.get("/projects/{project_id}/prompt-board")
+def prompt_board(project_id: int, session: Session = Depends(get_session)) -> dict:
+    """S3「提示词」独立页面数据：按页列出每一格的分镜提示词（含未生成的占位）。"""
+    project = session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "项目不存在")
+
+    # 现有提示词产物：ref = panel:{页}.{格}
+    prompt_by_ref: dict[str, dict] = {}
+    for a in A.all_current(session, project_id, ArtifactKind.PANEL_PROMPT.value):
+        p = a.payload or {}
+        prompt_by_ref[a.ref] = {
+            "artifact_id": a.id, "version": a.version, "status": a.status,
+            "prompt_pos": p.get("prompt_pos", ""), "prompt_neg": p.get("prompt_neg", ""),
+            "loras": p.get("loras", []), "width": p.get("width"), "height": p.get("height"),
+        }
+
+    pages = []
+    for a in A.all_current(session, project_id, ArtifactKind.PAGE_SCRIPT.value):
+        payload = a.payload or {}
+        try:
+            no = int(a.ref.split(":", 1)[1])
+        except (IndexError, ValueError):
+            no = 10**9
+        tpl = session.get(Template, payload.get("template_id")) if payload.get("template_id") else None
+        panels = []
+        for p in payload.get("panels", []):
+            order = p.get("panel_order")
+            ref = f"panel:{no}.{order}"
+            panels.append({
+                "panel_order": order, "panel_ref": ref,
+                "shot": p.get("shot", ""), "action": p.get("action", ""),
+                "dialogue": p.get("dialogue", ""),
+                "prompt": prompt_by_ref.get(ref),
+            })
+        pages.append({
+            "page_ref": a.ref, "page_index": no, "status": a.status,
+            "template_id": payload.get("template_id"),
+            "template": ({"dir": tpl.dir, "panels_count": tpl.panels_count, "layout_desc": tpl.layout_desc}
+                         if tpl else None),
+            "panels": panels,
+        })
+    pages.sort(key=lambda x: x["page_index"])
+    done = sum(1 for pg in pages for p in pg["panels"] if p["prompt"])
+    total = sum(len(pg["panels"]) for pg in pages)
+    return {
+        "pages": pages,
+        "panel_total": total,
+        "panel_done": done,
+        "has_llm_provider": bool(session.scalars(
+            select(LLMProvider).where(LLMProvider.enabled.is_(True)).limit(1)
+        ).first()),
+    }
+
+
+@router.patch("/projects/{project_id}/panel-prompt/{panel_ref}")
+def update_panel_prompt(project_id: int, panel_ref: str, body: dict, session: Session = Depends(get_session)) -> dict:
+    """就地改某一格的分镜提示词（写一个新版本，下游标失效）。"""
+    art = A.current(session, project_id, ArtifactKind.PANEL_PROMPT.value, panel_ref)
+    if art is None:
+        raise HTTPException(404, f"没有 {panel_ref} 的提示词产物（先跑 S3）")
+    payload = {**(art.payload or {})}
+    for k in ("prompt_pos", "prompt_neg", "loras", "seed", "width", "height"):
+        if k in body:
+            payload[k] = body[k]
+    new = A.create(session, project_id=project_id, kind=ArtifactKind.PANEL_PROMPT.value,
+                   ref=panel_ref, payload=payload, inputs=[art],
+                   status=ArtifactStatus.REVIEW.value)
+    session.commit()
+    return {"ok": True, "artifact_id": new.id, "version": new.version}
+
+
+@router.post("/projects/{project_id}/prompt-board/run-page/{page_ref}")
+def run_prompt_page(project_id: int, page_ref: str, session: Session = Depends(get_session)) -> dict:
+    """只给某一页跑 S3（生成该页每一格的提示词）。"""
+    p = session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(404, "项目不存在")
+    rd = readiness(project_id, session)
+    info = rd.get("S3") or {}
+    if not info.get("ready", True):
+        raise HTTPException(400, f"前置条件未满足：{info.get('missing', '请先完成前一阶段')}")
+    job = jobq.enqueue("prompt", project_id=project_id, stage="S3",
+                       payload={"project_id": project_id, "page_ref": page_ref})
+    return {"job_id": job.id, "page_ref": page_ref}
+
+
 @router.post("/projects/{project_id}/pages/{page_ref}/auto")
 def auto_page(project_id: int, page_ref: str, body: dict, session: Session = Depends(get_session)) -> dict:
     """让 AI 为**这一页**挑模板并写分格（同步执行）。"""

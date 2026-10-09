@@ -68,19 +68,34 @@ cd backend && ../.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0
 
 ## M0 最小闭环（已验证）
 
-1. **连出图后端**：`PUT /api/comfy/config` 填仙宫云地址（可带 API Key）/切本机；`GET /api/comfy/status` 体检。
-2. **导入工作流 → 自动映射**：`POST /api/comfy/workflows {name, workflow}`。
-   - API 格式 JSON 直接存；**ComfyUI「UI 格式」会自动转 API 格式**（靠 `/object_info` 把控件位置对应到输入名）。
-   - 每个工作流各自的映射表落在 `config/workflows/<name>.params.yaml`。
-   - 支持两种出图工作流写法：**`%prompt%` 占位符**（沿用 MED 风格）或**字段映射**（CLIPTextEncode.text 等）。
-   - LoRA 支持**多 LoraLoader 串联**与**堆加载节点**（如 rgthree 的 `Lora Loader Stack (rgthree)`，`lora_01`+`strength_01` 成对，空槽填 `None`）。
-3. **拉 LoRA 列表**：`GET /api/comfy/assets` → 出图后端上的 LoRA / checkpoint / 采样器候选（来自 `/object_info`）。
-4. **试跑一张**：`POST /api/comfy/test-run` → 验证连接+工作流+参数+LoRA 是否通，返回可预览图片 URL。
-5. **出几格**：`POST /api/projects/{id}/panels/{panel_ref}/generate` 入队 S5 出图，`GET /api/jobs/events` 看进度。
+1. **连出图后端**：`POST /api/comfy/connect {backend, url, api_key}` —— 一次请求把后端上
+   **已有的工作流列表 + LoRA/checkpoint/VAE 列表**拉回来。
+   - 对应 Manga Editor Desu 的「外部 AI 设置」：填个地址就能连，不是让你手工传文件。
+   - LoRA 列表来自 `/models/loras`；工作流列表来自 `/userdata?dir=workflows`。
+2. **点一个工作流看参数**：`POST /api/comfy/server-workflow {name}` —— 读该工作流的原始文件，
+   **UI 格式自动转 API 格式**（靠 `/object_info` 把控件位置对应到输入名），并体检出：
+   提示词参数、采样参数、LoRA 槽（含每个槽的现有 LoRA/开关/权重）、缺失节点。
+3. **选定就用**：`POST /api/comfy/import-from-server {name}` —— 存进登记表、设为当前、自动映射参数。
+4. **试跑一张**：`POST /api/comfy/test-run` —— 验证「连接 + 工作流 + 参数 + LoRA」整条通不通，
+   返回可预览图片 URL。（实测：832×1216 图，约 2 分钟）
+5. **出几格**：`POST /api/projects/{id}/panels/{panel_ref}/generate` 入队 S5 出图。
 6. **MED 拼第一页**：桥把模板 SVG `loadSVGPlusReset` 装上，按阅读顺序落提示词、`putImageInFrame` 贴图，`canvas2DataURL` 导出整页 PNG。
 
-> 前端入口：**「出图 → 出图设置」**（连接 / 工作流 / 参数 / LoRA / 试跑 一次配好），
-> 「出图」页本身会先把 **S2 分格产物**（每页版式缩略图 + 每格摘要）画出来，再列逐格出图卡片。
+### 出图工作流支持范围
+
+- **两种写法**：`%prompt%` / `%negative%` 占位符（沿用 MED 风格），或字段映射（CLIPTextEncode.text 等）。
+- **LoRA 三种节点**：
+  - 多 `LoraLoader` 串联；
+  - rgthree `Lora Loader Stack`（扁平式：`lora_01` + `strength_01`，空槽填 `None`）；
+  - rgthree `Power Lora Loader`（对象式：`lora_1 = {on, lora, strength}`）。
+- **前端虚拟节点**：KJNodes `SetNode`/`GetNode`、cg-use-everywhere `Anything Everywhere` 会被解析
+  （把源直连到消费者），不进 API。
+- **子图（subgraph）**：其定义不写在 UI 文件里，若工作流用了子图，工具会明确提示
+  「请在 ComfyUI 里展开子图或改用『保存（API 格式）』导出」。
+
+> 前端入口：**「出图 → 出图设置」**（① 连接 → ② 点工作流看参数 → 选定即用 → 试跑），
+> **「提示词」**页是 S3 独立工作台（每页版式缩略图 + 每格提示词，可整册或单页生成、就地改词），
+> 「出图」页先把 **S2 分格产物**画出来，再列逐格出图卡片。
 
 ## 实施进度
 
