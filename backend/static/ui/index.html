@@ -209,9 +209,9 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
         <h2 style="cursor:pointer" id="tv-chats-toggle">对话列表
           <span class="pill" id="tv-cur">—</span>
           <span class="mut" style="font-size:12.5px;font-weight:400">酒馆的 Recent Chats，点标题收起/展开，点条目切换</span>
-          <span class="spacer"></span><span class="mut" id="tv-chats-arrow">▾</span>
+          <span class="spacer"></span><span class="mut" id="tv-chats-arrow">▸</span>
         </h2>
-        <div id="tv-chats-body">
+        <div id="tv-chats-body" class="hidden">
           <div class="h2sub">与酒馆「Recent Chats」一致；切换会同步改变酒馆当前对话。</div>
           <div id="tv-chats"><div class="empty">等待酒馆扩展推送…</div></div>
         </div>
@@ -245,18 +245,34 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
       </div>
 
       <div class="card">
-        <h2>分段审核</h2>
-        <div class="h2sub">通过后该段即计入小说；有未通过分段时不能续写，避免把未审内容接上去。</div>
-        <div id="nv-segs"><div class="empty">还没有正文分段</div></div>
+        <h2 style="cursor:pointer" id="nv-segs-toggle">分段审核
+          <span class="pill" id="nv-segs-count">—</span>
+          <span class="mut" style="font-size:12.5px;font-weight:400">点标题收起/展开</span>
+          <span class="spacer"></span><span class="mut" id="nv-segs-arrow">▸</span>
+        </h2>
+        <div id="nv-segs-body" class="hidden">
+          <div class="h2sub">点某段标题可展开查看全文；<b>通过</b>后才计入小说全文（未审核的不进正文）。
+            驳回 = 标记不合格（不会自动重写），可编辑后重审或删除。</div>
+          <div id="nv-segs"><div class="empty">还没有正文分段</div></div>
+        </div>
       </div>
 
       <div class="card">
-        <h2>小说全文</h2>
-        <div class="h2sub" id="nv-fullmeta">—</div>
-        <div class="novel" id="nv-full"><div class="empty">暂无全文</div></div>
-        <div class="row" style="margin-top:12px">
-          <button class="sm" id="nv-copy">复制全文</button>
-          <button class="sm" id="nv-export">导出 TXT</button>
+        <h2 style="cursor:pointer" id="nv-full-toggle">小说全文
+          <span class="pill" id="nv-full-count">—</span>
+          <span class="mut" style="font-size:12.5px;font-weight:400">只含已通过的分段</span>
+          <span class="spacer"></span><span class="mut" id="nv-full-arrow">▸</span>
+        </h2>
+        <div id="nv-full-body" class="hidden">
+          <div class="h2sub" id="nv-fullmeta">—</div>
+          <div class="novel" id="nv-full"><div class="empty">暂无全文</div></div>
+          <div class="row" style="margin-top:12px">
+            <button class="sm" id="nv-refresh">刷新</button>
+            <button class="sm" id="nv-copy">复制全文</button>
+            <button class="sm" id="nv-export">导出 TXT</button>
+            <div class="spacer"></div>
+            <button class="sm danger" id="nv-delall">清空全部正文</button>
+          </div>
         </div>
       </div>
     </section>
@@ -337,6 +353,6 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=7"></script>
+<script type="module" src="/ui/app.js?v=8"></script>
 </body>
 </html>
