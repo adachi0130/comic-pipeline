@@ -10,6 +10,7 @@ from ... import artifacts as A
 from ... import jobs as jobq
 from ...db import get_session
 from ...models import (
+    Artifact,
     ArtifactEdge,
     ArtifactKind,
     ArtifactStatus,
