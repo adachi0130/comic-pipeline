@@ -190,6 +190,9 @@ function renderChatList(chats, context) {
   }
   const curAvatar = context.character_avatar || '';
   const curChat = (context.chat_id || '').replace(/\.jsonl$/, '');
+  const listSig = curAvatar + '|' + curChat + '|' + chats.map((c) => c.file_name + ':' + c.chat_items).join(',');
+  if (listSig === state._listSig) return;   // 未变则不重绘
+  state._listSig = listSig;
   const groups = {};
   for (const c of chats) (groups[c.char_name || '(未知角色)'] ||= []).push(c);
   box.innerHTML = Object.entries(groups).map(([name, list]) => {
@@ -256,7 +259,21 @@ function startTavernSSE() {
 
 /** 只渲染酒馆面板部分（SSE 用，避免整页重载）。 */
 function renderTavern(d) {
-  renderChatList(d.chats || [], d.context || {});
+  const ctx = d.context || {};
+  const chats = d.chats || [];
+  // 自洽性校验：镜像偶尔会给出“当前会话不在对话列表里”的过渡状态（酒馆页面内部抖动），
+  // 这类状态直接忽略，保持上一次的显示，避免聊天记录一闪一闪。
+  const curId = String(ctx.chat_id || '').replace(/\.jsonl$/, '');
+  if (curId && chats.length && !chats.some((c) => String(c.file_name || '').replace(/\.jsonl$/, '') === curId)) {
+    return;   // 当前会话不在列表里 -> 过渡态，忽略
+  }
+  // 酒馆的“欢迎页”状态（没有选中角色）不是用户想要的视图，会被酒馆自身的加载循环
+  // 反复推上来，导致聊天记录一闪一闪。已经渲染过真实会话时，直接忽略这种状态。
+  if (!ctx.character_name && state._tavernRendered) {
+    return;
+  }
+  if (ctx.character_name) state._tavernRendered = true;
+  renderChatList(chats, ctx);
   const c = d.context || {};
   $('#tv-meta').innerHTML = `当前角色：<b>${esc(c.character_name || '—')}</b>
     · 对话 ${c.message_count || 0} 条${c.chat_id ? ` · 会话 ${esc(String(c.chat_id).replace(/\.jsonl$/, ''))}` : ''}
@@ -296,6 +313,10 @@ function renderTavern(d) {
     : `当前会话共 ${msgs.length} 条`;
   const box = $('#tv-chat');
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  // 内容签名未变则不重绘，避免整块刷新造成闪烁
+  const sig = msgs.map((m) => (m.name || '') + '' + (m.send_date || '') + '' + (m.mes || '')).join('');
+  if (sig === state._chatSig) { if (nearBottom) box.scrollTop = box.scrollHeight; return; }
+  state._chatSig = sig;
   box.innerHTML = msgs.length ? msgs.map((m) => `
     <div class="seg" style="margin-bottom:8px">
       <div class="segh"><b>${esc(m.name || (m.is_user ? '我' : '角色'))}</b>
