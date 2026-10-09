@@ -225,6 +225,21 @@ class Job(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class PromptOverride(Base):
+    """阶段提示词的**用户覆盖**（前端可编辑保存）。
+
+    默认提示词来自后端 prompts/*.md（版本化在仓库里）；一旦用户在前端编辑保存，
+    就写到这里覆盖默认值。这样既能一键还原默认，又能持久化用户改动（重启不丢）。
+    """
+
+    __tablename__ = "prompt_overrides"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)   # 如 s2_script / s3_prompt
+    system_text: Mapped[str] = mapped_column(Text, default="")
+    user_text: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class TavernMirror(Base):
     """酒馆对话镜像（供前端直接查看酒馆对话列表，无需切回酒馆窗口）。
 

@@ -22,7 +22,7 @@ PROMPTS_DIR = PROJECT_ROOT / "backend" / "prompts"
 
 
 @lru_cache
-def load_prompt(name: str) -> tuple[str, str]:
+def load_prompt_default(name: str) -> tuple[str, str]:
     """返回 (系统提示词, 用户提示词模板)。
 
     从 Markdown 的 ``` 代码块里抽取：第一个代码块 = 系统提示词，
@@ -71,3 +71,61 @@ def resolve_provider(session: Session, stage: str) -> tuple[LLMProvider, Provide
         extra=provider.extra or {},
     )
     return provider, cfg
+
+
+# --------------------------------------------------------------------------
+# 用户可编辑提示词（数据库覆盖 .md 默认值）
+# --------------------------------------------------------------------------
+PROMPT_STAGES = {
+    "s2_script": "S2 分页分格",
+    "s3_prompt": "S3 分镜提示词",
+}
+
+
+def get_prompt(session: Session, name: str) -> tuple[str, str]:
+    """取该阶段实际使用的 (系统提示词, 用户模板)：优先用户覆盖，否则用 .md 默认。"""
+    from ..models import PromptOverride
+
+    row = session.get(PromptOverride, name)
+    if row is not None and (row.system_text or row.user_text):
+        default_sys, default_user = load_prompt_default(name)
+        return (row.system_text or default_sys), (row.user_text or default_user)
+    return load_prompt_default(name)
+
+
+def save_prompt(session: Session, name: str, system_text: str, user_text: str) -> None:
+    from ..models import PromptOverride
+
+    row = session.get(PromptOverride, name)
+    if row is None:
+        row = PromptOverride(name=name)
+        session.add(row)
+    row.system_text = system_text
+    row.user_text = user_text
+    session.commit()
+
+
+def reset_prompt(session: Session, name: str) -> None:
+    from ..models import PromptOverride
+
+    row = session.get(PromptOverride, name)
+    if row is not None:
+        session.delete(row)
+        session.commit()
+
+
+def prompt_info(session: Session) -> list[dict]:
+    """供前端：列出各阶段提示词（当前值 / 默认值 / 是否已自定义）。"""
+    from ..models import PromptOverride
+
+    out = []
+    for name, label in PROMPT_STAGES.items():
+        overridden = session.get(PromptOverride, name) is not None
+        system_text, user_text = get_prompt(session, name)
+        d_sys, d_user = load_prompt_default(name)
+        out.append({
+            "name": name, "label": label, "overridden": overridden,
+            "system_text": system_text, "user_text": user_text,
+            "default_system": d_sys, "default_user": d_user,
+        })
+    return out

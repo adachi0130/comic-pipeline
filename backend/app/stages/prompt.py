@@ -73,7 +73,7 @@ def handle(session: Session, job: Job) -> dict:
 
     provider, cfg = promptlib.resolve_provider(session, "S3")
     client = LLMClient(cfg)
-    system, user_tpl = promptlib.load_prompt("s3_prompt")
+    system, user_tpl = promptlib.get_prompt(session, "s3_prompt")
     chars = _characters(session, project_id)
     techs = _techniques(session)
     default_loras = _project_loras(session, project_id)
