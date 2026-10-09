@@ -164,9 +164,52 @@ async function sendToTavern() {
   } catch (e) { toast(e.message, 'err'); }
 }
 
+/** 渲染酒馆对话列表（Recent Chats），点一下切换。 */
+function renderChatList(chats, context) {
+  const box = $('#tv-chats');
+  if (!box) return;
+  if (!chats.length) {
+    box.innerHTML = '<div class="empty">还没有读到酒馆对话列表——确认酒馆已打开且扩展已启用</div>';
+    return;
+  }
+  const curAvatar = context.character_avatar || '';
+  const curChat = context.chat_id || '';
+  // 按角色分组
+  const groups = {};
+  for (const c of chats) (groups[c.char_name || '(未知角色)'] ||= []).push(c);
+  box.innerHTML = Object.entries(groups).map(([name, list]) => `
+    <div style="margin-bottom:10px">
+      <div class="mut" style="font-size:12px;margin-bottom:5px">${esc(name)} <span class="pill tag">${list.length}</span></div>
+      <div class="plist">
+        ${list.map((c) => {
+          const active = c.avatar === curAvatar && (c.file_name || '').replace('.jsonl', '') === curChat;
+          return `<div class="pitem ${active ? 'sel' : ''}" data-switch='${esc(JSON.stringify({ avatar: c.avatar, file_name: c.file_name, chat_name: (c.file_name || '').replace('.jsonl', '') }))}'>
+            <div style="flex:1;min-width:0">
+              <b style="font-size:13.5px">${esc((c.file_name || '').replace('.jsonl', ''))}</b>
+              <div class="meta">${c.chat_items != null ? c.chat_items + ' 条' : ''} ${c.last_mes ? '· ' + esc(c.last_mes) : ''}${c.is_group ? ' · 群聊' : ''}</div>
+            </div>
+            ${active ? '<span class="pill ok"><i class="dotm"></i>当前</span>' : '<button class="sm">切换</button>'}
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`).join('');
+  box.querySelectorAll('[data-switch]').forEach((el) => el.addEventListener('click', () => {
+    switchChat(JSON.parse(el.dataset.switch));
+  }));
+}
+
+async function switchChat(info) {
+  try {
+    const r = await api('/api/tavern/switch', { method: 'POST', body: JSON.stringify(info) });
+    toast(`已请求切换到「${info.chat_name}」#${r.job_id}`, 'ok');
+    setTimeout(loadTavern, 2500);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 async function loadTavern() {
   try {
     const d = await api('/api/tavern/live');
+    renderChatList(d.chats || [], d.context || {});
     if (!d.available) {
       $('#tv-meta').textContent = '还没有收到酒馆推送——请打开酒馆并启用 comic-bridge 扩展';
       $('#tv-chat').innerHTML = '<div class="empty">等待酒馆扩展推送…</div>';

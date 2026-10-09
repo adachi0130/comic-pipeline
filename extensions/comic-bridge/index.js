@@ -13,7 +13,7 @@
  */
 
 import { getContext } from '../../../../scripts/extensions.js';
-import { eventSource, event_types, sendMessageAsUser } from '../../../../script.js';
+import { eventSource, event_types, sendMessageAsUser, openCharacterChat } from '../../../../script.js';
 
 const DEFAULT_BACKEND = 'http://127.0.0.1:8770';
 const POLL_INTERVAL_MS = 3000;
@@ -139,12 +139,55 @@ function snapshotContext() {
   };
 }
 
+/** 拉取酒馆的对话列表（Recent Chats，跨角色），用于前端展示与切换。 */
+async function fetchChatList() {
+  const ctx = getContext();
+  try {
+    const res = await fetch('/api/chats/recent', {
+      method: 'POST',
+      headers: ctx.getRequestHeaders(),
+      body: JSON.stringify({ max: 50 }),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const chars = ctx.characters || [];
+    const groups = ctx.groups || [];
+    // 接口只给 avatar 文件名，角色名要在这一侧映射（与酒馆前端一致）
+    const norm = (s) => String(s || '').trim();
+    return (data || []).map((c) => {
+      const avatar = c.avatar || '';
+      const groupId = c.group || '';
+      // 角色名：优先按 avatar 精确匹配；匹配不上则退回角色索引 / avatar 文件名
+      // （酒馆的对话目录名就是 avatar 去掉 .png，故这个兜底是可靠的）
+      const ch = chars.find((x) => norm(x.avatar) === norm(avatar));
+      const byIndex = (function () {
+        const id = ctx.characterId;
+        const cur = id !== null && id !== undefined ? chars[id] : null;
+        return cur && norm(cur.avatar) === norm(avatar) ? cur : null;
+      })();
+      const grp = groups.find((x) => String(x.id) === String(groupId));
+      const fileFallback = avatar ? avatar.replace(/\.png$/i, '') : '';
+      return {
+        file_name: c.file_name,
+        avatar,
+        group: groupId,
+        char_name: ch?.name || byIndex?.name || grp?.name || c.char_name || fileFallback || '',
+        last_mes: c.last_mes || '',
+        chat_items: c.chat_items ?? null,
+        is_group: !!c.is_group,
+      };
+    }).filter((c) => c.file_name);
+  } catch (e) {
+    return [];
+  }
+}
+
 async function pushMirror() {
   if (!getSettings().enabled) return;
   try {
     await api('/api/bridge/mirror', {
       method: 'POST',
-      body: JSON.stringify({ context: snapshotContext(), messages: snapshotMessages(), receipt: currentReceipt }),
+      body: JSON.stringify({ context: snapshotContext(), messages: snapshotMessages(), receipt: currentReceipt, chats: await fetchChatList() }),
     });
   } catch (e) { /* 后端没开时静默 */ }
 }
@@ -155,8 +198,47 @@ async function claimTask() {
   return data.task || null;
 }
 
+/**
+ * 执行酒馆操作任务（如切换对话）。
+ * 跨角色切换需要先选中该角色，再 openCharacterChat(file_name)。
+ */
+async function runTavernOp(task, ctx) {
+  try {
+    if (task.action === 'switch') {
+      if (task.avatar) {
+        const idx = (ctx.characters || []).findIndex((c) => c.avatar === task.avatar);
+        if (idx >= 0 && String(idx) !== String(ctx.characterId)) {
+          await ctx.selectCharacterById(idx);
+          await new Promise((r) => setTimeout(r, 400));
+        }
+      }
+      // 注意：酒馆内部 chat id 不含 .jsonl（/api/chats/get 会自己补），必须去掉后缀
+      const chatId = String(task.file_name || '').replace(/\.jsonl$/, '');
+      await openCharacterChat(chatId);
+      toastr?.success?.(`漫画桥：已切换到「${task.chat_name || task.file_name}」`);
+    }
+  } catch (e) {
+    console.error('[comic-bridge] 酒馆操作失败', e);
+    toastr?.error?.(`漫画桥：切换失败 ${e.message}`);
+  }
+  // 回传结果（记为 done），并立刻刷新镜像与列表
+  try {
+    await api('/api/bridge/result', {
+      method: 'POST',
+      body: JSON.stringify({ job_id: task.job_id, text: '', receipt: {}, op: task.action || '' }),
+    });
+  } catch (e) { /* 忽略 */ }
+  await new Promise((r) => setTimeout(r, 600));
+  await pushMirror();
+}
+
 async function runTask(task) {
   const ctx = getContext();
+  // 酒馆操作任务（切换对话等）：不生成正文
+  if (task.kind === 'tavern') {
+    await runTavernOp(task, ctx);
+    return;
+  }
   currentTask = task;
   currentReceipt = collectStaticReceipt();
   chatLenBefore = ctx.chat.length;

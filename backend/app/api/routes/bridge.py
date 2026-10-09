@@ -27,7 +27,10 @@ from ...stages import prose
 
 router = APIRouter(tags=["bridge"])
 
-KIND = prose.KIND  # "prose"
+KIND = prose.KIND          # "prose"：正文生成任务
+TAVERN_KIND = "tavern"     # "tavern"：酒馆操作任务（如切换对话）
+# 扩展可领取的任务类型
+CLAIMABLE = (KIND, TAVERN_KIND)
 
 
 @router.post("/projects/{project_id}/prose/request")
@@ -75,10 +78,10 @@ def request_prose(project_id: int, body: dict, session: Session = Depends(get_se
 
 @router.get("/bridge/tasks/claim")
 def claim(session: Session = Depends(get_session)) -> dict:
-    """扩展领取一个待办正文任务；没有则返回空。"""
+    """扩展领取一个待办任务（正文生成 / 酒馆操作）；没有则返回空。"""
     job = session.scalars(
         select(Job)
-        .where(Job.kind == KIND, Job.status == JobStatus.QUEUED.value)
+        .where(Job.kind.in_(CLAIMABLE), Job.status == JobStatus.QUEUED.value)
         .order_by(Job.id)
         .limit(1)
     ).first()
@@ -90,16 +93,62 @@ def claim(session: Session = Depends(get_session)) -> dict:
     job.started_at = datetime.now(timezone.utc)
     session.commit()
 
-    return {
-        "task": {
-            "job_id": job.id,
-            "project_id": job.project_id,
-            "mode": (job.payload or {}).get("mode", "start"),
-            "instruction": (job.payload or {}).get("instruction", ""),
-            "context_tail": (job.payload or {}).get("context_tail", ""),
+    payload = job.payload or {}
+    task = {
+        "job_id": job.id,
+        "kind": job.kind,
+        "project_id": job.project_id,
+    }
+    if job.kind == KIND:
+        task.update({
+            "mode": payload.get("mode", "start"),
+            "instruction": payload.get("instruction", ""),
+            "context_tail": payload.get("context_tail", ""),
             "outline": (project.outline if project else "") or "",
             "tavern_binding": (project.tavern_binding if project else {}) or {},
-        }
+        })
+    else:  # tavern 操作
+        task.update({
+            "action": payload.get("action", ""),
+            "avatar": payload.get("avatar", ""),
+            "file_name": payload.get("file_name", ""),
+            "chat_name": payload.get("chat_name", ""),
+        })
+    return {"task": task}
+
+
+@router.post("/tavern/switch")
+def tavern_switch(body: dict, session: Session = Depends(get_session)) -> dict:
+    """请求酒馆切换到指定对话（跨角色也可）。body: {avatar, file_name}"""
+    avatar = (body.get("avatar") or "").strip()
+    file_name = (body.get("file_name") or "").strip()
+    if not file_name:
+        raise HTTPException(400, "缺少 file_name")
+    job = jobq.enqueue_deferred(
+        TAVERN_KIND,
+        project_id=None,
+        stage="TAVERN",
+        payload={"action": "switch", "avatar": avatar, "file_name": file_name,
+                 "chat_name": body.get("chat_name", "")},
+    )
+    return {"job_id": job.id, "status": job.status}
+
+
+@router.get("/tavern/chats")
+def tavern_chats(session: Session = Depends(get_session)) -> dict:
+    """酒馆的对话列表（Recent Chats），按角色分组。"""
+    from ...models import TavernMirror
+
+    row = session.get(TavernMirror, 1)
+    chats = ((row.payload or {}).get("chats") if row else None) or []
+    # 按角色分组
+    groups: dict[str, list[dict]] = {}
+    for c in chats:
+        groups.setdefault(c.get("char_name") or "(未知角色)", []).append(c)
+    return {
+        "available": row is not None,
+        "total": len(chats),
+        "groups": [{"character": k, "chats": v} for k, v in groups.items()],
     }
 
 
@@ -147,9 +196,10 @@ def push_mirror(body: dict, session: Session = Depends(get_session)) -> dict:
         "context": body.get("context") or {},
         "messages": body.get("messages") or [],
         "receipt": body.get("receipt") or {},
+        "chats": body.get("chats") or [],
     }
     session.commit()
-    return {"ok": True, "messages": len(row.payload["messages"])}
+    return {"ok": True, "messages": len(row.payload["messages"]), "chats": len(row.payload["chats"])}
 
 
 @router.get("/tavern/live")
@@ -159,13 +209,14 @@ def tavern_live(session: Session = Depends(get_session)) -> dict:
 
     row = session.get(TavernMirror, 1)
     if row is None:
-        return {"available": False, "messages": [], "context": {}, "receipt": {}, "updated_at": None}
+        return {"available": False, "messages": [], "context": {}, "receipt": {}, "chats": [], "updated_at": None}
     p = row.payload or {}
     return {
         "available": True,
         "context": p.get("context") or {},
         "messages": p.get("messages") or [],
         "receipt": p.get("receipt") or {},
+        "chats": p.get("chats") or [],
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
 
@@ -192,6 +243,7 @@ async def tavern_events() -> StreamingResponse:
                     "context": (row.payload or {}).get("context") if row else {},
                     "messages": (row.payload or {}).get("messages") if row else [],
                     "receipt": (row.payload or {}).get("receipt") if row else {},
+                    "chats": (row.payload or {}).get("chats") if row else [],
                     "updated_at": row.updated_at.isoformat() if (row and row.updated_at) else None,
                 }
                 text = json.dumps(snap, ensure_ascii=False)
