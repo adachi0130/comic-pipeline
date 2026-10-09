@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from ... import artifacts as A
 from ... import jobs as jobq
 from ...db import get_session
-from ...models import ArtifactKind, ArtifactStatus, Project, StageModel, Template
+from ...models import (
+    ArtifactEdge,
+    ArtifactKind,
+    ArtifactStatus,
+    Project,
+    StageModel,
+    Technique,
+    Template,
+)
 
 router = APIRouter(tags=["pipeline"])
 
@@ -114,6 +122,169 @@ def update_page_script(project_id: int, page_ref: str, body: dict, session: Sess
                    payload=merged, status=ArtifactStatus.REVIEW.value)
     session.commit()
     return {"ok": True, "artifact_id": new.id, "version": new.version}
+
+
+@router.get("/projects/{project_id}/pages")
+def pages_board(project_id: int, session: Session = Depends(get_session)) -> dict:
+    """S2「分格」工作台数据：小说全文 + 已有页 + 模板菜单。"""
+    from ...stages import prose
+
+    project = session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "项目不存在")
+    novel = prose.novel_state(session, project_id)
+    pages = []
+    for a in A.all_current(session, project_id, ArtifactKind.PAGE_SCRIPT.value):
+        try:
+            no = int(a.ref.split(":", 1)[1])
+        except (IndexError, ValueError):
+            no = 10**9
+        payload = a.payload or {}
+        pages.append({
+            "page_ref": a.ref,
+            "page_index": no,
+            "artifact_id": a.id,
+            "version": a.version,
+            "status": a.status,
+            "template_id": payload.get("template_id"),
+            "source": payload.get("source", "manual"),
+            "panels": [
+                {"panel_order": p.get("panel_order"), "role": p.get("role"), "shot": p.get("shot"),
+                 "action": p.get("action", ""), "dialogue": p.get("dialogue", ""),
+                 "scene_desc": p.get("scene_desc", ""), "characters": p.get("characters", []),
+                 "technique": p.get("technique", [])}
+                for p in payload.get("panels", [])
+            ],
+        })
+    pages.sort(key=lambda x: x["page_index"])
+    tpls = [
+        {"id": r.id, "dir": r.dir, "panels_count": r.panels_count, "layout_desc": r.layout_desc}
+        for r in session.scalars(select(Template).order_by(Template.dir, Template.panels_count, Template.id)).all()
+    ]
+    return {
+        "novel_chars": novel["chars"],
+        "target_pages": project.target_pages,
+        "pages": pages,
+        "templates": tpls,
+        "panel_prompt_count": len(A.all_current(session, project_id, ArtifactKind.PANEL_PROMPT.value)),
+    }
+
+
+@router.post("/projects/{project_id}/pages")
+def create_page(project_id: int, body: dict, session: Session = Depends(get_session)) -> dict:
+    """新增一个空页（可指定模板；不给则用 4 格模板占位）。"""
+    if session.get(Project, project_id) is None:
+        raise HTTPException(404, "项目不存在")
+    tpl_id = (body.get("template_id") or "").strip()
+    tpl = session.get(Template, tpl_id) if tpl_id else None
+    if tpl is None:
+        tpl = session.scalars(select(Template).where(Template.panels_count == 4).limit(1)).first() \
+            or session.scalars(select(Template).limit(1)).first()
+    if tpl is None:
+        raise HTTPException(400, "模板表为空，请先跑 build_template_menu.py")
+
+    used = set()
+    for a in A.all_current(session, project_id, ArtifactKind.PAGE_SCRIPT.value):
+        try:
+            used.add(int(a.ref.split(":", 1)[1]))
+        except (IndexError, ValueError):
+            pass
+    no = 1
+    while no in used:
+        no += 1
+    ref = f"page:{no}"
+    panels = [
+        {"panel_order": i, "role": "medium", "shot": "medium", "characters": [],
+         "action": "", "scene_desc": "", "dialogue": "", "bubble_type": "none", "technique": []}
+        for i in range(1, tpl.panels_count + 1)
+    ]
+    A.create(session, project_id=project_id, kind=ArtifactKind.PAGE_SCRIPT.value, ref=ref,
+             payload={"scene_id": 0, "page_index": no, "template_id": tpl.id,
+                      "panels": panels, "geometry": tpl.geometry},
+             status=ArtifactStatus.REVIEW.value)
+    session.commit()
+    return {"ok": True, "page_ref": ref, "template_id": tpl.id, "panels_count": tpl.panels_count}
+
+
+@router.post("/projects/{project_id}/pages/{page_ref}/auto")
+def auto_page(project_id: int, page_ref: str, body: dict, session: Session = Depends(get_session)) -> dict:
+    """让 AI 为**这一页**挑模板并写分格（同步执行）。"""
+    import json as _json
+
+    from ...llm import LLMClient, LLMLogContext
+    from ...schemas import Storyboard
+    from ...stages import promptlib, prose
+
+    project = session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "项目不存在")
+    novel = prose.novel_text(session, project_id, only_approved=True)
+    if not novel.strip():
+        raise HTTPException(400, "还没有已审核通过的正文；请先在「正文」页写好并通过")
+
+    try:
+        no = int(page_ref.split(":", 1)[1])
+    except (IndexError, ValueError):
+        raise HTTPException(400, f"页 ref 不合法：{page_ref}") from None
+    total = int(body.get("total_pages") or project.target_pages or 1)
+
+    provider, cfg = promptlib.resolve_provider(session, "S2")
+    client = LLMClient(cfg)
+    system, user_tpl = promptlib.load_prompt("s2_script")
+    tpl_menu = _json.dumps(
+        [{"id": r.id, "dir": r.dir, "panels": r.panels_count, "desc": r.layout_desc}
+         for r in session.scalars(select(Template).order_by(Template.dir, Template.panels_count)).all()],
+        ensure_ascii=False)
+    techs = _json.dumps(
+        {x.name: x.prompt_block for x in session.scalars(select(Technique).where(Technique.enabled.is_(True))).all()},
+        ensure_ascii=False)
+    user = promptlib.render(user_tpl, {
+        "NOVEL": novel, "START_PAGE": no, "END_PAGE": no,
+        "TOTAL_PAGES": total, "TEMPLATE_MENU": tpl_menu, "TECHNIQUES": techs,
+    })
+    log = LLMLogContext(session=session, stage="S2", project_id=project_id, provider_id=provider.id)
+    try:
+        board: Storyboard = client.structured(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}], Storyboard, log=log)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"AI 生成失败：{e}") from e
+
+    got = board.pages[0] if board.pages else None
+    if got is None:
+        raise HTTPException(502, "AI 没有返回任何页")
+    tpl = session.get(Template, got.template_id)
+    if tpl is None:
+        raise HTTPException(502, f"AI 选了不存在的模板：{got.template_id}")
+
+    panels = [p.model_dump() for p in got.panels][: tpl.panels_count]
+    while len(panels) < tpl.panels_count:
+        panels.append({"panel_order": len(panels) + 1, "role": "medium", "shot": "medium",
+                       "characters": [], "action": "", "scene_desc": "", "dialogue": "",
+                       "bubble_type": "none", "technique": []})
+    for i, p in enumerate(panels, start=1):
+        p["panel_order"] = i
+
+    art = A.create(session, project_id=project_id, kind=ArtifactKind.PAGE_SCRIPT.value, ref=page_ref,
+                   payload={"scene_id": 0, "page_index": no, "template_id": tpl.id,
+                            "panels": panels, "geometry": tpl.geometry, "source": "ai"},
+                   status=ArtifactStatus.REVIEW.value)
+    session.commit()
+    return {"ok": True, "page_ref": page_ref, "template_id": tpl.id,
+            "template_desc": tpl.layout_desc, "panels_count": tpl.panels_count, "version": art.version}
+
+
+@router.delete("/projects/{project_id}/pages/{page_ref}")
+def delete_page(project_id: int, page_ref: str, session: Session = Depends(get_session)) -> dict:
+    """删除该页分格脚本（连同其所有版本与相关血缘）。"""
+    art = A.current(session, project_id, ArtifactKind.PAGE_SCRIPT.value, page_ref)
+    if art is None:
+        raise HTTPException(404, f"没有该页：{page_ref}")
+    ids = [x.id for x in A.versions_of(session, project_id, art.kind, art.ref)]
+    session.execute(delete(ArtifactEdge).where(
+        or_(ArtifactEdge.from_artifact_id.in_(ids), ArtifactEdge.to_artifact_id.in_(ids))))
+    session.execute(delete(Artifact).where(Artifact.id.in_(ids)))
+    session.commit()
+    return {"ok": True, "deleted": len(ids), "page_ref": page_ref}
 
 
 @router.post("/projects/{project_id}/run/{stage}")

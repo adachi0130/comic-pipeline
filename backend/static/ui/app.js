@@ -37,17 +37,19 @@ const TITLES = {
   novel: ['正文', '用酒馆写小说，逐段审核，然后进入分页'],
   pipeline: ['流水线', '各阶段与中间产物'],
   images: ['出图', '逐格出图与挑图'],
+  pages: ['分格', '每页选模板（或让 AI 选）+ 打分格'],
   settings: ['设置', 'LLM 供应商 / ComfyUI / 阶段绑定'],
 };
 $$('.nav button[data-tab]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
 function switchTab(tab) {
   $$('.nav button[data-tab]').forEach((x) => x.classList.toggle('active', x.dataset.tab === tab));
-  ['projects', 'novel', 'pipeline', 'images', 'settings'].forEach((t) => $('#tab-' + t).classList.toggle('hidden', t !== tab));
+  ['projects', 'novel', 'pipeline', 'pages', 'images', 'settings'].forEach((t) => $('#tab-' + t).classList.toggle('hidden', t !== tab));
   $('#view-title').textContent = TITLES[tab][0];
   $('#view-sub').textContent = TITLES[tab][1];
   if (tab === 'novel') loadNovel();
   if (tab === 'pipeline') renderFlow().then(refreshGates);
   if (tab === 'images') loadWorkbench();
+  if (tab === 'pages') loadPages();
   if (tab === 'settings') { loadProviders(); loadStageBinding(); }
   if (tab === 'projects') { if (state.projectId) api('/api/projects/' + state.projectId).then((p) => { state.project = p; renderProjectDetail(); }); }
 }
@@ -604,6 +606,83 @@ async function openPageDetail(pageRef) {
 function mergePanels(edited) {
   const m = new Map(edited.map((p) => [p.panel_order, p]));
   return edited;   // 简化：直接以编辑后的面板数组覆盖
+}
+
+
+// ---------- 分格工作台（S2）----------
+$('#pg-reload').addEventListener('click', loadPages);
+$('#pg-add').addEventListener('click', async () => {
+  if (!state.projectId) return toast('先选择项目', 'err');
+  try {
+    const tpl = $('#pg-newtpl').value;
+    const r = await api(`/api/projects/${state.projectId}/pages`, { method: 'POST', body: JSON.stringify({ template_id: tpl }) });
+    toast(`已加 ${r.page_ref}（${r.panels_count} 格）`, 'ok');
+    loadPages(); refreshGates();
+  } catch (e) { toast(e.message, 'err'); }
+});
+
+async function loadPages() {
+  if (!state.projectId) { $('#pg-list').innerHTML = '<div class="empty">请先选择项目</div>'; return; }
+  try {
+    const d = await api(`/api/projects/${state.projectId}/pages`);
+    state._tpls = d.templates || [];
+    $('#pg-count').textContent = `${d.pages.length} 页`;
+    $('#pg-meta').textContent = `已审核正文 ${d.novel_chars} 字 · 目标 ${d.target_pages} 页 · 提示词 ${d.panel_prompt_count} 条`;
+
+    // 新页模板下拉（按格数分组展示）
+    const opts = d.templates.map((t) => `<option value="${esc(t.id)}">${esc(t.id)}（${t.panels_count}格）</option>`).join('');
+    if ($('#pg-newtpl').dataset.filled !== String(d.templates.length)) {
+      $('#pg-newtpl').innerHTML = opts;
+      $('#pg-newtpl').dataset.filled = String(d.templates.length);
+    }
+
+    const box = $('#pg-list');
+    $('#pg-blank').style.display = d.pages.length ? 'none' : 'block';
+    if (!d.pages.length) { box.innerHTML = ''; return; }
+    box.innerHTML = d.pages.map((p) => `
+      <div class="card" style="padding:14px" data-page="${esc(p.page_ref)}">
+        <div class="row">
+          <b>${esc(p.page_ref)}</b> ${pill(p.status)}
+          <span class="pill tag">${esc(p.template_id || '?')} · ${p.panels.length} 格</span>
+          <span class="pill tag">${p.source === 'ai' ? 'AI 选' : '手动'}</span>
+          <span class="mut" style="font-size:12px">v${p.version}</span>
+          <div class="spacer"></div>
+          <button class="sm" data-aigen="${esc(p.page_ref)}">让 AI 选</button>
+          <button class="sm" data-edit="${esc(p.page_ref)}">编辑/换模板</button>
+          <button class="sm danger" data-del="${esc(p.page_ref)}">删除</button>
+        </div>
+        <div class="pg-panels" style="margin-top:10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px">
+          ${p.panels.map((x) => `<div class="mini-card" style="padding:8px 10px">
+            <div class="mut" style="font-size:11.5px">第 ${x.panel_order} 格 · ${esc(x.shot || '')}</div>
+            <div style="font-size:12.5px;margin-top:3px">${esc((x.action || '（空）').slice(0, 40))}</div>
+            ${x.dialogue ? `<div class="mut" style="font-size:11.5px;margin-top:3px">「${esc(x.dialogue.slice(0, 26))}」</div>` : ''}
+            ${(x.technique || []).length ? `<div class="mut" style="font-size:11px;margin-top:3px">技法 ${esc((x.technique || []).join('、'))}</div>` : ''}
+          </div>`).join('')}
+        </div>
+      </div>`).join('');
+    box.querySelectorAll('[data-aigen]').forEach((b) => b.addEventListener('click', () => aiFillPage(b.dataset.aigen, b)));
+    box.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => openPageDetail(b.dataset.edit)));
+    box.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', async () => {
+      if (!confirm(`删除 ${b.dataset.del}？`)) return;
+      await api(`/api/projects/${state.projectId}/pages/${encodeURIComponent(b.dataset.del)}`, { method: 'DELETE' });
+      toast('已删除该页', 'ok'); loadPages(); refreshGates();
+    }));
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function aiFillPage(pageRef, btn) {
+  if (!confirm(`让 AI 为 ${pageRef} 挑模板并写分格？\\n\\n需要：已有已审核通过的正文；会调用一次 LLM。`)) return;
+  const old = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'AI 生成中…'; }
+  try {
+    const d = await api(`/api/projects/${state.projectId}/pages/${encodeURIComponent(pageRef)}/auto`,
+      { method: 'POST', body: JSON.stringify({}) });
+    toast(`${pageRef}：AI 选了 ${d.template_id}（${d.panels_count} 格）`, 'ok');
+    loadPages(); refreshGates();
+  } catch (e) {
+    toast('AI 生成失败：' + e.message, 'err');
+    if (btn) { btn.disabled = false; btn.textContent = old; }
+  }
 }
 
 // ---------- 流水线 ----------
