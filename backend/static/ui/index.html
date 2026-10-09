@@ -235,7 +235,9 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
         </div>
         <div id="tv-error" class="hidden" style="margin-top:10px">
           <div class="seg" style="border-color:var(--err);background:var(--errbg)">
-            <div class="segh"><b>生成失败</b></div><div class="txt" id="tv-error-text"></div></div>
+            <div class="segh"><b>生成失败</b><div class="spacer"></div>
+              <button class="sm" id="tv-error-close">关闭</button></div>
+            <div class="txt" id="tv-error-text"></div></div>
         </div>
         <div class="row" style="margin-top:12px;align-items:flex-end">
           <div style="flex:1"><label class="fld">直接发一条给酒馆（<b>只把这次新返回的内容</b>存为正文）</label>
@@ -353,6 +355,6 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=11"></script>
+<script type="module" src="/ui/app.js?v=12"></script>
 </body>
 </html>
