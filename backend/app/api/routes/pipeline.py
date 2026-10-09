@@ -125,6 +125,21 @@ def update_page_script(project_id: int, page_ref: str, body: dict, session: Sess
     return {"ok": True, "artifact_id": new.id, "version": new.version}
 
 
+@router.get("/templates/{template_id}/svg")
+def template_svg(template_id: str, session: Session = Depends(get_session)):
+    """返回模板 SVG（供前端渲染缩略图，可视化选模板）。"""
+    from pathlib import Path as _P
+
+    from fastapi.responses import Response
+
+    t = session.get(Template, template_id)
+    if t is None or not t.svg_path or not _P(t.svg_path).exists():
+        raise HTTPException(404, f"模板 SVG 不存在：{template_id}")
+    svg = _P(t.svg_path).read_text(encoding="utf-8")
+    return Response(content=svg, media_type="image/svg+xml",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
 @router.get("/projects/{project_id}/pages")
 def pages_board(project_id: int, session: Session = Depends(get_session)) -> dict:
     """S2「分格」工作台数据：小说全文 + 已有页 + 模板菜单。"""
