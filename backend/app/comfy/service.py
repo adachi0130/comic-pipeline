@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -106,11 +107,14 @@ def generate(req: GenRequest, *, client: ComfyClient | None = None) -> list[Gene
 
     # 默认参数兜底：用户在前端配的 default_params 先垫底，单格显式值覆盖之
     cfg = get_comfy_config()
+    # seed 处理：<=0 或不填视为“随机”，由我们生成合法种子（ComfyUI KSampler 要求 seed>=0，
+    # 且 API 工作流没有 control_after_generate，所以必须自己换种子才能让每张不同）。
+    fixed_seed = req.seed if (req.seed is not None and req.seed > 0) else None
     merged = {**(cfg.default_params or {})}
     values: dict = {
         "prompt_pos": req.prompt_pos,
         "prompt_neg": req.prompt_neg,
-        "seed": req.seed if req.seed is not None else -1,
+        "seed": fixed_seed if fixed_seed is not None else random.randint(1, 2**31 - 1),
         "steps": req.steps,
         "cfg": req.cfg,
         "sampler": req.sampler,
@@ -125,7 +129,9 @@ def generate(req: GenRequest, *, client: ComfyClient | None = None) -> list[Gene
 
     results: list[GeneratedImage] = []
     for _ in range(max(1, req.count)):
-        # seed=-1 时让 ComfyUI 随机；每张确保不同
+        # 每张换一个合法种子，保证候选图不同（除非用户指定了固定 seed）
+        if fixed_seed is None:
+            merged["seed"] = random.randint(1, 2**31 - 1)
         applied = apply(wf, params, merged, req.loras)
         prompt_id = client.queue_prompt(applied)
         entry = client.wait_for(

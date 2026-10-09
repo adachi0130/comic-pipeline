@@ -155,9 +155,12 @@ class LoraSlot(BaseModel):
 
 
 class LoraStackSlot(BaseModel):
-    """LoRA **堆加载**器里的一个槽位（名字 + 权重成对出现）。
+    """LoRA **堆加载**器里的一个槽位。
 
-    例：rgthree 的 ``Lora Loader Stack (rgthree)`` 是 ``lora_01`` + ``strength_01``。
+    ``flat`` 风格（rgthree ``Lora Loader Stack``）：名字和权重是两个输入，
+    例 ``name_input=lora_01`` + ``strength_input=strength_01``，值是字符串/浮点。
+    ``dict`` 风格（rgthree ``Power Lora Loader``）：一个输入装一个对象，
+    例 ``name_input=lora_1``，值是 ``{"on":true,"lora":"x","strength":0.8}``。
     """
 
     name_input: str
@@ -168,13 +171,16 @@ class LoraStacker(BaseModel):
     """LoRA 堆加载节点（一个节点里并排放 N 个 LoRA 槽）。
 
     与 ``lora_slots``（多个 LoraLoader 首尾串联）二选一；两者都存在时**优先用堆加载**。
-    槽名填 ``empty_token``（如 rgthree 的 ``"None"``）表示该槽不启用。
     """
 
     node_id: str
     class_type: str = ""
+    style: Literal["flat", "dict"] = "flat"
     slots: list[LoraStackSlot] = Field(default_factory=list)
+    # flat 风格：空槽填这个字符串（rgthree 用 "None"）
     empty_token: str = "None"
+    # dict 风格：关闭的槽怎么写（Power Lora Loader 用 {"on": false, ...}）
+    off_name: str = ""
 
 
 class WorkflowParams(BaseModel):

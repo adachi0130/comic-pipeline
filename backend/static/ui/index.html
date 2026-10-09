@@ -155,6 +155,7 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
       <button data-tab="novel"><span class="ic">✎</span>正文</button>
       <button data-tab="pipeline"><span class="ic">≡</span>流水线</button>
       <button data-tab="pages"><span class="ic">▥</span>分格</button>
+      <button data-tab="prompts"><span class="ic">✧</span>提示词</button>
       <button data-tab="images"><span class="ic">▤</span>出图</button>
       <button data-tab="settings"><span class="ic">⚙</span>设置</button>
     </div>
@@ -343,6 +344,28 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
       <div id="pg-list"></div>
     </section>
 
+    <!-- 提示词（S3 工作台） -->
+    <section id="tab-prompts" class="hidden">
+      <div class="card">
+        <h2>分镜提示词 <span class="pill" id="pr-count">—</span>
+          <span class="mut" style="font-size:12px;font-weight:400">S3 · 每格一句出图提示词</span>
+        </h2>
+        <div class="h2sub">依据 S2 分格，为每一格生成正向/负向提示词与 LoRA。可以整册一键生成，也可以只给某一页生成。
+          生成后可就地改词（改完下游出图需重跑）。</div>
+        <div class="row">
+          <button class="sm" id="pr-reload">刷新</button>
+          <button class="sm primary" id="pr-run-all">整册生成</button>
+          <div class="spacer"></div>
+          <button class="sm" data-prompt="s3_prompt">提示词模板</button>
+          <span class="mut" id="pr-meta" style="font-size:12.5px">—</span>
+        </div>
+      </div>
+      <div class="card" id="pr-blank" style="display:none">
+        <div class="empty">还没有分格页。先去「分格」页把页面分好，再回来生成提示词。</div>
+      </div>
+      <div id="pr-list"></div>
+    </section>
+
     <!-- 流水线 -->
     <section id="tab-pipeline" class="hidden">
       <div class="card">
@@ -432,6 +455,6 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=29"></script>
+<script type="module" src="/ui/app.js?v=30"></script>
 </body>
 </html>

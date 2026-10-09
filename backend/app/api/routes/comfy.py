@@ -20,7 +20,7 @@ from ... import jobs as jobq
 from ...comfy import service, store
 from ...comfy.client import ComfyClient, ComfyError
 from ...comfy.ui_convert import ConvertError, is_ui_format, ui_to_api
-from ...comfy.workflow import WorkflowError, is_api_format
+from ...comfy.workflow import WorkflowError, describe_workflow, is_api_format
 from ...config import WorkflowParams, get_settings
 from ...db import get_session
 from ...models import LoraSelection, Project
@@ -36,6 +36,151 @@ def _client(backend: str = "cloud") -> ComfyClient:
         return ComfyClient(cfg.local_url or get_settings().comfy_local_fallback_url,
                            timeout_s=get_settings().comfy_timeout_s)
     return service.get_client()
+
+
+def _client_from(url: str, api_key: str = "") -> ComfyClient:
+    return ComfyClient(url, timeout_s=get_settings().comfy_timeout_s, api_key=api_key)
+
+
+def _resolve_backend(body: dict) -> tuple[str, str, str]:
+    """从请求体解析 ``(backend, url, api_key)``，缺省用已保存的配置。"""
+    cfg = store.load_comfy_config()
+    backend = body.get("backend") or cfg.backend
+    if backend == "local":
+        url = (body.get("url") or "").strip() or cfg.local_url
+        return backend, url, ""
+    url = (body.get("url") or "").strip() or cfg.cloud_url
+    key = body.get("api_key")
+    if key is None:
+        key = cfg.cloud_api_key
+    return backend, url, (key or "").strip()
+
+
+def _fetch_and_convert(client: ComfyClient, name: str) -> tuple[dict, list[str], bool]:
+    """取一个工作流并按需转 API 格式，返回 (api, warnings, was_ui)。"""
+    raw = client.get_workflow(name)
+    if is_ui_format(raw):
+        info = client.object_info()
+        api, warnings = ui_to_api(raw, info)
+        return api, warnings, True
+    return raw, [], False
+
+
+# ==========================================================================
+# 连接（第一步：POST 一次，拿到这台后端有哪些工作流 / LoRA）
+# ==========================================================================
+@router.post("/comfy/connect")
+def connect(body: dict) -> dict:
+    """按给定（或已存）的地址探测出图后端，保存配置，并返回工作流 / 模型清单。"""
+    backend, url, api_key = _resolve_backend(body or {})
+    cfg = store.load_comfy_config()
+    cfg.backend = backend
+    if backend == "local":
+        cfg.local_url = url
+    else:
+        cfg.cloud_url = url
+        if (body or {}).get("api_key"):
+            cfg.cloud_api_key = api_key
+    store.save_comfy_config(cfg)
+
+    client = _client(backend)
+    out: dict = {
+        "ok": False, "backend": backend, "url": url, "reachable": False,
+        "workflows": [], "loras": [], "checkpoints": [], "vaes": [],
+        "samplers": [], "schedulers": [], "error": "",
+    }
+    if not url:
+        out["error"] = "还没填地址"
+        return out
+    if not url.startswith(("http://", "https://")):
+        out["error"] = f"地址要形如 http://127.0.0.1:8188 或 https://xxx.com（你填的是「{url}」，看起来不是网址）"
+        return out
+    if not client.ping(timeout_s=8):
+        out["error"] = "连不上（检查地址 / 隧道 / 密钥）"
+        return out
+    out["reachable"] = True
+    out["ok"] = True
+    try:
+        out["workflows"] = client.list_workflows()
+    except ComfyError as e:
+        out["error"] = f"读工作流列表失败：{e}"
+    try:
+        out["loras"] = client.list_models("loras")
+        out["checkpoints"] = client.list_models("checkpoints")
+        out["vaes"] = client.list_models("vae")
+        out["samplers"] = client.list_models("sampler_name")
+        out["schedulers"] = client.list_models("scheduler")
+    except Exception:  # noqa: BLE001 - 老版本 ComfyUI 可能没有 /models
+        pass
+    return out
+
+
+@router.get("/comfy/models/{kind}")
+def models(kind: str, backend: str = Query("", pattern="^(|cloud|local)$")) -> dict:
+    """``kind`` 取 loras / checkpoints / vae / sampler_name / scheduler 等。"""
+    cfg = store.load_comfy_config()
+    client = _client(backend or cfg.backend)
+    if not client.ping(timeout_s=5):
+        raise HTTPException(502, "出图后端连不上")
+    return {"backend": backend or cfg.backend, "kind": kind, "items": client.list_models(kind)}
+
+
+# ==========================================================================
+# 点某个工作流 → 看它有哪些参数（提示词 / 采样 / LoRA 槽）
+# ==========================================================================
+@router.post("/comfy/server-workflow")
+def server_workflow(body: dict) -> dict:
+    """读某台后端上的工作流原始文件并体检：可编辑参数、LoRA 槽、缺失节点。"""
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "缺少工作流名")
+    client = _client(_resolve_backend(body)[0])
+    try:
+        api, warnings, was_ui = _fetch_and_convert(client, name)
+    except (ComfyError, ConvertError) as e:
+        raise HTTPException(502, str(e)) from e
+    try:
+        info = client.object_info()
+    except ComfyError:
+        info = {}
+    desc = describe_workflow(api, info)
+    return {
+        "name": name,
+        "ui_format": was_ui,
+        "warnings": warnings,
+        "describe": desc,
+        "node_ids": list(api.keys()),
+    }
+
+
+@router.post("/comfy/import-from-server")
+def import_from_server(body: dict) -> dict:
+    """把后端上的某个工作流导入生产线并设为当前（顺带自动映射参数）。"""
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "缺少工作流名")
+    reg_name = name[:-5] if name.lower().endswith(".json") else name
+    client = _client(_resolve_backend(body)[0])
+    try:
+        api, warnings, _ = _fetch_and_convert(client, name)
+    except (ComfyError, ConvertError) as e:
+        raise HTTPException(400, str(e)) from e
+    if not api:
+        raise HTTPException(400, "转换后工作流为空，无法导入")
+    store.save_workflow_json(reg_name, api)
+    try:
+        params = store.guess_and_save_params(reg_name)
+    except WorkflowError as e:
+        warnings.append(f"参数自动映射失败（可手动改）：{e}")
+        params = WorkflowParams()
+    cfg = store.load_comfy_config()
+    cfg.workflow_name = reg_name
+    store.save_comfy_config(cfg)
+    service.get_workflow_params(refresh=True)
+    return {
+        "ok": True, "name": reg_name, "warnings": warnings,
+        "summary": _wf_summary(reg_name), "params": params.model_dump(mode="json"),
+    }
 
 
 # ==========================================================================
@@ -107,6 +252,7 @@ def _wf_summary(name: str) -> dict:
     except Exception as e:  # noqa: BLE001
         return {"name": name, "error": str(e)}
     params = store.load_params(name)
+    st = params.lora_stacker
     return {
         "name": name,
         "node_count": len(wf),
@@ -115,8 +261,8 @@ def _wf_summary(name: str) -> dict:
         "has_prompt_placeholder": bool(params.prompt_placeholder),
         "prompt_placeholder": params.prompt_placeholder,
         "lora_mode": (
-            f"堆加载（{params.lora_stacker.class_type or 'stacker'} × {len(params.lora_stacker.slots)} 槽）"
-            if params.lora_stacker
+            f"堆加载（{st.class_type or 'stacker'} × {len(st.slots)} 槽 · {'对象式' if st.style == 'dict' else '扁平式'}）"
+            if st
             else (f"串联 × {len(params.lora_slots)}" if params.lora_slots else "无")
         ),
         "bindings_count": len(params.bindings),

@@ -33,6 +33,9 @@ OUTPUT_CLASSES = ("SaveImage", "PreviewImage", "SaveImageWebsocket")
 
 # 已知的“LoRA 堆加载”节点：一个节点内并排 N 个槽。
 # rgthree 的 `Lora Loader Stack (rgthree)` 输入形如 lora_01 + strength_01（'None' 为空槽）。
+# 已知的“LoRA 堆加载”节点：一个节点内并排 N 个槽。
+# - rgthree `Lora Loader Stack`：扁平输入 lora_01 + strength_01（'None' 为空槽）
+# - rgthree `Power Lora Loader`：每个输入装一个对象 lora_1 = {on, lora, strength, strengthTwo}
 LORA_STACKER_HINT = (
     "lora loader stack",
     "lora stack",
@@ -41,7 +44,7 @@ LORA_STACKER_HINT = (
     "lora堆",
 )
 
-# 槽名匹配：lora_01 / lora_1 / lora_name_1 / lora1 ...
+# 槽名匹配：lora_01 / lora_1 / lora_name_1 / lora1 ...（编号不固定）
 _STACK_NAME_RE = re.compile(r"^(?:lora|lora_name|lora_loader)_?0*(\d+)$", re.IGNORECASE)
 # 对应的权重名：strength_01 / strength_1 / weight_1 ...
 _STACK_STRENGTH_RE = re.compile(r"^(?:strength|weight|model_weight|strength_model)_?0*(\d+)$", re.IGNORECASE)
@@ -89,39 +92,51 @@ def _link_target(wf: dict[str, Any], link: Any) -> tuple[str, dict] | None:
 
 
 def detect_lora_stacker(wf: dict[str, Any]) -> LoraStacker | None:
-    """找出 LoRA **堆加载**节点（一个节点里并排 N 个槽），如 rgthree 的 LoRA Loader Stack。
+    """找出 LoRA **堆加载**节点（一个节点里并排 N 个槽）。
 
-    判定：节点里有 ``lora_01`` 这类槽名，且不是普通 ``LoraLoader``。
+    支持两种：
+    - ``flat``：``lora_01`` + ``strength_01`` 成对（rgthree Lora Loader Stack）
+    - ``dict``：``lora_1`` 的值是 ``{on, lora, strength}``（rgthree Power Lora Loader）
     """
     for nid, node in wf.items():
+        class_type = node.get("class_type") or ""
+        # 真正的 LoraLoader 是“串联”，不算堆加载
+        if class_type in LORA_CLASSES:
+            continue
         inputs = node.get("inputs") or {}
-        pairs: dict[int, dict[str, str]] = {}
+
+        # ---- dict 风格：值本身是带 lora/on/strength 的对象 ----
+        dict_slots = [
+            k for k, v in inputs.items()
+            if isinstance(v, dict) and "lora" in v and ("on" in v or "strength" in v)
+        ]
+        if dict_slots:
+            ordered = sorted(dict_slots, key=lambda k: (_num_suffix(k), k))
+            return LoraStacker(
+                node_id=str(nid),
+                class_type=str(class_type),
+                style="dict",
+                slots=[LoraStackSlot(name_input=k) for k in ordered],
+                off_name="",
+            )
+
+        # ---- flat 风格：lora_NN + strength_NN ----
+        names: dict[int, str] = {}
+        strengths: dict[int, str] = {}
         for key in inputs:
             m = _STACK_NAME_RE.match(str(key))
-            if not m:
-                continue
-            pairs.setdefault(int(m.group(1)), {})["name_input"] = str(key)
+            if m:
+                names.setdefault(int(m.group(1)), str(key))
         for key in inputs:
             m = _STACK_STRENGTH_RE.match(str(key))
-            if not m:
-                continue
-            pairs.setdefault(int(m.group(1)), {})["strength_input"] = str(key)
-        if not pairs:
+            if m:
+                strengths.setdefault(int(m.group(1)), str(key))
+        if not names:
             continue
-        # 填上缺失的权重名（按槽号推默认写法）
-        slots: list[LoraStackSlot] = []
-        for idx in sorted(pairs):
-            p = pairs[idx]
-            if "name_input" not in p:
-                continue
-            slots.append(
-                LoraStackSlot(
-                    name_input=p["name_input"],
-                    strength_input=p.get("strength_input", ""),
-                )
-            )
-        if not slots:
-            continue
+        slots = [
+            LoraStackSlot(name_input=names[i], strength_input=strengths.get(i, ""))
+            for i in sorted(names)
+        ]
         empty = "None"
         for s in slots:
             v = inputs.get(s.name_input)
@@ -130,11 +145,127 @@ def detect_lora_stacker(wf: dict[str, Any]) -> LoraStacker | None:
                 break
         return LoraStacker(
             node_id=str(nid),
-            class_type=str(node.get("class_type") or ""),
+            class_type=str(class_type),
+            style="flat",
             slots=slots,
             empty_token=empty,
         )
     return None
+
+
+def _num_suffix(key: str) -> int:
+    m = re.search(r"(\d+)$", str(key))
+    return int(m.group(1)) if m else 0
+
+
+# --------------------------------------------------------------------------
+# 工作流“有哪些参数”体检（给前端展示 + 选择要用的参数）
+# --------------------------------------------------------------------------
+# 只对文本类输入做“像不像提示词”的判断，避免把文件路径当提示词
+_PROMPT_HINT_KEYS = ("text", "prompt", "positive", "string", "value", "wildcard", "populated")
+
+
+def _input_types(class_type: str, object_info: dict[str, Any]) -> dict[str, str]:
+    """某节点的 ``输入名 -> 类型名``（含 required/optional）。
+
+    object_info 写法：``["INT", {...}]`` 标量、``[["a","b"], {...}]`` 下拉、``"MODEL"`` 连线。
+    """
+    spec = (object_info.get(class_type) or {}).get("input") or {}
+    out: dict[str, str] = {}
+    for group in ("required", "optional"):
+        for name, entry in (spec.get(group) or {}).items():
+            if isinstance(entry, list):
+                first = entry[0] if entry else None
+                if isinstance(first, list):
+                    out[name] = "COMBO"
+                elif isinstance(first, str):
+                    out[name] = first
+                else:
+                    out[name] = "?"
+            elif isinstance(entry, str):
+                out[name] = entry
+            elif isinstance(entry, tuple) and entry:
+                out[name] = entry[0] if isinstance(entry[0], str) else "?"
+            elif isinstance(entry, dict):
+                t = entry.get("type")
+                out[name] = t if isinstance(t, str) else "?"
+    return out
+
+
+def describe_workflow(wf: dict[str, Any], object_info: dict[str, Any] | None = None) -> dict[str, Any]:
+    """体检一份 API 格式工作流：节点、缺失节点、可编辑参数、LoRA 槽、采样参数、输出。"""
+    object_info = object_info or {}
+    classes = sorted({n.get("class_type") for n in wf.values() if isinstance(n, dict)})
+    missing = sorted(c for c in classes if c and c not in object_info) if object_info else []
+
+    text_params: list[dict] = []
+    number_params: list[dict] = []
+    lora_slots: list[dict] = []
+    sampler: dict = {}
+    outputs: list[str] = []
+
+    for nid, node in wf.items():
+        cls = node.get("class_type") or ""
+        inputs = node.get("inputs") or {}
+        types = _input_types(cls, object_info)
+        for k, v in inputs.items():
+            t = types.get(k, "")
+            # 文本类
+            if isinstance(v, str) and (t in ("STRING", "") or k.lower() in _PROMPT_HINT_KEYS):
+                if k.lower() in ("filename_prefix", "filename"):
+                    continue
+                if len(v) >= 4 and not v.lower().endswith((".safetensors", ".ckpt", ".pt", ".pth", ".png", ".jpg")):
+                    text_params.append({
+                        "node_id": str(nid), "class_type": cls, "input": k, "value": v,
+                        "length": len(v), "looks_prompt": ("," in v) or len(v) >= 40,
+                    })
+            # 数值类
+            elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                number_params.append({"node_id": str(nid), "class_type": cls, "input": k, "value": v})
+        # 采样参数
+        if cls in SAMPLER_CLASSES:
+            for k in ("seed", "noise_seed", "steps", "cfg", "sampler_name", "scheduler", "denoise"):
+                if k in inputs:
+                    sampler[k] = {"node_id": str(nid), "value": inputs[k]}
+        if cls in OUTPUT_CLASSES:
+            outputs.append(str(nid))
+
+    # LoRA 槽现状
+    st = detect_lora_stacker(wf)
+    if st is not None:
+        node = wf.get(st.node_id) or {}
+        sinputs = node.get("inputs") or {}
+        for slot in st.slots:
+            raw = sinputs.get(slot.name_input)
+            if st.style == "dict" and isinstance(raw, dict):
+                lora_slots.append({
+                    "input": slot.name_input, "lora": raw.get("lora", ""),
+                    "on": bool(raw.get("on")), "strength": raw.get("strength", 1),
+                })
+            else:
+                name = str(raw or "")
+                lora_slots.append({
+                    "input": slot.name_input, "lora": "" if name == st.empty_token else name,
+                    "on": bool(name) and name != st.empty_token,
+                    "strength": sinputs.get(slot.strength_input) if slot.strength_input else None,
+                })
+
+    return {
+        "node_count": len(wf),
+        "classes": classes,
+        "missing_nodes": missing,
+        "text_params": sorted(text_params, key=lambda x: (not x["looks_prompt"], -x["length"])),
+        "number_params": number_params,
+        "sampler": sampler,
+        "lora": {
+            "mode": ("堆加载 · " + ("对象式" if st.style == "dict" else "扁平式")) if st else "无",
+            "node_id": st.node_id if st else "",
+            "class_type": st.class_type if st else "",
+            "slots": lora_slots,
+        },
+        "output_node_ids": outputs,
+        "has_prompt_placeholder": _contains_value(wf, PLACEHOLDER_PROMPT),
+    }
 
 
 def guess_mapping(wf: dict[str, Any]) -> WorkflowParams:
@@ -415,24 +546,49 @@ def apply_loras(wf: dict[str, Any], loras: list[dict[str, Any]], slots: list[Lor
 def apply_lora_stacker(
     wf: dict[str, Any], loras: list[dict[str, Any]], stacker: LoraStacker
 ) -> None:
-    """就地把 LoRA 写进「堆加载」节点：第 i 个 LoRA -> 第 i 个槽，空槽填 ``empty_token``。
+    """就地把 LoRA 写进「堆加载」节点。
 
-    数量超过槽位时只取前 N 个（并在调用方提示）。
+    - ``flat``：第 i 个 LoRA → ``lora_0i`` / ``strength_0i``，空槽填 ``empty_token``
+    - ``dict``：第 i 个槽写 ``{"on": true, "lora": name, "strength": w}``，多余槽 ``{"on": false, ...}``
+
+    数量超过槽位时只取前 N 个（调用方提示）。
     """
     node = wf.get(str(stacker.node_id))
     if node is None:
         raise WorkflowError(f"LoRA 堆加载节点不存在：{stacker.node_id}")
     inputs = node.setdefault("inputs", {})
+
     for i, slot in enumerate(stacker.slots):
-        if i < len(loras):
-            lora = loras[i]
-            inputs[slot.name_input] = lora["name"]
-            if slot.strength_input:
-                inputs[slot.strength_input] = lora.get("weight", 0.8)
+        has = i < len(loras)
+        if stacker.style == "dict":
+            if has:
+                lora = loras[i]
+                inputs[slot.name_input] = {
+                    "on": True,
+                    "lora": lora["name"],
+                    "strength": lora.get("weight", 0.8),
+                    "strengthTwo": None,
+                }
+            else:
+                # 保留原值里的 lora 名（可能是作者预设），只关掉
+                prev = inputs.get(slot.name_input)
+                prev_name = prev.get("lora", "") if isinstance(prev, dict) else ""
+                inputs[slot.name_input] = {
+                    "on": False,
+                    "lora": prev_name,
+                    "strength": 1,
+                    "strengthTwo": None,
+                }
         else:
-            inputs[slot.name_input] = stacker.empty_token
-            if slot.strength_input:
-                inputs[slot.strength_input] = 0
+            if has:
+                lora = loras[i]
+                inputs[slot.name_input] = lora["name"]
+                if slot.strength_input:
+                    inputs[slot.strength_input] = lora.get("weight", 0.8)
+            else:
+                inputs[slot.name_input] = stacker.empty_token
+                if slot.strength_input:
+                    inputs[slot.strength_input] = 0
 
 
 def _replace_placeholders(obj: Any, mapping: dict[str, str]) -> None:

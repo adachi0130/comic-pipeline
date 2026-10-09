@@ -36,20 +36,22 @@ const TITLES = {
   projects: ['项目', '选择或新建一部漫画'],
   novel: ['正文', '用酒馆写小说，逐段审核，然后进入分页'],
   pipeline: ['流水线', '各阶段与中间产物'],
-  images: ['出图', '逐格出图与挑图'],
   pages: ['分格', '每页选模板（或让 AI 选）+ 打分格'],
+  prompts: ['提示词', 'S3 分镜提示词：每格一句出图词'],
+  images: ['出图', '连上后端 → 选工作流 → 出图挑图'],
   settings: ['设置', 'LLM 供应商 / ComfyUI / 阶段绑定'],
 };
 $$('.nav button[data-tab]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
 function switchTab(tab) {
   $$('.nav button[data-tab]').forEach((x) => x.classList.toggle('active', x.dataset.tab === tab));
-  ['projects', 'novel', 'pipeline', 'pages', 'images', 'settings'].forEach((t) => $('#tab-' + t).classList.toggle('hidden', t !== tab));
+  ['projects', 'novel', 'pipeline', 'pages', 'prompts', 'images', 'settings'].forEach((t) => $('#tab-' + t).classList.toggle('hidden', t !== tab));
   $('#view-title').textContent = TITLES[tab][0];
   $('#view-sub').textContent = TITLES[tab][1];
   if (tab === 'novel') loadNovel();
   if (tab === 'pipeline') renderFlow().then(refreshGates);
   if (tab === 'images') loadWorkbench();
   if (tab === 'pages') loadPages();
+  if (tab === 'prompts') loadPrompts();
   if (tab === 'settings') { loadProviders(); loadStageBinding(); }
   if (tab === 'projects') {
     // 已选中项目时停在详情（二级），否则显示列表（一级）
@@ -110,6 +112,7 @@ async function pickProject(id) {
   const active = document.querySelector('.nav button.active')?.dataset.tab;
   if (active === 'novel') loadNovel();
   if (active === 'images') loadWorkbench();
+  if (active === 'prompts') loadPrompts();
 }
 
 // 元信息（阶段定义/模板/技法）懒加载 + 自愈：初次失败时下次重试
@@ -921,6 +924,111 @@ async function aiFillPage(pageRef, btn) {
   }
 }
 
+// ---------- 提示词（S3 工作台）----------
+$('#pr-reload').addEventListener('click', loadPrompts);
+$('#pr-run-all').addEventListener('click', async () => {
+  if (!state.projectId) return toast('先选择项目', 'err');
+  try {
+    const rd = await api(`/api/projects/${state.projectId}/readiness`);
+    const info = rd.S3 || {};
+    if (!info.ready) return toast('前置未满足：' + info.missing, 'err');
+  } catch { /* 交给后端兜底 */ }
+  await runStage('S3');
+  setTimeout(loadPrompts, 1500);
+});
+
+async function loadPrompts() {
+  if (!state.projectId) {
+    $('#pr-list').innerHTML = '';
+    $('#pr-blank').style.display = 'block';
+    $('#pr-count').textContent = '—';
+    $('#pr-meta').textContent = '请先选择项目';
+    return;
+  }
+  try {
+    const d = await api(`/api/projects/${state.projectId}/prompt-board`);
+    $('#pr-count').textContent = `${d.pages.length} 页`;
+    $('#pr-meta').textContent = `提示词 ${d.panel_done}/${d.panel_total} 格${d.has_llm_provider ? '' : ' · ⚠ 还没配 LLM 供应商'}`;
+    const box = $('#pr-list');
+    $('#pr-blank').style.display = d.pages.length ? 'none' : 'block';
+    if (!d.pages.length) { box.innerHTML = ''; return; }
+
+    box.innerHTML = d.pages.map((pg) => `
+      <div class="card" style="padding:14px" data-prpage="${esc(pg.page_ref)}">
+        <div class="row" style="gap:8px">
+          <div class="tplthumb-sm" title="${esc(pg.template_id || '')}">
+            ${pg.template_id ? `<img src="/api/templates/${encodeURIComponent(pg.template_id)}/svg" alt="">` : ''}
+          </div>
+          <div>
+            <div class="row" style="gap:6px"><b>${esc(pg.page_ref)}</b> ${pill(pg.status)}
+              <span class="pill tag">${pg.panels.length} 格</span>
+              <span class="pill tag">${pg.panels.filter((p) => p.prompt).length}/${pg.panels.length} 已生成</span></div>
+            <div class="mut" style="font-size:11.5px">${esc(pg.template ? (pg.template.layout_desc || pg.template_id) : (pg.template_id || ''))}</div>
+          </div>
+          <div class="spacer"></div>
+          <button class="sm" data-prrun="${esc(pg.page_ref)}">生成这页</button>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:8px;margin-top:10px">
+          ${pg.panels.map((p) => `
+            <div class="mini-card" style="padding:9px 11px">
+              <div class="row" style="gap:6px">
+                <b style="font-size:12px">第 ${p.panel_order} 格</b>
+                <span class="mut" style="font-size:11px">${esc(p.shot || '')}</span>
+                ${p.prompt ? pill(p.prompt.status) : '<span class="pill">未生成</span>'}
+                <div class="spacer"></div>
+                ${p.prompt ? `<button class="sm" data-predit="${esc(p.panel_ref)}">改</button>` : ''}
+              </div>
+              <div class="mut" style="font-size:11px;margin-top:3px">${esc((p.action || p.dialogue || '').slice(0, 60))}</div>
+              ${p.prompt ? `<div style="font-size:11.5px;margin-top:5px;line-height:1.45">${esc((p.prompt.prompt_pos || '').slice(0, 200))}</div>
+                ${p.prompt.prompt_neg ? `<div class="mut" style="font-size:11px;margin-top:3px">负向：${esc(p.prompt.prompt_neg.slice(0, 90))}</div>` : ''}
+                ${(p.prompt.loras || []).length ? `<div class="mut" style="font-size:11px;margin-top:3px">LoRA ${esc((p.prompt.loras || []).map((l) => l.name).join('、'))}</div>` : ''}`
+                : '<div class="mut" style="font-size:11.5px;margin-top:5px">点右上角「生成这页」或顶部「整册生成」</div>'}
+            </div>`).join('')}
+        </div>
+      </div>`).join('');
+
+    box.querySelectorAll('[data-prrun]').forEach((b) => b.addEventListener('click', async () => {
+      b.disabled = true; b.textContent = '生成中…';
+      try {
+        await api(`/api/projects/${state.projectId}/prompt-board/run-page/${encodeURIComponent(b.dataset.prrun)}`, { method: 'POST', body: '{}' });
+        toast(`${b.dataset.prrun} 已入队生成`, 'ok');
+        setTimeout(loadPrompts, 2500);
+      } catch (e) { toast(e.message, 'err'); }
+      finally { b.disabled = false; b.textContent = '生成这页'; }
+    }));
+    box.querySelectorAll('[data-predit]').forEach((b) => b.addEventListener('click', () => openPanelPromptEdit(b.dataset.predit)));
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function openPanelPromptEdit(panelRef) {
+  let art;
+  try { art = await api(`/api/projects/${state.projectId}/artifacts?kind=panel_prompt&ref_prefix=${encodeURIComponent(panelRef)}`); }
+  catch (e) { return toast(e.message, 'err'); }
+  if (!art.length) return toast('找不到该格提示词', 'err');
+  const full = await api('/api/artifacts/' + art[0].id);
+  const pl = full.payload || {};
+  const box = document.createElement('div');
+  box.className = 'modal';
+  box.innerHTML = `<div class="box" style="width:min(760px,94vw)">
+    <h3>${esc(panelRef)} · 分镜提示词</h3>
+    <div class="h2sub">改完保存会写一个新版本，该格出图需重跑。</div>
+    <div><label class="fld">正向</label><textarea id="pp-pos" style="min-height:120px">${esc(pl.prompt_pos || '')}</textarea></div>
+    <div style="margin-top:8px"><label class="fld">负向</label><textarea id="pp-neg" style="min-height:70px">${esc(pl.prompt_neg || '')}</textarea></div>
+    <div class="row" style="margin-top:12px"><div class="spacer"></div>
+      <button class="sm" data-close>取消</button>
+      <button class="primary sm" id="pp-savep">保存</button></div></div>`;
+  document.body.appendChild(box);
+  box.querySelector('[data-close]').addEventListener('click', () => box.remove());
+  box.addEventListener('click', (e) => { if (e.target === box) box.remove(); });
+  box.querySelector('#pp-savep').addEventListener('click', async () => {
+    try {
+      await api(`/api/projects/${state.projectId}/panel-prompt/${encodeURIComponent(panelRef)}`, {
+        method: 'PATCH', body: JSON.stringify({ prompt_pos: box.querySelector('#pp-pos').value, prompt_neg: box.querySelector('#pp-neg').value }) });
+      toast('已保存', 'ok'); box.remove(); loadPrompts(); refreshGates();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+}
+
 // ---------- 流水线 ----------
 async function renderFlow() {
   const box = $('#flow');
@@ -1387,104 +1495,51 @@ $('#cf-assets').addEventListener('click', async () => {
 $('#cf-open').addEventListener('click', openComfySettings);
 
 // ---------- 出图设置（仙宫云 + 工作流 + 参数 + LoRA + 试跑）----------
+// ---------- 出图设置（第一步：POST 连接 → 拉工作流/LoRA；点工作流看参数；选定即跑）----------
 async function openComfySettings() {
-  let cfg, wfs;
+  let cfg;
   try {
-    [cfg, wfs] = await Promise.all([api('/api/comfy/config'), api('/api/comfy/workflows')]);
+    cfg = await api('/api/comfy/config');
   } catch (e) { return toast(e.message, 'err'); }
-  const wp = (cfg.default_params || {});
+
+  let currentLoras = [];
 
   const box = document.createElement('div');
   box.className = 'modal';
-  box.innerHTML = `<div class="box" style="width:min(980px,95vw)">
-    <h3>出图设置 <span class="mut" style="font-size:12px;font-weight:400">仙宫云连接 · 工作流 · 参数 · LoRA</span></h3>
+  box.innerHTML = `<div class="box" style="width:min(1000px,95vw)">
+    <h3>出图设置 <span class="mut" style="font-size:12px;font-weight:400">连上后端 → 选工作流 → 看参数 → 出图</span></h3>
 
     <div class="divider"></div>
     <div><b>① 连接</b>
-      <span class="mut" style="font-size:12px">　用哪台出图后端</span></div>
+      <span class="mut" style="font-size:12px">　点「连接」= 发一次请求，把后端的工作流与 LoRA 拉回来</span></div>
     <div class="row" style="margin-top:8px">
       <label class="fld" style="margin:0">后端</label>
       <select id="cs-backend" style="width:150px">
-        <option value="cloud" ${cfg.backend === 'cloud' ? 'selected' : ''}>仙宫云</option>
         <option value="local" ${cfg.backend === 'local' ? 'selected' : ''}>本机 ComfyUI</option>
+        <option value="cloud" ${cfg.backend === 'cloud' ? 'selected' : ''}>仙宫云</option>
       </select>
-      <span class="pill" id="cs-cloud-pill"><i class="dotm"></i>仙宫云 …</span>
-      <span class="pill" id="cs-local-pill"><i class="dotm"></i>本机 …</span>
+      <input id="cs-url" placeholder="地址（本机默认 http://127.0.0.1:8188）"
+             value="${esc(cfg.backend === 'local' ? (cfg.local_url || 'http://127.0.0.1:8188') : (cfg.cloud_url || ''))}"
+             style="flex:1;min-width:260px">
+      <input id="cs-key" type="password" placeholder="${cfg.has_api_key ? 'API Key（已存，留空不改）' : 'API Key（一般不用）'}" style="width:170px">
+      <button class="sm primary" id="cs-connect">连接</button>
+      <span class="pill" id="cs-state">—</span>
     </div>
-    <div class="grid2" style="margin-top:8px">
-      <div><label class="fld">仙宫云地址（ComfyUI 的网址）</label>
-        <input id="cs-cloud" placeholder="https://xxxx.xiangongyun.com" value="${esc(cfg.cloud_url || '')}"></div>
-      <div><label class="fld">API Key（需要鉴权才填；留空=不改）</label>
-        <input id="cs-key" type="password" placeholder="${cfg.has_api_key ? '已保存（留空不改）' : '通常不需要'}" value=""></div>
-      <div><label class="fld">本机 ComfyUI 地址（备用调试）</label>
-        <input id="cs-local" value="${esc(cfg.local_url || '')}"></div>
-      <div></div>
+    <div class="mut" id="cs-counts" style="font-size:12px;margin-top:6px"></div>
+
+    <div class="divider"></div>
+    <div class="row">
+      <div><b>② 工作流</b>
+        <span class="mut" style="font-size:12px">　点一个工作流看它的参数</span></div>
+      <div class="spacer"></div>
+      <span class="mut" style="font-size:12px">当前：</span><span class="pill tag" id="cs-current">${esc(cfg.workflow_name || '（未选）')}</span>
     </div>
-    <div class="row" style="margin-top:8px">
-      <button class="sm" id="cs-save-conn">保存连接</button>
-      <button class="sm" id="cs-ping">测试连通</button>
-      <span class="mut" id="cs-conn-msg" style="font-size:12px"></span>
+    <div id="cs-wf-list" style="margin-top:8px;max-height:190px;overflow:auto">
+      <div class="empty">点「连接」后这里会列出后端上的工作流</div>
     </div>
 
     <div class="divider"></div>
-    <div><b>② 工作流</b>
-      <span class="mut" style="font-size:12px">　选一个作为出图流程（API 格式；UI 格式会自动转）</span></div>
-    <div class="row" style="margin-top:8px">
-      <select id="cs-wf" style="min-width:280px">
-        ${(cfg.workflows || []).length
-          ? (cfg.workflows || []).map((n) => `<option value="${esc(n)}" ${n === cfg.workflow_name ? 'selected' : ''}>${esc(n)}${n === cfg.workflow_name ? '（当前）' : ''}</option>`).join('')
-          : '<option value="">（还没有工作流，先导入）</option>'}
-      </select>
-      <button class="sm primary" id="cs-wf-use">设为当前</button>
-      <button class="sm" id="cs-wf-guess">自动映射参数</button>
-      <button class="sm" id="cs-wf-del">删除</button>
-    </div>
-    <div class="row" style="margin-top:8px">
-      <input id="cs-wf-name" placeholder="新工作流名字，如 anima_t2i" style="min-width:200px">
-      <label class="fld" style="margin:0;display:inline-flex;align-items:center;gap:6px">
-        <input type="file" id="cs-wf-file" accept=".json,.txt" style="width:auto"> 选文件</label>
-      <button class="sm" id="cs-wf-import">导入</button>
-    </div>
-    <div class="mut" style="font-size:12px;margin-top:4px">也支持粘贴：直接在下框贴完整 JSON 再点导入。</div>
-    <textarea id="cs-wf-json" placeholder='{"3":{"class_type":"KSampler",...}} 或 ComfyUI 的 UI 格式 JSON'
-      style="min-height:70px;font-family:ui-monospace,Consolas,monospace;font-size:12px;margin-top:6px"></textarea>
-    <div id="cs-wf-info" class="mut" style="font-size:12px;margin-top:6px"></div>
-
-    <div class="divider"></div>
-    <div><b>③ 参数</b>
-      <span class="mut" style="font-size:12px">　映射表（哪个参数写到工作流哪个节点）；一般「自动映射」就够了</span></div>
-    <div class="grid2" style="margin-top:8px">
-      <div><label class="fld">步数 steps</label><input id="cs-steps" type="number" value="${wp.steps ?? 26}"></div>
-      <div><label class="fld">CFG</label><input id="cs-cfg" type="number" step="0.5" value="${wp.cfg ?? 6}"></div>
-      <div><label class="fld">采样器 sampler</label><input id="cs-sampler" value="${esc(wp.sampler || 'euler')}"></div>
-      <div><label class="fld">scheduler</label><input id="cs-sched" value="${esc(wp.scheduler || 'karras')}"></div>
-      <div><label class="fld">宽 width</label><input id="cs-w" type="number" value="${wp.width ?? 832}"></div>
-      <div><label class="fld">高 height</label><input id="cs-h" type="number" value="${wp.height ?? 1216}"></div>
-      <div><label class="fld">checkpoint（可留空用工作流里的）</label><input id="cs-ckpt" value="${esc(wp.ckpt_name || '')}"></div>
-      <div><label class="fld">出图后端 LoRA 列表（拉取后可选）</label>
-        <select id="cs-lora-list"><option value="">（点右侧拉取）</option></select></div>
-    </div>
-    <div class="row" style="margin-top:8px">
-      <button class="sm" id="cs-save-params">保存参数</button>
-      <button class="sm" id="cs-pull-loras">拉取 LoRA 列表</button>
-      <span class="mut" id="cs-params-msg" style="font-size:12px"></span>
-    </div>
-    <pre id="cs-mapping" class="mut" style="font-size:11px;max-height:150px;overflow:auto;margin-top:8px"></pre>
-
-    <div class="divider"></div>
-    <div><b>④ 试跑一张</b>
-      <span class="mut" style="font-size:12px">　验证连接+工作流+参数+LoRA 是否通（会真的出 1 张图）</span></div>
-    <div class="grid2" style="margin-top:8px">
-      <div><label class="fld">正向提示词</label>
-        <textarea id="cs-t-pos" style="min-height:60px">1girl, solo, masterpiece, best quality</textarea></div>
-      <div><label class="fld">负向提示词</label>
-        <textarea id="cs-t-neg" style="min-height:60px">worst quality, low quality</textarea></div>
-    </div>
-    <div class="row" style="margin-top:8px">
-      <button class="sm primary" id="cs-test">试跑</button>
-      <span class="mut" id="cs-test-msg" style="font-size:12px"></span>
-    </div>
-    <div id="cs-test-out" style="margin-top:10px"></div>
+    <div id="cs-detail"><div class="empty">点上面一个工作流，这里显示它的参数（提示词 / 采样 / LoRA 槽）</div></div>
 
     <div class="row" style="margin-top:16px"><div class="spacer"></div>
       <button class="sm" data-close>关闭</button></div>
@@ -1493,119 +1548,173 @@ async function openComfySettings() {
   box.querySelector('[data-close]').addEventListener('click', () => box.remove());
   box.addEventListener('click', (e) => { if (e.target === box) box.remove(); });
 
-  // 连通状态异步补上（探测后端比较慢，不阻塞弹窗出现）
-  api('/api/comfy/status').then((st) => {
-    const setPill = (sel, ok, label) => {
-      const el = box.querySelector(sel); if (!el) return;
-      el.className = 'pill ' + (ok ? 'ok' : 'err');
-      el.innerHTML = `<i class="dotm"></i>${label} ${ok ? '在线' : '未连上'}`;
+  const backendNow = () => box.querySelector('#cs-backend').value;
+  box.querySelector('#cs-backend').addEventListener('change', () => {
+    const b = backendNow();
+    box.querySelector('#cs-url').value = b === 'local' ? (cfg.local_url || 'http://127.0.0.1:8188') : (cfg.cloud_url || '');
+  });
+  const setState = (cls, text) => {
+    const el = box.querySelector('#cs-state');
+    el.className = 'pill ' + cls; el.innerHTML = `<i class="dotm"></i>${text}`;
+  };
+
+  // ---- ① 连接：POST 一次，拿工作流 + 模型清单 ----
+  box.querySelector('#cs-connect').addEventListener('click', async () => {
+    setState('run', '连接中…');
+    const backend = backendNow();
+    const url = box.querySelector('#cs-url').value.trim();
+    const api_key = box.querySelector('#cs-key').value;
+    try {
+      const r = await api('/api/comfy/connect', { method: 'POST', body: JSON.stringify({ backend, url, api_key }) });
+      if (backend === 'local') cfg.local_url = url; else if (url) cfg.cloud_url = url;
+      if (!r.reachable) { setState('err', '连不上'); box.querySelector('#cs-counts').textContent = r.error || ''; return; }
+      setState('ok', '已连接');
+      currentLoras = r.loras || [];
+      box.querySelector('#cs-counts').textContent =
+        `工作流 ${r.workflows.length} 个 · LoRA ${(r.loras || []).length} 个 · checkpoint ${(r.checkpoints || []).length} 个 · VAE ${(r.vaes || []).length} 个`;
+      renderServerWorkflows(r.workflows || []);
+    } catch (e) { setState('err', '失败'); toast(e.message, 'err'); }
+  });
+
+  function renderServerWorkflows(list) {
+    const el = box.querySelector('#cs-wf-list');
+    if (!list.length) { el.innerHTML = '<div class="empty">这台后端上还没有工作流（先在 ComfyUI 里存一个）</div>'; return; }
+    el.innerHTML = list.map((n) => `
+      <div class="pitem" data-wf="${esc(n)}" style="cursor:pointer">
+        <div class="av">▧</div>
+        <div><b>${esc(n)}</b>
+          ${n === cfg.workflow_name || n.replace(/\.json$/, '') === cfg.workflow_name ? ' <span class="pill ok">当前</span>' : ''}</div>
+        <div class="spacer"></div>
+        <span class="mut" style="font-size:12px">点击查看参数</span>
+      </div>`).join('');
+    el.querySelectorAll('[data-wf]').forEach((row) =>
+      row.addEventListener('click', () => inspectWorkflow(row.dataset.wf)));
+  }
+
+  // ---- ② 点工作流 → 看它有哪些参数 ----
+  async function inspectWorkflow(name) {
+    const el = box.querySelector('#cs-detail');
+    el.innerHTML = '<div class="empty">读取中…（UI 格式需要转换成 API 格式，稍等）</div>';
+    let r;
+    try {
+      r = await api('/api/comfy/server-workflow', { method: 'POST', body: JSON.stringify({ backend: backendNow(), name }) });
+    } catch (e) {
+      el.innerHTML = `<div class="empty" style="color:var(--err);text-align:left">读取失败：${esc(e.message)}</div>`;
+      return;
+    }
+    const d = r.describe || {};
+    const prompts = (d.text_params || []).slice(0, 8);
+    const lora = d.lora || { slots: [] };
+    el.innerHTML = `
+      <div class="row" style="gap:8px">
+        <b>${esc(name)}</b>
+        <span class="pill tag">${d.node_count} 节点</span>
+        <span class="pill tag">${r.ui_format ? 'UI 格式（已转 API）' : 'API 格式'}</span>
+        <span class="pill tag">LoRA：${esc(lora.mode || '无')}</span>
+        <div class="spacer"></div>
+        <button class="sm primary" id="cs-use">就用它出图</button>
+      </div>
+      ${(r.warnings || []).length ? `<div class="empty" style="color:var(--warn);text-align:left;font-size:12px;margin-top:6px">⚠ ${r.warnings.map(esc).join('<br>⚠ ')}</div>` : ''}
+      ${(d.missing_nodes || []).length ? `<div class="empty" style="color:var(--err);text-align:left;font-size:12px;margin-top:6px">缺节点：${d.missing_nodes.map(esc).join('、')}（这台 ComfyUI 上没装/没加载，可能跑不了）</div>` : ''}
+
+      <div style="margin-top:10px"><b style="font-size:13px">参数</b>
+        <span class="mut" style="font-size:12px">　带「疑似提示词」标记的通常就是正/负提示词</span></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px;margin-top:6px">
+        ${prompts.map((t, i) => `
+          <label class="mini-card" style="padding:8px 10px;display:block;cursor:pointer">
+            <input type="checkbox" class="cs-param" data-node="${esc(t.node_id)}" data-input="${esc(t.input)}"
+                   ${t.looks_prompt && i < 2 ? 'checked' : ''} style="width:auto">
+            <span class="pill tag" style="margin-left:6px">${esc(t.class_type)}#${esc(t.node_id)}</span>
+            ${t.looks_prompt ? '<span class="pill warn" style="margin-left:4px">疑似提示词</span>' : ''}
+            <div class="mut" style="font-size:11px;margin-top:4px;word-break:break-all">${esc((t.value || '').slice(0, 90))}</div>
+          </label>`).join('') || '<div class="mut" style="font-size:12px">没找到文本参数</div>'}
+      </div>
+
+      <div style="margin-top:10px"><b style="font-size:13px">LoRA 槽（${(lora.slots || []).length} 个）</b>
+        <span class="mut" style="font-size:12px">　勾选启用；名字可下拉联想后端已有的 LoRA</span></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:6px;margin-top:6px">
+        ${(lora.slots || []).map((s, i) => `
+          <div class="mini-card" style="padding:8px 10px">
+            <label style="font-size:12px"><input type="checkbox" class="cs-lora" ${s.on ? 'checked' : ''} style="width:auto">
+              槽 ${i + 1} · ${esc(s.input)}</label>
+            <input class="cs-lora-name" list="cs-lora-opts" value="${esc(s.lora || '')}" placeholder="lora 文件名" style="width:100%;margin-top:4px;font-size:12px">
+            <label class="fld" style="margin:4px 0 0;font-size:11px">权重
+              <input class="cs-lora-w" type="number" step="0.05" value="${s.strength ?? 1}" style="width:74px"></label>
+          </div>`).join('') || '<div class="mut" style="font-size:12px">这个工作流没有可识别的 LoRA 堆加载节点</div>'}
+      </div>
+
+      <div style="margin-top:10px"><b style="font-size:13px">采样参数</b></div>
+      <div class="grid2" style="margin-top:6px">
+        ${Object.entries(d.sampler || {}).map(([k, v]) => `
+          <div class="mini-card" style="padding:8px 10px;display:flex;justify-content:space-between">
+            <span class="mut" style="font-size:12px">${esc(k)}</span><b style="font-size:12px">${esc(String(v.value))}</b>
+          </div>`).join('') || '<div class="mut" style="font-size:12px">没识别到采样节点（可能是子图）</div>'}
+      </div>
+
+      <div style="margin-top:12px"><b style="font-size:13px">试跑</b>
+        <span class="mut" style="font-size:12px">　用上面勾选的提示词与 LoRA 真出一张</span></div>
+      <div class="grid2" style="margin-top:6px">
+        <div><label class="fld">正向提示词</label><textarea id="cs-t-pos" style="min-height:54px">1girl, solo, masterpiece, best quality</textarea></div>
+        <div><label class="fld">负向提示词</label><textarea id="cs-t-neg" style="min-height:54px">worst quality, low quality</textarea></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button class="sm primary" id="cs-test">试跑一张</button>
+        <span class="mut" id="cs-test-msg" style="font-size:12px"></span>
+      </div>
+      <div id="cs-test-out" style="margin-top:10px"></div>`;
+
+    const old = document.getElementById('cs-lora-opts'); if (old) old.remove();
+    const dl = document.createElement('datalist'); dl.id = 'cs-lora-opts';
+    dl.innerHTML = currentLoras.map((l) => `<option value="${esc(l)}">`).join('');
+    document.body.appendChild(dl);
+
+    const collectParams = () => {
+      const plain = {};
+      const map = { steps: 'steps', cfg: 'cfg', sampler_name: 'sampler', scheduler: 'scheduler', denoise: 'denoise', width: 'width', height: 'height' };
+      Object.entries(map).forEach(([k, out]) => {
+        const v = (d.sampler || {})[k];
+        if (v && typeof v.value !== 'object') plain[out] = v.value;
+      });
+      return plain;
     };
-    setPill('#cs-cloud-pill', !!(st.cloud && st.cloud.reachable), '仙宫云');
-    setPill('#cs-local-pill', !!(st.local && st.local.reachable), '本机');
-  }).catch(() => {});
+    const collectLoras = () => Array.from(el.querySelectorAll('.cs-lora')).map((cb) => {
+      const card = cb.closest('.mini-card');
+      const name = card.querySelector('.cs-lora-name').value.trim();
+      const w = +card.querySelector('.cs-lora-w').value || 0.8;
+      return cb.checked && name ? { name, weight: w } : null;
+    }).filter(Boolean);
 
-  const wfInfo = () => {
-    const name = $('#cs-wf').value;
-    const item = (wfs.workflows || []).find((x) => x.name === name);
-    $('#cs-wf-info').innerHTML = item
-      ? `节点 ${item.node_count} 个 · ${item.api_format ? 'API 格式' : '非 API 格式'} · 提示词占位符 ${item.prompt_placeholder || '无（按字段映射）'} · LoRA 方式 ${esc(item.lora_mode || '无')}`
-      : '';
-    return name;
-  };
-  const loadMapping = async (name) => {
-    if (!name) { $('#cs-mapping').textContent = ''; return; }
-    try { const m = await api(`/api/comfy/workflows/${encodeURIComponent(name)}/mapping`);
-      $('#cs-mapping').textContent = '参数映射：' + JSON.stringify(m.bindings || {}, null, 0); }
-    catch { $('#cs-mapping').textContent = ''; }
-  };
-  wfInfo(); loadMapping($('#cs-wf').value);
-  $('#cs-wf').addEventListener('change', () => { wfInfo(); loadMapping($('#cs-wf').value); });
+    el.querySelector('#cs-use').addEventListener('click', async () => {
+      try {
+        const im = await api('/api/comfy/import-from-server', { method: 'POST', body: JSON.stringify({ backend: backendNow(), name }) });
+        cfg.workflow_name = im.name;
+        const cur = box.querySelector('#cs-current'); if (cur) cur.textContent = im.name;
+        renderServerWorkflows(Array.from(box.querySelectorAll('#cs-wf-list [data-wf]')).map((x) => x.dataset.wf));
+        toast(`已选中：${im.name}`, 'ok');
+        if ((im.warnings || []).length) toast('提示：' + im.warnings.join('；'), 'err');
+      } catch (e) { toast(e.message, 'err'); }
+    });
 
-  $('#cs-save-conn').addEventListener('click', async () => {
-    try {
-      await api('/api/comfy/config', { method: 'PUT', body: JSON.stringify({
-        backend: $('#cs-backend').value, cloud_url: $('#cs-cloud').value.trim(),
-        cloud_api_key: $('#cs-key').value, local_url: $('#cs-local').value.trim() }) });
-      $('#cs-conn-msg').textContent = '已保存'; toast('连接配置已保存', 'ok');
-    } catch (e) { toast(e.message, 'err'); }
-  });
-  $('#cs-ping').addEventListener('click', async () => {
-    // 先存再测，避免测的是旧地址
-    try {
-      await api('/api/comfy/config', { method: 'PUT', body: JSON.stringify({
-        backend: $('#cs-backend').value, cloud_url: $('#cs-cloud').value.trim(),
-        cloud_api_key: $('#cs-key').value, local_url: $('#cs-local').value.trim() }) });
-    } catch { /* ignore */ }
-    $('#cs-conn-msg').textContent = '测试中…';
-    try {
-      const r = await api('/api/comfy/status');
-      const reach = $('#cs-backend').value === 'local' ? r.local.reachable : r.cloud.reachable;
-      $('#cs-conn-msg').textContent = reach ? '连通 ✅' : '连不上（检查地址/隧道）';
-    } catch (e) { $('#cs-conn-msg').textContent = e.message; }
-  });
-
-  $('#cs-wf-use').addEventListener('click', async () => {
-    const name = $('#cs-wf').value; if (!name) return toast('先选一个工作流', 'err');
-    try { await api(`/api/comfy/workflows/${encodeURIComponent(name)}/activate`, { method: 'POST' });
-      toast(`已设为当前：${name}`, 'ok'); loadMapping(name); } catch (e) { toast(e.message, 'err'); }
-  });
-  $('#cs-wf-guess').addEventListener('click', async () => {
-    const name = $('#cs-wf').value; if (!name) return toast('先选一个工作流', 'err');
-    try { await api(`/api/comfy/workflows/${encodeURIComponent(name)}/mapping/guess`, { method: 'POST' });
-      toast('已自动映射参数', 'ok'); loadMapping(name); } catch (e) { toast(e.message, 'err'); }
-  });
-  $('#cs-wf-del').addEventListener('click', async () => {
-    const name = $('#cs-wf').value; if (!name) return;
-    if (!confirm(`删除工作流「${name}」？`)) return;
-    try { await api(`/api/comfy/workflows/${encodeURIComponent(name)}`, { method: 'DELETE' });
-      toast('已删除', 'ok'); box.remove(); openComfySettings(); } catch (e) { toast(e.message, 'err'); }
-  });
-  $('#cs-wf-import').addEventListener('click', async () => {
-    const name = $('#cs-wf-name').value.trim();
-    if (!name) return toast('先给工作流起个名字', 'err');
-    let wf = null;
-    const f = $('#cs-wf-file').files[0];
-    try {
-      if (f) wf = await f.text();
-      else if ($('#cs-wf-json').value.trim()) wf = $('#cs-wf-json').value.trim();
-      else return toast('选文件或粘贴 JSON', 'err');
-      $('#cs-wf-info').textContent = '导入中（UI 格式需要向后端拉节点定义，稍等）…';
-      const r = await api('/api/comfy/workflows', { method: 'POST', body: JSON.stringify({ name, workflow: wf }) });
-      toast(`已导入：${name}`, 'ok');
-      if (r.warnings && r.warnings.length) toast('提示：' + r.warnings.join('；'), 'err');
-      box.remove(); openComfySettings();
-    } catch (e) { toast('导入失败：' + e.message, 'err'); $('#cs-wf-info').textContent = ''; }
-  });
-
-  const paramsPayload = () => ({
-    steps: +$('#cs-steps').value || null, cfg: +$('#cs-cfg').value || null,
-    sampler: $('#cs-sampler').value.trim() || null, scheduler: $('#cs-sched').value.trim() || null,
-    width: +$('#cs-w').value || null, height: +$('#cs-h').value || null,
-    ckpt_name: $('#cs-ckpt').value.trim() || null,
-  });
-  $('#cs-save-params').addEventListener('click', async () => {
-    try { await api('/api/comfy/config', { method: 'PUT', body: JSON.stringify({ default_params: paramsPayload() }) });
-      $('#cs-params-msg').textContent = '已保存'; toast('出图参数已保存', 'ok'); } catch (e) { toast(e.message, 'err'); }
-  });
-  $('#cs-pull-loras').addEventListener('click', async () => {
-    $('#cs-params-msg').textContent = '拉取中…';
-    try {
-      const r = await api('/api/comfy/assets?backend=' + $('#cs-backend').value);
-      $('#cs-lora-list').innerHTML = (r.loras || []).map((l) => `<option value="${esc(l)}">${esc(l)}</option>`).join('') || '<option value="">（这台后端没读到 LoRA）</option>';
-      $('#cs-params-msg').textContent = `LoRA ${r.loras.length} · ckpt ${r.checkpoints.length}`;
-    } catch (e) { $('#cs-params-msg').textContent = '失败：' + e.message; }
-  });
-  $('#cs-test').addEventListener('click', async () => {
-    // 试跑前先把参数存下来，保证用的就是界面上填的
-    try { await api('/api/comfy/config', { method: 'PUT', body: JSON.stringify({ default_params: paramsPayload() }) }); } catch { /* ignore */ }
-    $('#cs-test-msg').textContent = '出图中…（可能要几十秒）';
-    try {
-      const r = await api('/api/comfy/test-run', { method: 'POST', body: JSON.stringify({
-        prompt_pos: $('#cs-t-pos').value, prompt_neg: $('#cs-t-neg').value, params: paramsPayload() }) });
-      $('#cs-test-msg').textContent = '完成';
-      $('#cs-test-out').innerHTML = `<img src="${r.url}" style="max-width:100%;border-radius:10px;border:1px solid var(--line2)">`;
-    } catch (e) { $('#cs-test-msg').textContent = ''; toast('试跑失败：' + e.message, 'err'); }
-  });
+    el.querySelector('#cs-test').addEventListener('click', async () => {
+      const btn = el.querySelector('#cs-test'); const msg = el.querySelector('#cs-test-msg');
+      btn.disabled = true; msg.textContent = '出图中…（可能几十秒）';
+      try {
+        const params = collectParams();
+        const loras = collectLoras();
+        await api('/api/comfy/config', { method: 'PUT', body: JSON.stringify({ default_params: params }) });
+        await api('/api/comfy/import-from-server', { method: 'POST', body: JSON.stringify({ backend: backendNow(), name }) });
+        cfg.workflow_name = name.replace(/\.json$/, '');
+        const r = await api('/api/comfy/test-run', { method: 'POST', body: JSON.stringify({
+          prompt_pos: el.querySelector('#cs-t-pos').value,
+          prompt_neg: el.querySelector('#cs-t-neg').value,
+          params, loras,
+        }) });
+        msg.textContent = '完成';
+        el.querySelector('#cs-test-out').innerHTML = `<img src="${r.url}" style="max-width:100%;border-radius:10px;border:1px solid var(--line2)">`;
+      } catch (e) { msg.textContent = ''; toast('试跑失败：' + e.message, 'err'); }
+      finally { btn.disabled = false; }
+    });
+  }
 }
 
 

@@ -62,11 +62,15 @@ class ComfyClient:
 
     # ---------------- 探测 ----------------
     def ping(self, timeout_s: float = 5.0) -> bool:
-        try:
-            r = self._get("/system_stats", timeout=timeout_s)
-            return r.status_code == 200
-        except httpx.HTTPError:
-            return False
+        """活着就算通：/system_stats → 退而求其次 /object_info → /queue。"""
+        for path, is_get in (("/system_stats", True), ("/object_info", True), ("/queue", True)):
+            try:
+                r = self._get(path, timeout=timeout_s)
+                if r.status_code == 200:
+                    return True
+            except httpx.HTTPError:
+                continue
+        return False
 
     def object_info(self) -> dict[str, Any]:
         try:
@@ -107,6 +111,47 @@ class ComfyClient:
     def list_schedulers(self, info: dict[str, Any] | None = None) -> list[str]:
         info = info or self.object_info()
         return self._combo_candidates(info, "KSampler", "scheduler")
+
+    # ---------------- 出图后端上已有的工作流 / 模型 ----------------
+    def list_workflows(self) -> list[str]:
+        """ComfyUI 用户目录里的工作流文件名列表（``/userdata?dir=workflows``）。"""
+        try:
+            r = self._get("/userdata", params={"dir": "workflows", "recurse": "true"}, timeout=self.timeout_s)
+            r.raise_for_status()
+            data = r.json()
+        except (httpx.HTTPError, ValueError) as e:
+            raise ComfyError(f"读取工作流列表失败：{e}") from e
+        if not isinstance(data, list):
+            return []
+        return sorted(str(x) for x in data if str(x).lower().endswith(".json"))
+
+    def get_workflow(self, name: str) -> dict[str, Any]:
+        """取一个工作流的原始 JSON（UI 格式或 API 格式）。"""
+        # /userdata/<相对路径>，文件名里的斜杠要编码成 %2F
+        encoded = "workflows/" + name
+        path = "/userdata/" + encoded.replace("/", "%2F")
+        try:
+            r = self._get(path, timeout=self.timeout_s)
+            if r.status_code == 404:
+                # 有些环境不做子目录编码，退回逐段编码
+                from urllib.parse import quote
+
+                path = "/userdata/workflows%2F" + quote(name)
+                r = self._get(path, timeout=self.timeout_s)
+            r.raise_for_status()
+            return r.json()
+        except httpx.HTTPError as e:
+            raise ComfyError(f"读取工作流 {name} 失败：{e}") from e
+
+    def list_models(self, kind: str) -> list[str]:
+        """``/models/<kind>``：loras / checkpoints / vae / sampler_name 等。"""
+        try:
+            r = self._get(f"/models/{kind}", timeout=self.timeout_s)
+            r.raise_for_status()
+            data = r.json()
+        except (httpx.HTTPError, ValueError):
+            return []
+        return [str(x) for x in data] if isinstance(data, list) else []
 
     # ---------------- 入队 / 取结果 ----------------
     def queue_prompt(self, workflow_api: dict[str, Any], *, client_id: str | None = None) -> str:
