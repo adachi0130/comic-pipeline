@@ -140,6 +140,7 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
       <button data-tab="projects" class="active"><span class="ic">▦</span>项目</button>
       <button data-tab="novel"><span class="ic">✎</span>正文</button>
       <button data-tab="pipeline"><span class="ic">≡</span>流水线</button>
+      <button data-tab="pages"><span class="ic">▥</span>分格</button>
       <button data-tab="images"><span class="ic">▤</span>出图</button>
       <button data-tab="settings"><span class="ic">⚙</span>设置</button>
     </div>
@@ -281,6 +282,29 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
       </div>
     </section>
 
+    <!-- 分格（S2 工作台） -->
+    <section id="tab-pages" class="hidden">
+      <div class="card">
+        <h2>分格工作台 <span class="pill" id="pg-count">—</span>
+          <span class="mut" style="font-size:12px;font-weight:400">每页自己选模板，或让 AI 选</span>
+        </h2>
+        <div class="h2sub">格数由模板决定（3 格模板就是 3 个镜头）。<b>先让 AI 选</b>会自动挑模板并写分格；
+          也可以<b>手动加一页</b>自己挑模板和填内容。</div>
+        <div class="row">
+          <button class="sm" id="pg-reload">刷新</button>
+          <label class="fld" style="margin:0">新页模板</label>
+          <select id="pg-newtpl" style="width:250px"></select>
+          <button class="sm" id="pg-add">手动加一页</button>
+          <span class="spacer"></span>
+          <span class="mut" id="pg-meta" style="font-size:12.5px">—</span>
+        </div>
+      </div>
+      <div class="card" id="pg-blank" style="display:none">
+        <div class="empty">还没有任何页。先在上方「手动加一页」，或打开某页点「让 AI 选」。</div>
+      </div>
+      <div id="pg-list"></div>
+    </section>
+
     <!-- 流水线 -->
     <section id="tab-pipeline" class="hidden">
       <div class="card">
@@ -360,6 +384,6 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=14"></script>
+<script type="module" src="/ui/app.js?v=15"></script>
 </body>
 </html>
