@@ -160,7 +160,7 @@ async function renderProjectDetail() {
       <div class="spacer"></div>
       <button class="sm" data-goto="novel">去「正文」页编辑</button>
     </div>
-    <div class="novel" style="max-height:260px">
+    <div class="novel" id="pd-novel" style="max-height:260px">
       ${novel.text ? novel.text.split(/\n{2,}/).map((t) => `<p>${esc(t)}</p>`).join('')
                    : '<div class="empty">暂无已通过的正文（在「正文」页写并审核通过后才会计入）</div>'}
     </div>
@@ -168,7 +168,7 @@ async function renderProjectDetail() {
     <div class="divider"></div>
     <div class="row" style="margin-bottom:8px"><b>各阶段产物</b>
       <span class="mut" style="font-size:12px">点「查看/编辑」进入该阶段</span></div>
-    <div class="plist">${stageRows}</div>`;
+    <div class="plist" id="pd-stats">${stageRows}</div>`;
 
   // 保存（标题 / 目标页数 / 大纲）
   box.querySelectorAll('[data-save]').forEach((b) => b.addEventListener('click', async () => {
@@ -185,12 +185,70 @@ async function renderProjectDetail() {
         <span class="mut">${state.project.target_pages} 页 · ${state.project.review_mode === 'auto' ? '全自动' : '人工审查'}</span>`;
       loadProjects();
       refreshGates();
-      if (field === 'target_pages') renderProjectDetail();
+      // 注意：这里**不能**整块重绘 renderProjectDetail()，
+      // 否则会把用户正在编辑的其它输入框清空（曾导致“编辑后跳回原样”）。
     } catch (e) { toast(e.message, 'err'); }
   }));
   // 跳阶段
   box.querySelectorAll('[data-jump]').forEach((b) => b.addEventListener('click', () => openStageArtifacts(b.dataset.jump)));
   box.querySelectorAll('[data-goto]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.goto)));
+}
+
+/** 用户是否正在项目详情里输入（打字时不要覆盖他的输入）。 */
+function _userEditingDetail() {
+  const el = document.activeElement;
+  if (!el) return false;
+  const box = document.getElementById('proj-detail');
+  if (!box || !box.contains(el)) return false;
+  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
+}
+
+/**
+ * 只更新「小说预览 + 各阶段统计」两块，**不动可编辑表单**。
+ * 定时刷新/作业事件走这里，避免把用户正在输入的内容冲掉。
+ */
+async function updateProjectStats() {
+  if (!state.projectId) return;
+  if (_userEditingDetail()) return;          // 正在输入 -> 跳过
+  const novelBox = document.getElementById('pd-novel');
+  const statsBox = document.getElementById('pd-stats');
+  if (!novelBox && !statsBox) return;
+  const g = state._gates || {};
+  try {
+    const [novel, arts] = await Promise.all([
+      api(`/api/projects/${state.projectId}/novel`).catch(() => null),
+      api(`/api/projects/${state.projectId}/stage-artifacts`).catch(() => ({})),
+    ]);
+    if (novelBox && novel && !_userEditingDetail()) {
+      novelBox.innerHTML = novel.text
+        ? novel.text.split(/\n{2,}/).map((t) => `<p>${esc(t)}</p>`).join('')
+        : '<div class="empty">暂无已通过的正文（在「正文」页写并审核通过后才会计入）</div>';
+    }
+    if (statsBox && !_userEditingDetail()) {
+      statsBox.innerHTML = (state.meta?.stages || []).map((s) => {
+        const x = g[s.id] || {};
+        const blk = arts[s.id] || { items: [] };
+        const items = blk.items || [];
+        const first = items.slice(0, 3).map((it) =>
+          `<div class="mut" style="font-size:12px">· ${esc(it.ref)} ${pill(it.status)} ${esc(it.summary || '')}</div>`).join('');
+        const more = items.length > 3 ? `<div class="mut" style="font-size:12px">…共 ${items.length} 项</div>` : '';
+        return `<div class="pitem" style="display:block">
+          <div class="row" style="margin-bottom:4px">
+            <span class="pill tag">${s.id}</span><b>${esc(s.name)}</b>
+            <div class="spacer"></div>
+            <span class="pill tag">${x.count || 0} 项</span>
+            ${x.approved ? `<span class="pill ok"><i class="dotm"></i>${x.approved}</span>` : ''}
+            ${x.review ? `<span class="pill warn"><i class="dotm"></i>${x.review}</span>` : ''}
+            ${x.stale ? `<span class="pill stale"><i class="dotm"></i>${x.stale}</span>` : ''}
+            <button class="sm" data-jump="${s.id}">查看/编辑</button>
+          </div>
+          ${items.length ? first + more : '<div class="mut" style="font-size:12px">（暂无产物）</div>'}
+        </div>`;
+      }).join('');
+      statsBox.querySelectorAll('[data-jump]').forEach((b) =>
+        b.addEventListener('click', () => openStageArtifacts(b.dataset.jump)));
+    }
+  } catch { /* 忽略 */ }
 }
 
 
@@ -876,7 +934,8 @@ async function refreshGates() {
   try {
     const g = await api(`/api/projects/${state.projectId}/gates`);
     state._gates = g.stages;
-    renderProjectDetail();
+    // 只更新统计块；绝不整块重绘（否则会清空用户正在编辑的输入框）
+    updateProjectStats();
     if (document.querySelector('.nav button.active')?.dataset.tab === 'pipeline') renderFlow();
   } catch { /* 忽略 */ }
 }
