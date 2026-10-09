@@ -115,6 +115,20 @@ _ui_dir = BACKEND_DIR / "static" / "ui"
 if _editor_dir.exists():
     app.mount("/editor", StaticFiles(directory=str(_editor_dir), html=True), name="editor")
 if _ui_dir.exists():
+    # 自研前端：加 no-cache，避免浏览器缓存旧 app.js 导致“按钮点了没反应”这类假故障。
+    # （本地开发工具，性能无关紧要，正确性优先。）
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    class _NoCacheUI(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):  # noqa: ANN001
+            resp = await call_next(request)
+            if request.url.path.startswith("/ui"):
+                resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+                resp.headers["Pragma"] = "no-cache"
+                resp.headers["Expires"] = "0"
+            return resp
+
+    app.add_middleware(_NoCacheUI)
     app.mount("/ui", StaticFiles(directory=str(_ui_dir), html=True), name="ui")
 
 

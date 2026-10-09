@@ -928,6 +928,11 @@ $('#cf-guess').addEventListener('click', async () => {
 
 // ---------- 启动 ----------
 (async () => {
+  const ve = document.getElementById('ui-version');
+  if (ve) {
+    const s = [...document.querySelectorAll('script[src*="app.js"]')][0];
+    ve.textContent = 'app.js ' + ((s && s.src.split('?')[1]) || '(no ver)');
+  }
   await checkHealth();
   await ensureMeta();
   await loadProjects();
