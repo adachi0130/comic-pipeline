@@ -332,7 +332,7 @@ async function runTask(task) {
   if (currentTask === task) {
     const text = streamBuffer.trim() || extractNewText();
     if (!text) {
-      await reportError(task, '生成没有返回内容（可能是上游 API 报错或超时）');
+      await reportError(task, '生成没有返回内容：多半是上游 API 报错（如 503/429/超时）。请检查酒馆里配置的 API 端点与模型，或看酒馆页面控制台的报错。');
       return;
     }
     await reportResult(task, text);
@@ -443,7 +443,7 @@ eventSource.on(event_types.GENERATION_ENDED, () => {
   const task = currentTask;
   setTimeout(async () => {
     const text = streamBuffer.trim() || extractNewText();
-    if (!text) { await reportError(task, '生成没有返回内容'); return; }
+    if (!text) { await reportError(task, '生成没有返回内容：多半是上游 API 报错（如 503/429/超时）。请检查酒馆里配置的 API 端点与模型。'); return; }
     await reportResult(task, text);
   }, 300);
 });
