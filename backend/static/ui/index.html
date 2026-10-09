@@ -226,6 +226,17 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
           <button class="sm" id="tv-refresh">刷新</button>
         </div>
         <div class="novel" id="tv-chat" style="max-height:380px"><div class="empty">等待酒馆扩展推送…</div></div>
+        <div id="tv-live" class="hidden" style="margin-top:10px">
+          <div class="seg" style="border-color:var(--accent);background:#f7f9ff">
+            <div class="segh"><b>生成中…</b> <span class="pill run" id="tv-live-state"><i class="dotm"></i>流式接收</span>
+              <span class="mut" id="tv-live-chars" style="font-size:12px"></span></div>
+            <div class="txt" id="tv-live-text" style="max-height:220px"></div>
+          </div>
+        </div>
+        <div id="tv-error" class="hidden" style="margin-top:10px">
+          <div class="seg" style="border-color:var(--err);background:var(--errbg)">
+            <div class="segh"><b>生成失败</b></div><div class="txt" id="tv-error-text"></div></div>
+        </div>
         <div class="row" style="margin-top:12px;align-items:flex-end">
           <div style="flex:1"><label class="fld">直接发一条给酒馆（<b>只把这次新返回的内容</b>存为正文）</label>
             <textarea id="tv-input" style="min-height:64px" placeholder="例：写一段雨夜追车，节奏快一点。Ctrl+Enter 发送"></textarea></div>
@@ -326,6 +337,6 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=6"></script>
+<script type="module" src="/ui/app.js?v=7"></script>
 </body>
 </html>

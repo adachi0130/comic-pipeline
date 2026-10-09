@@ -176,6 +176,16 @@ def result(body: dict, session: Session = Depends(get_session)) -> dict:
     job.status = JobStatus.DONE.value
     job.result = {"artifact_id": art.id, "ref": art.ref, "chars": len(text)}
     job.finished_at = datetime.now(timezone.utc)
+
+    # 生成结束：把 live 标记为 done（前端收起“生成中”并出现分段供审核）
+    from ...models import TavernMirror
+
+    row = session.get(TavernMirror, 1)
+    if row is not None:
+        p = dict(row.payload or {})
+        p["live"] = {"job_id": job.id, "text": text, "chars": len(text), "done": True, "error": "",
+                     "updated_at": datetime.now(timezone.utc).isoformat()}
+        row.payload = p
     session.commit()
     return {"ok": True, "artifact_id": art.id, "ref": art.ref, "chars": len(text)}
 
@@ -202,6 +212,34 @@ def push_mirror(body: dict, session: Session = Depends(get_session)) -> dict:
     return {"ok": True, "messages": len(row.payload["messages"]), "chats": len(row.payload["chats"])}
 
 
+@router.post("/bridge/stream")
+def bridge_stream(body: dict, session: Session = Depends(get_session)) -> dict:
+    """扩展推送生成中的流式文本（未完成，仅用于前端实时显示）。
+
+    body: {job_id, text, done?, error?}
+    - text 是**累积**文本（酒馆的 STREAM_TOKEN_RECEIVED 给的就是累积值）
+    - done=True 表示生成结束（成功或失败），前端据此收起“生成中”
+    """
+    from ...models import TavernMirror
+
+    row = session.get(TavernMirror, 1)
+    if row is None:
+        row = TavernMirror(id=1, payload={})
+        session.add(row)
+    payload = dict(row.payload or {})
+    payload["live"] = {
+        "job_id": body.get("job_id"),
+        "text": body.get("text") or "",
+        "chars": len(body.get("text") or ""),
+        "done": bool(body.get("done")),
+        "error": body.get("error") or "",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    row.payload = payload
+    session.commit()
+    return {"ok": True}
+
+
 @router.get("/tavern/live")
 def tavern_live(session: Session = Depends(get_session)) -> dict:
     """酒馆当前对话镜像（前端「酒馆对话」面板读取）。"""
@@ -209,7 +247,8 @@ def tavern_live(session: Session = Depends(get_session)) -> dict:
 
     row = session.get(TavernMirror, 1)
     if row is None:
-        return {"available": False, "messages": [], "context": {}, "receipt": {}, "chats": [], "updated_at": None}
+        return {"available": False, "messages": [], "context": {}, "receipt": {}, "chats": [],
+                "live": {}, "updated_at": None}
     p = row.payload or {}
     return {
         "available": True,
@@ -217,6 +256,7 @@ def tavern_live(session: Session = Depends(get_session)) -> dict:
         "messages": p.get("messages") or [],
         "receipt": p.get("receipt") or {},
         "chats": p.get("chats") or [],
+        "live": p.get("live") or {},
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
 
@@ -244,6 +284,7 @@ async def tavern_events() -> StreamingResponse:
                     "messages": (row.payload or {}).get("messages") if row else [],
                     "receipt": (row.payload or {}).get("receipt") if row else {},
                     "chats": (row.payload or {}).get("chats") if row else [],
+                    "live": (row.payload or {}).get("live") if row else {},
                     "updated_at": row.updated_at.isoformat() if (row and row.updated_at) else None,
                 }
                 text = json.dumps(snap, ensure_ascii=False)
@@ -279,6 +320,31 @@ def tavern_send(project_id: int, body: dict, session: Session = Depends(get_sess
         payload={"project_id": project_id, "mode": "raw", "instruction": text, "context_tail": ""},
     )
     return {"job_id": job.id, "status": job.status}
+
+
+@router.post("/bridge/error")
+def bridge_error(body: dict, session: Session = Depends(get_session)) -> dict:
+    """扩展报告生成失败（如上游 API 4xx/5xx）。前端据此显示错误，而不是“没反应”。"""
+    from ...models import TavernMirror
+
+    job_id = body.get("job_id")
+    msg = (body.get("error") or "生成失败").strip()
+    job = session.get(Job, int(job_id)) if job_id else None
+    if job is not None:
+        job.status = JobStatus.FAILED.value
+        job.error = msg
+        job.finished_at = datetime.now(timezone.utc)
+
+    row = session.get(TavernMirror, 1)
+    if row is None:
+        row = TavernMirror(id=1, payload={})
+        session.add(row)
+    p = dict(row.payload or {})
+    p["live"] = {"job_id": job_id, "text": "", "chars": 0, "done": True, "error": msg,
+                 "updated_at": datetime.now(timezone.utc).isoformat()}
+    row.payload = p
+    session.commit()
+    return {"ok": True}
 
 
 @router.get("/projects/{project_id}/novel")
