@@ -158,41 +158,62 @@ async function sendToTavern() {
   const text = $('#tv-input').value.trim();
   if (!text) return toast('消息不能为空', 'err');
   try {
+    state.chatLenAtSend = state.chatLenNow ?? null;
     const r = await api(`/api/projects/${state.projectId}/tavern/send`, { method: 'POST', body: JSON.stringify({ text }) });
     $('#tv-input').value = '';
     toast(`已发给酒馆 #${r.job_id}，生成后回传为正文`, 'ok');
   } catch (e) { toast(e.message, 'err'); }
 }
 
+/** 判断是否酒馆的无用系统消息/欢迎内容（这些不显示）。 */
+function isNoise(m) {
+  const name = (m.name || '').trim();
+  const mes = m.mes || '';
+  if (name === 'SillyTavern System' || name === 'System') return true;
+  // 欢迎面板 / 脚本注入的 HTML
+  if (/^\s*<div/i.test(mes) || /flex-container|menu_button|mes_text/.test(mes)) return true;
+  // 酒馆的系统提示噪声
+  if (/already configured the API|尝试发送些什么|Hint:/i.test(mes)) return true;
+  return false;
+}
+
 /** 渲染酒馆对话列表（Recent Chats），点一下切换。 */
 function renderChatList(chats, context) {
   const box = $('#tv-chats');
   if (!box) return;
+  const cur = $('#tv-cur');
+  if (cur) cur.textContent = context.character_name ? `当前：${context.character_name}` : '未选择会话';
   if (!chats.length) {
     box.innerHTML = '<div class="empty">还没有读到酒馆对话列表——确认酒馆已打开且扩展已启用</div>';
     return;
   }
   const curAvatar = context.character_avatar || '';
-  const curChat = context.chat_id || '';
-  // 按角色分组
+  const curChat = (context.chat_id || '').replace(/\.jsonl$/, '');
   const groups = {};
   for (const c of chats) (groups[c.char_name || '(未知角色)'] ||= []).push(c);
-  box.innerHTML = Object.entries(groups).map(([name, list]) => `
+  box.innerHTML = Object.entries(groups).map(([name, list]) => {
+    const isCurChar = list.some((c) => c.avatar === curAvatar);
+    return `
     <div style="margin-bottom:10px">
-      <div class="mut" style="font-size:12px;margin-bottom:5px">${esc(name)} <span class="pill tag">${list.length}</span></div>
+      <div class="mut" style="font-size:12px;margin-bottom:5px">${esc(name)}
+        <span class="pill tag">${list.length}</span>
+        ${isCurChar ? '<span class="pill ok"><i class="dotm"></i>当前角色</span>' : ''}</div>
       <div class="plist">
         ${list.map((c) => {
-          const active = c.avatar === curAvatar && (c.file_name || '').replace('.jsonl', '') === curChat;
-          return `<div class="pitem ${active ? 'sel' : ''}" data-switch='${esc(JSON.stringify({ avatar: c.avatar, file_name: c.file_name, chat_name: (c.file_name || '').replace('.jsonl', '') }))}'>
+          const nm = (c.file_name || '').replace('\.jsonl', '');
+          const active = c.avatar === curAvatar && nm === curChat;
+          return `<div class="pitem ${active ? 'sel' : ''}"
+              data-switch='${esc(JSON.stringify({ avatar: c.avatar, file_name: c.file_name, chat_name: nm }))}'>
             <div style="flex:1;min-width:0">
-              <b style="font-size:13.5px">${esc((c.file_name || '').replace('.jsonl', ''))}</b>
-              <div class="meta">${c.chat_items != null ? c.chat_items + ' 条' : ''} ${c.last_mes ? '· ' + esc(c.last_mes) : ''}${c.is_group ? ' · 群聊' : ''}</div>
+              <b style="font-size:13.5px">${esc(nm)}</b>
+              <div class="meta">${c.chat_items != null ? c.chat_items + ' 条 · ' : ''}${esc(c.last_mes || '')}${c.is_group ? ' · 群聊' : ''}</div>
             </div>
             ${active ? '<span class="pill ok"><i class="dotm"></i>当前</span>' : '<button class="sm">切换</button>'}
           </div>`;
         }).join('')}
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
   box.querySelectorAll('[data-switch]').forEach((el) => el.addEventListener('click', () => {
     switchChat(JSON.parse(el.dataset.switch));
   }));
@@ -204,6 +225,64 @@ async function switchChat(info) {
     toast(`已请求切换到「${info.chat_name}」#${r.job_id}`, 'ok');
     setTimeout(loadTavern, 2500);
   } catch (e) { toast(e.message, 'err'); }
+}
+
+// 对话列表折叠
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#tv-chats-toggle')) {
+    const body = $('#tv-chats-body');
+    const arrow = $('#tv-chats-arrow');
+    const hidden = body.classList.toggle('hidden');
+    if (arrow) arrow.textContent = hidden ? '▸' : '▾';
+  }
+});
+
+// 酒馆镜像 SSE：对话/列表发生变化就刷新（不用手动点刷新）
+let _tvSSE = null;
+function startTavernSSE() {
+  if (_tvSSE) _tvSSE.close();
+  _tvSSE = new EventSource(API + '/api/tavern/events');
+  _tvSSE.onmessage = (ev) => {
+    try {
+      const d = JSON.parse(ev.data);
+      if (!d.available) return;
+      state._tavern = d;
+      const tab = document.querySelector('.nav button.active')?.dataset.tab;
+      if (tab === 'novel') renderTavern(d);
+    } catch { /* keep-alive */ }
+  };
+}
+
+/** 只渲染酒馆面板部分（SSE 用，避免整页重载）。 */
+function renderTavern(d) {
+  renderChatList(d.chats || [], d.context || {});
+  const c = d.context || {};
+  $('#tv-meta').innerHTML = `当前角色：<b>${esc(c.character_name || '—')}</b>
+    · 对话 ${c.message_count || 0} 条${c.chat_id ? ` · 会话 ${esc(String(c.chat_id).replace(/\.jsonl$/, ''))}` : ''}
+    <span class="mut" style="font-size:12px">（更新于 ${(d.updated_at || '').replace('T', ' ').slice(0, 19)}）</span>`;
+  const rc = d.receipt || {};
+  const bits = [];
+  if (rc.character_name) bits.push(`角色卡 ${esc(rc.character_name)}`);
+  if (rc.world_books?.length) bits.push(`世界书 ${esc(rc.world_books.join('、'))}${rc.world_count ? `(${rc.world_count}条)` : ''}`);
+  if (rc.preset_name) bits.push(`预设 ${esc(rc.preset_name)}`);
+  if (rc.model) bits.push(`模型 ${esc(rc.model)}`);
+  $('#tv-receipt').textContent = '生成依据：' + (bits.length ? bits.join(' · ') : '尚未生成');
+
+  const msgs = (d.messages || []).filter((m) => !isNoise(m));
+  state.chatLenNow = msgs.length;
+  const lc = $('#tv-lastcount');
+  if (lc) lc.textContent = state.chatLenAtSend != null
+    ? `发送前 ${state.chatLenAtSend} 条 · 现在 ${msgs.length} 条`
+    : `当前会话共 ${msgs.length} 条`;
+  const box = $('#tv-chat');
+  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  box.innerHTML = msgs.length ? msgs.map((m) => `
+    <div class="seg" style="margin-bottom:8px">
+      <div class="segh"><b>${esc(m.name || (m.is_user ? '我' : '角色'))}</b>
+        <span class="pill tag">${m.is_user ? '用户' : '角色'}</span>
+        <span class="mut" style="font-size:11.5px">${esc(m.send_date || '')}</span></div>
+      <div class="txt">${esc(m.mes || '')}</div></div>`).join('') : '<div class="empty">对话为空</div>';
+  if (nearBottom) requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; });
 }
 
 async function loadTavern() {
@@ -229,13 +308,22 @@ async function loadTavern() {
     if (rc.model) bits.push(`模型 ${rc.model}`);
     $('#tv-receipt').textContent = '生成依据：' + (bits.length ? bits.join(' · ') : '尚未生成');
 
-    const msgs = d.messages || [];
-    $('#tv-chat').innerHTML = msgs.length ? msgs.map((m) => `
+    const all = d.messages || [];
+    const msgs = all.filter((m) => !isNoise(m));
+    state.chatLenNow = msgs.length;
+    const lc = $('#tv-lastcount');
+    if (lc) lc.textContent = state.chatLenAtSend != null
+      ? `发送前 ${state.chatLenAtSend} 条 · 现在 ${msgs.length} 条`
+      : `当前会话共 ${msgs.length} 条`;
+    const box2 = $('#tv-chat');
+    const nearBottom = box2.scrollHeight - box2.scrollTop - box2.clientHeight < 80;
+    box2.innerHTML = msgs.length ? msgs.map((m) => `
       <div class="seg" style="margin-bottom:8px">
         <div class="segh"><b>${esc(m.name || (m.is_user ? '我' : '角色'))}</b>
           <span class="pill tag">${m.is_user ? '用户' : m.is_system ? '系统' : '角色'}</span>
           <span class="mut" style="font-size:11.5px">${esc(m.send_date || '')}</span></div>
         <div class="txt">${esc(m.mes || '')}</div></div>`).join('') : '<div class="empty">对话为空</div>';
+    if (nearBottom) requestAnimationFrame(() => { box2.scrollTop = box2.scrollHeight; });
   } catch (e) { $('#tv-meta').textContent = '读取失败：' + e.message; }
 }
 
@@ -646,5 +734,6 @@ $('#cf-guess').addEventListener('click', async () => {
     if (rows.length) await pickProject(rows[0].id);
   }
   startJobsSSE();
+  startTavernSSE();
   setInterval(refreshGates, 5000);
 })();
