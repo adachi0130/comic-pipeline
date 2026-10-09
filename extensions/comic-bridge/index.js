@@ -221,15 +221,32 @@ async function claimTask() {
 async function runTavernOp(task, ctx) {
   try {
     if (task.action === 'switch') {
-      if (task.avatar) {
-        const idx = (ctx.characters || []).findIndex((c) => c.avatar === task.avatar);
+      const wantAvatar = String(task.avatar || '');
+      const chatId = String(task.file_name || '').replace(/\.jsonl$/, '');  // 内部 id 不含 .jsonl
+
+      // 已经是目标角色 + 目标对话 -> 直接跳过，避免重复建对话 / 反复重载
+      const curAvatar = (ctx.characters?.[ctx.characterId]?.avatar) || '';
+      const curChat = String(ctx.chatId || '').replace(/\.jsonl$/, '');
+      if (wantAvatar && curAvatar === wantAvatar && curChat === chatId) {
+        return;  // 已在目标会话
+      }
+
+      if (wantAvatar) {
+        const idx = (ctx.characters || []).findIndex((c) => c.avatar === wantAvatar);
         if (idx >= 0 && String(idx) !== String(ctx.characterId)) {
           await ctx.selectCharacterById(idx);
           await new Promise((r) => setTimeout(r, 400));
         }
       }
-      // 注意：酒馆内部 chat id 不含 .jsonl（/api/chats/get 会自己补），必须去掉后缀
-      const chatId = String(task.file_name || '').replace(/\.jsonl$/, '');
+      // 目标对话不存在时不要“新建同名对话”，以免产生垃圾文件
+      try {
+        const files = await listChatFiles(wantAvatar);
+        if (files.length && !files.includes(chatId) && !files.includes(chatId + '.jsonl')) {
+          toastr?.warning?.(`漫画桥：该对话不存在，已跳过切换（${chatId}）`);
+          return;
+        }
+      } catch (e) { /* 列表拿不到时按原逻辑尝试 */ }
+
       await openCharacterChat(chatId);
       toastr?.success?.(`漫画桥：已切换到「${task.chat_name || task.file_name}」`);
     }
@@ -246,6 +263,21 @@ async function runTavernOp(task, ctx) {
   } catch (e) { /* 忽略 */ }
   await new Promise((r) => setTimeout(r, 600));
   await pushMirror();
+}
+
+/** 列出某角色已有的对话文件名（含 .jsonl），用于避免误建新对话。 */
+async function listChatFiles(avatar) {
+  const ctx = getContext();
+  const res = await fetch('/api/chats/recent', {
+    method: 'POST',
+    headers: ctx.getRequestHeaders(),
+    body: JSON.stringify({ max: 300 }),
+  });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return (data || [])
+    .filter((c) => !avatar || String(c.avatar || '') === String(avatar))
+    .map((c) => String(c.file_name || ''));
 }
 
 async function runTask(task) {
