@@ -1014,48 +1014,77 @@ async function loadCharacterPresetPanel() {
           style="width:100%;min-height:88px;resize:vertical;font-size:12px">${esc(c.prompt_block || '')}</textarea>
       </div>`).join('') || '<div class="mut" style="font-size:12px;margin-top:8px">还没有角色。点右上「＋ 加角色」。</div>'}`;
 
-  // 预设按钮
+  // 预设：保存 + 自动保存（边填边存，避免忘点保存 / 面板重绘冲掉）
   box.querySelectorAll('[data-preset]').forEach((el) => {
     const id = +el.dataset.preset;
-    el.querySelector('.pres-save').addEventListener('click', async () => {
-      try {
-        await api('/api/prompt-presets', { method: 'POST', body: JSON.stringify({
-          id, name: el.querySelector('.pres-name').value, text: el.querySelector('.pres-text').value,
-          is_default: el.querySelector('.pres-def').checked }) });
-        toast('预设已保存', 'ok'); loadCharacterPresetPanel();
-      } catch (e) { toast(e.message, 'err'); }
+    const payload = () => ({
+      id, name: el.querySelector('.pres-name').value, text: el.querySelector('.pres-text').value,
+      is_default: el.querySelector('.pres-def').checked,
     });
-    el.querySelector('.pres-del').addEventListener('click', async () => {
-      try { await api(`/api/prompt-presets/${id}`, { method: 'DELETE' }); toast('已删除', 'ok'); loadCharacterPresetPanel(); }
-      catch (e) { toast(e.message, 'err'); }
+    const save = async (silent) => {
+      try {
+        await api('/api/prompt-presets', { method: 'POST', body: JSON.stringify(payload()) });
+        if (!silent) toast('预设已保存', 'ok');
+        else flashSaved(el);
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    el.querySelector('.pres-save').addEventListener('click', () => save(false));
+    // 自动保存：输入停下 700ms 后落库（只存本卡，不重绘，避免光标丢失）
+    ['input', 'change'].forEach((ev) => {
+      el.querySelectorAll('.pres-name, .pres-text, .pres-def').forEach((inp) =>
+        inp.addEventListener(ev, debounce(() => save(true), 700)));
     });
   });
   box.querySelectorAll('[data-addpreset]').forEach((b) => b.addEventListener('click', async () => {
     try {
-      await api('/api/prompt-presets', { method: 'POST', body: JSON.stringify({
+      const p = await api('/api/prompt-presets', { method: 'POST', body: JSON.stringify({
         kind: b.dataset.addpreset, name: '',
         scope: 'project', project_id: state.projectId, text: '', is_default: false }) });
-      loadCharacterPresetPanel();
+      toast(`已新建${b.dataset.addpreset === 'positive' ? '正向' : '负向'}预设，填完自动保存`, 'ok');
+      // 局部插入，不整块重绘（避免已填内容被冲掉）
+      await loadCharacterPresetPanel();
+      const card = box.querySelector(`[data-preset="${p.id}"] .pres-name`);
+      if (card) card.focus();
     } catch (e) { toast(e.message, 'err'); }
   }));
 
-  // 角色按钮
+  // 角色：保存 + 自动保存
   box.querySelectorAll('[data-char]').forEach((el) => {
     const id = +el.dataset.char;
-    el.querySelector('.ch-save').addEventListener('click', async () => {
+    const payload = () => ({
+      id, name: el.querySelector('.ch-name').value, trigger_words: el.querySelector('.ch-trig').value,
+      lora_name: el.querySelector('.ch-lora').value, lora_weight: +el.querySelector('.ch-w').value || 0.8,
+      use_lora: el.querySelector('.ch-uselora').checked, prompt_block: el.querySelector('.ch-block').value,
+    });
+    const save = async (silent) => {
       try {
-        await api(`/api/projects/${state.projectId}/characters`, { method: 'POST', body: JSON.stringify({
-          id, name: el.querySelector('.ch-name').value, trigger_words: el.querySelector('.ch-trig').value,
-          lora_name: el.querySelector('.ch-lora').value, lora_weight: +el.querySelector('.ch-w').value || 0.8,
-          use_lora: el.querySelector('.ch-uselora').checked, prompt_block: el.querySelector('.ch-block').value }) });
-        toast('角色已保存', 'ok');
+        await api(`/api/projects/${state.projectId}/characters`, { method: 'POST', body: JSON.stringify(payload()) });
+        if (!silent) toast('角色已保存', 'ok');
+        else flashSaved(el);
       } catch (e) { toast(e.message, 'err'); }
+    };
+    el.querySelector('.ch-save').addEventListener('click', () => save(false));
+    ['input', 'change'].forEach((ev) => {
+      el.querySelectorAll('.ch-name, .ch-trig, .ch-lora, .ch-w, .ch-uselora, .ch-block').forEach((inp) =>
+        inp.addEventListener(ev, debounce(() => save(true), 700)));
     });
     el.querySelector('.ch-del').addEventListener('click', async () => {
       try { await api(`/api/characters/${id}`, { method: 'DELETE' }); toast('已删除', 'ok'); loadCharacterPresetPanel(); }
       catch (e) { toast(e.message, 'err'); }
     });
   });
+}
+
+// 防抖：连续输入只在停下后触发一次
+function debounce(fn, ms) {
+  let t = null;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+function flashSaved(el) {
+  if (!el) return;
+  const old = el.style.boxShadow;
+  el.style.boxShadow = '0 0 0 2px var(--okbg)';
+  setTimeout(() => { el.style.boxShadow = old; }, 500);
 }
 
 async function upsertCharacter(data) {
