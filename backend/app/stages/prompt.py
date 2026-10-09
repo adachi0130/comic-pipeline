@@ -24,14 +24,34 @@ def _characters(session: Session, project_id: int) -> str:
     rows = session.scalars(select(Character).where(Character.project_id == project_id)).all()
     data = {
         c.name: {
+            "trigger_words": c.trigger_words,
             "prompt_block": c.prompt_block,
             "lora_name": c.lora_name,
             "lora_weight": c.lora_weight,
-            "use_lora": c.use_lora,
+            "use_lora": c.use_lora and bool(c.lora_name),
         }
         for c in rows
     }
     return json.dumps(data, ensure_ascii=False)
+
+
+def _default_presets(session: Session, project_id: int) -> tuple[str, str]:
+    """取项目默认的正/负向提示词预设（没有就用全局默认，再没有就空）。"""
+    from ..models import PromptPreset
+
+    def pick(kind: str) -> str:
+        for scope in ("project", "global"):
+            stmt = select(PromptPreset).where(
+                PromptPreset.kind == kind, PromptPreset.scope == scope, PromptPreset.is_default.is_(True)
+            )
+            if scope == "project":
+                stmt = stmt.where(PromptPreset.project_id == project_id)
+            row = session.scalars(stmt.limit(1)).first()
+            if row is not None and row.text.strip():
+                return row.text
+        return ""
+
+    return pick("positive"), pick("negative")
 
 
 def _project_loras(session: Session, project_id: int) -> list[dict]:
@@ -77,6 +97,7 @@ def handle(session: Session, job: Job) -> dict:
     chars = _characters(session, project_id)
     techs = _techniques(session)
     default_loras = _project_loras(session, project_id)
+    preset_pos, preset_neg = _default_presets(session, project_id)
 
     log = LLMLogContext(session=session, stage="S3", project_id=project_id, provider_id=provider.id)
     out: list[str] = []
@@ -89,6 +110,8 @@ def handle(session: Session, job: Job) -> dict:
                 "CHARACTERS_JSON": chars,
                 "TECHNIQUES_JSON": techs,
                 "PANEL_GEOMETRY_JSON": json.dumps(geom, ensure_ascii=False),
+                "PRESET_POSITIVE": preset_pos or "（无，按系统提示词默认）",
+                "PRESET_NEGATIVE": preset_neg or "（无，按系统提示词默认）",
             },
         )
         prompts: PagePrompts = client.structured(

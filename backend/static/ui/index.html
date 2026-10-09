@@ -360,6 +360,20 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
           <span class="mut" id="pr-meta" style="font-size:12.5px">—</span>
         </div>
       </div>
+      <div class="card">
+        <h2>角色触发词 与 提示词预设
+          <span class="mut" style="font-size:12px;font-weight:400">给 AI 参考出提示词</span>
+        </h2>
+        <div class="h2sub">每个角色的<b>触发词</b>与它的 <b>角色 LoRA</b> 绑定（LoRA 可留空），生成提示词时交给 AI。
+          正/负向<b>预设</b>是你惯用的词；勾「默认」的那个会被 AI 当作风格骨架。</div>
+        <div class="row" style="margin-top:6px">
+          <button class="sm" id="pr-addchar">＋ 加角色</button>
+          <div class="spacer"></div>
+          <button class="sm" id="pr-pull-lora">拉取后端 LoRA 列表</button>
+          <span class="mut" id="pr-lora-state" style="font-size:12px"></span>
+        </div>
+        <div id="pr-chars" style="margin-top:12px"></div>
+      </div>
       <div class="card" id="pr-blank" style="display:none">
         <div class="empty">还没有分格页。先去「分格」页把页面分好，再回来生成提示词。</div>
       </div>
@@ -455,6 +469,6 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=30"></script>
+<script type="module" src="/ui/app.js?v=31"></script>
 </body>
 </html>

@@ -94,8 +94,21 @@ cd backend && ../.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0
   「请在 ComfyUI 里展开子图或改用『保存（API 格式）』导出」。
 
 > 前端入口：**「出图 → 出图设置」**（① 连接 → ② 点工作流看参数 → 选定即用 → 试跑），
-> **「提示词」**页是 S3 独立工作台（每页版式缩略图 + 每格提示词，可整册或单页生成、就地改词），
-> 「出图」页先把 **S2 分格产物**画出来，再列逐格出图卡片。
+> **「提示词」**页是 S3 独立工作台（每页版式缩略图 + 每格提示词，可整册或单页生成、就地改词，
+> 顶部还管**角色触发词/LoRA 绑定**与**正负向提示词预设**），
+> 「出图」页的预览来自 **S3 提示词产物**（每格正/负向），并在点「出图」时自动准备缺的提示词。
+
+### 角色触发词 与 提示词预设
+
+- **角色卡**（`characters` 表）：`name` / `trigger_words`（触发词）/ `lora_name`（角色 LoRA，**可留空**）/
+  `lora_weight` / `use_lora` / `prompt_block`（固定外观词块）。触发词与角色 LoRA 绑定。
+- **提示词预设**（`prompt_presets` 表）：`kind`=positive/negative、`scope`=global/project、`is_default`。
+  勾「默认」的那个会被 S3 当作风格骨架（正向前缀 / 负向基础）喂给 AI。
+- `_characters()` 与 `_default_presets()` 把这些注入 S3 的提示词模板
+  （`{{CHARACTERS_JSON}}` / `{{PRESET_POSITIVE}}` / `{{PRESET_NEGATIVE}}`）。
+- 若角色 `lora_name` 为空，S3 不列它的 LoRA，改用 `prompt_block + trigger_words` 描述外观。
+- `POST /projects/{id}/panels/{panel_ref}/prepare`：为某一格生成“带预设默认值 + 出场角色 LoRA”的
+  提示词产物（S3 未跑时也能出图，不用手填参数）。
 
 ## 实施进度
 
