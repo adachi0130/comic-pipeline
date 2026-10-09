@@ -70,7 +70,7 @@ async function checkHealth() {
 async function loadProjects() {
   const rows = await api('/api/projects');
   const box = $('#plist');
-  if (!rows.length) { box.innerHTML = '<div class="empty">还没有项目，先在上面创建一个</div>'; return; }
+  if (!rows.length) { box.innerHTML = '<div class="empty">还没有项目，先在上面创建一个</div>'; return rows; }
   box.innerHTML = rows.map((p) => `
     <div class="pitem ${p.id === state.projectId ? 'sel' : ''}" data-pick="${p.id}">
       <div class="av">${esc((p.title || '?').slice(0, 1))}</div>
@@ -79,6 +79,7 @@ async function loadProjects() {
       ${p.id === state.projectId ? '<span class="pill ok"><i class="dotm"></i>当前</span>' : '<span class="mut" style="font-size:12.5px">点击打开</span>'}
     </div>`).join('');
   $$('[data-pick]').forEach((el) => el.addEventListener('click', () => pickProject(+el.dataset.pick)));
+  return rows;
 }
 
 // 返回一级（项目列表）
@@ -96,6 +97,7 @@ function showProjectView(which) {
 
 async function pickProject(id) {
   state.projectId = id;
+  try { localStorage.setItem('comic.lastProjectId', String(id)); } catch { /* 隐私模式忽略 */ }
   state.project = await api('/api/projects/' + id);
   showProjectView('detail');                       // 进入二级页面
   const h = $('#pd-title-h'); if (h) h.textContent = state.project.title || '项目详情';
@@ -1029,6 +1031,14 @@ async function loadCharacterPresetPanel() {
       } catch (e) { toast(e.message, 'err'); }
     };
     el.querySelector('.pres-save').addEventListener('click', () => save(false));
+    el.querySelector('.pres-del').addEventListener('click', async () => {
+      if (!confirm('删除这条预设？')) return;
+      try {
+        await api(`/api/prompt-presets/${id}`, { method: 'DELETE' });
+        toast('已删除', 'ok');
+        loadCharacterPresetPanel();
+      } catch (e) { toast(e.message, 'err'); }
+    });
     // 自动保存：输入停下 700ms 后落库（只存本卡，不重绘，避免光标丢失）
     ['input', 'change'].forEach((ev) => {
       el.querySelectorAll('.pres-name, .pres-text, .pres-def').forEach((inp) =>
@@ -1900,9 +1910,21 @@ async function openComfySettings() {
   }
   await checkHealth();
   await ensureMeta();
-  await loadProjects();
-  // 不再自动选中项目：进入「项目」页显示列表，点某个项目才看详情（二级页面）
-  showProjectView('list');
+  const rows = await loadProjects();
+  // 恢复上次选中的项目（刷新后不用再点一下）；没有/已删除则显示列表
+  let lastId = 0;
+  try { lastId = +(localStorage.getItem('comic.lastProjectId') || 0); } catch { /* ignore */ }
+  if (lastId && (rows || []).some((p) => p.id === lastId)) {
+    try {
+      await pickProject(lastId);
+    } catch {
+      try { localStorage.removeItem('comic.lastProjectId'); } catch { /* ignore */ }
+      showProjectView('list');
+    }
+  } else {
+    try { localStorage.removeItem('comic.lastProjectId'); } catch { /* ignore */ }
+    showProjectView('list');
+  }
   startJobsSSE();
   startTavernSSE();
   setInterval(refreshGates, 5000);
