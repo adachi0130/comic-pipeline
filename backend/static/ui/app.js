@@ -924,7 +924,17 @@ async function aiFillPage(pageRef, btn) {
 // ---------- 流水线 ----------
 async function renderFlow() {
   const box = $('#flow');
-  if (!state.projectId) { box.innerHTML = '<div class="empty">请先在「项目」页选择或新建一个项目</div>'; return; }
+  if (!state.projectId) {
+    box.innerHTML = `<div class="empty" style="text-align:left">
+      还没有选中项目，所以看不到流水线。<br><br>
+      · 去「项目」页点一个项目卡片（或新建一个），选中后这里会显示 S1–S6 六个阶段；<br>
+      · 每个走 LLM 的阶段（<b>S2 分页分格</b>、<b>S3 分镜提示词</b>）右上角会有「<b>提示词</b>」按钮，可编辑该阶段的提示词模板。
+      <div class="row" style="margin-top:10px"><button class="sm primary" data-go-projects>去选择/新建项目</button></div>
+    </div>`;
+    const gb = box.querySelector('[data-go-projects]');
+    if (gb) gb.addEventListener('click', () => switchTab('projects'));
+    return;
+  }
   const meta = await ensureMeta();
   if (!meta) { box.innerHTML = '<div class="empty">元信息加载失败，请稍后重试或刷新页面</div>'; return; }
   if (!state._gates) await refreshGates();
