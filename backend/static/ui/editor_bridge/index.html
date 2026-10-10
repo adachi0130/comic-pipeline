@@ -122,7 +122,42 @@ async function loadTemplates() {
 frame.addEventListener('load', async () => {
   setBadge('med-state', 'MED：已加载', 'ok');
   await ensure();
+  autoCompose();
 });
+
+/** 自动合成：URL 带 ?page=page:1&p=1&auto=1 时，自动装模板 + 贴入已选画面 + 落提示词。 */
+async function autoCompose() {
+  const q = new URLSearchParams(location.search);
+  const page = q.get('page');
+  const pid = q.get('p');
+  if (!page || !pid || q.get('auto') !== '1') return;
+  const api = await ensure();
+  if (!api) { setMsg('桥未就绪，无法自动合成', 'err'); return; }
+  setMsg('自动合成中…');
+  try {
+    const board = await (await fetch(`/api/projects/${pid}/compose-board`)).json();
+    const pg = (board.pages || []).find((x) => x.page_ref === page);
+    if (!pg) { setMsg('找不到该页：' + page, 'err'); return; }
+    const t = await (await fetch('/api/templates/' + encodeURIComponent(pg.template_id))).json();
+    if (!t.svg) { setMsg('模板 SVG 缺失：' + pg.template_id, 'err'); return; }
+    const r = await api.installTemplate(t.svg, t.dir === 'landscape');
+    setMsg(`已装 ${r.panels} 格，贴图中…`);
+    let placed = 0, want = 0;
+    for (const pn of pg.panels) {
+      if (!pn.image_url) continue;
+      want++;
+      try {
+        const blob = await (await fetch(pn.image_url)).blob();
+        const dataUrl = await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(blob); });
+        await api.placeImage(pn.panel_order, dataUrl, { rightToLeft: true });
+        placed++;
+      } catch (e) { /* 跳过坏图 */ }
+    }
+    try { api.applyPrompts(pg.panels.map((p) => p.prompt || ''), { rightToLeft: true, append: false }); } catch (e) { /* ignore */ }
+    setMsg(`已装框并贴入 ${placed}/${want} 张，可在 MED 里继续编辑`, 'ok');
+    try { const url = api.exportPNG(1); $('preview').src = url; $('preview').style.display = 'block'; } catch (e) { /* ignore */ }
+  } catch (e) { setMsg('自动合成失败：' + e.message, 'err'); }
+}
 
 $('btn-install').addEventListener('click', async () => {
   const api = await ensure(); if (!api) return;

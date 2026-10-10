@@ -314,6 +314,62 @@ def prepare_panel(project_id: int, panel_ref: str, session: Session = Depends(ge
     return {"ok": True, "reused": False, "artifact_id": art.id if art else None}
 
 
+@router.get("/projects/{project_id}/compose-board")
+def compose_board(project_id: int, session: Session = Depends(get_session)) -> dict:
+    """S5「分页合成」页数据：每页的模板几何 + 各格已选画面，用于前端预览与去 MED 合成。"""
+    project = session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "项目不存在")
+
+    pages = []
+    for a in A.all_current(session, project_id, ArtifactKind.PAGE_SCRIPT.value):
+        payload = a.payload or {}
+        try:
+            no = int(a.ref.split(":", 1)[1])
+        except (IndexError, ValueError):
+            no = 10**9
+        tpl = session.get(Template, payload.get("template_id")) if payload.get("template_id") else None
+        geom = payload.get("geometry") or (tpl.geometry if tpl else {})
+        panels = []
+        ready = True
+        for p in payload.get("panels", []):
+            order = p.get("panel_order")
+            pref = f"panel:{no}.{order}"
+            img = A.current(session, project_id, ArtifactKind.IMAGE.value, pref)
+            prompt_art = A.current(session, project_id, ArtifactKind.PANEL_PROMPT.value, pref)
+            url = ""
+            if img is not None:
+                cands = (img.payload or {}).get("candidates") or []
+                idx = (img.payload or {}).get("selected_index")
+                if idx is None and cands:
+                    idx = 0
+                if idx is not None and 0 <= idx < len(cands):
+                    url = f"/api/artifacts/{img.id}/candidate/{idx}"
+            if not url:
+                ready = False
+            panels.append({
+                "panel_order": order, "panel_ref": pref,
+                "has_image": bool(url), "image_url": url,
+                "prompt": (prompt_art.payload.get("prompt_pos") if prompt_art else "") or "",
+            })
+        page_img = A.current(session, project_id, ArtifactKind.PAGE_IMAGE.value, a.ref)
+        pages.append({
+            "page_ref": a.ref, "page_index": no,
+            "template_id": payload.get("template_id"),
+            "dir": tpl.dir if tpl else "",
+            "panels_count": tpl.panels_count if tpl else len(panels),
+            "layout_desc": (tpl.layout_desc if tpl else ""),
+            "canvas": geom.get("canvas") or [672, 950],
+            "geometry": geom.get("panels") or [],
+            "panels": panels,
+            "ready": ready,
+            "composed": page_img is not None,
+            "composed_url": f"/api/artifacts/{page_img.id}/file" if page_img else "",
+        })
+    pages.sort(key=lambda x: x["page_index"])
+    return {"pages": pages}
+
+
 @router.get("/projects/{project_id}/prompt-board")
 def prompt_board(project_id: int, session: Session = Depends(get_session)) -> dict:
     """S3「提示词」独立页面数据：按页列出每一格的分镜提示词（含未生成的占位）。"""
