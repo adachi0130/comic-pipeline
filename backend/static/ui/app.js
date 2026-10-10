@@ -948,6 +948,15 @@ $('#pr-run-all').addEventListener('click', async () => {
   await runStage('S3');
   setTimeout(loadPrompts, 1500);
 });
+$('#pr-approve-all').addEventListener('click', async () => {
+  if (!state.projectId) return toast('先选择项目', 'err');
+  if (!confirm('把所有“待审查”的分镜提示词一键置为通过？')) return;
+  try {
+    const r = await api(`/api/projects/${state.projectId}/panel-prompts/approve-all`, { method: 'POST', body: '{}' });
+    toast(`已通过 ${r.approved} 条提示词`, 'ok');
+    loadPrompts(); refreshGates();
+  } catch (e) { toast(e.message, 'err'); }
+});
 
 function installLoraDatalist(list) {
   const old = document.getElementById('lora-all'); if (old) old.remove();
@@ -1178,7 +1187,9 @@ async function loadPrompts() {
                 ${p.prompt ? pill(p.prompt.status) : '<span class="pill">未生成</span>'}
                 <div class="spacer"></div>
                 ${p.prompt ? `<button class="sm" data-prview="${esc(p.panel_ref)}">预览</button>
-                  <button class="sm" data-predit="${esc(p.panel_ref)}">改</button>` : ''}
+                  <button class="sm" data-predit="${esc(p.panel_ref)}">改</button>
+                  ${p.prompt.status === 'approved' ? '' : `<button class="sm primary" data-prapprove="${esc(p.panel_ref)}" data-aid="${p.prompt.artifact_id}">通过</button>`}
+                  ${p.prompt.status === 'rejected' ? '' : `<button class="sm" data-prreject="${esc(p.panel_ref)}" data-aid="${p.prompt.artifact_id}">驳回</button>`}` : ''}
               </div>
               <div class="mut" style="font-size:11px;margin-top:3px">${esc((p.action || p.dialogue || '').slice(0, 60))}</div>
               ${p.prompt ? `<div style="font-size:11.5px;margin-top:5px;line-height:1.45">${esc((p.prompt.prompt_pos || '').slice(0, 200))}</div>
@@ -1200,6 +1211,19 @@ async function loadPrompts() {
     }));
     box.querySelectorAll('[data-predit]').forEach((b) => b.addEventListener('click', () => openPanelPromptEdit(b.dataset.predit)));
     box.querySelectorAll('[data-prview]').forEach((b) => b.addEventListener('click', () => openPanelPromptPreview([b.dataset.prview])));
+    box.querySelectorAll('[data-prapprove]').forEach((b) => b.addEventListener('click', async () => {
+      try {
+        await api(`/api/artifacts/${b.dataset.aid}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'approve' }) });
+        toast(`${b.dataset.prapprove} 已通过`, 'ok'); loadPrompts(); refreshGates();
+      } catch (e) { toast(e.message, 'err'); }
+    }));
+    box.querySelectorAll('[data-prreject]').forEach((b) => b.addEventListener('click', async () => {
+      const comment = prompt('驳回批注（可留空）：') || '';
+      try {
+        await api(`/api/artifacts/${b.dataset.aid}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'reject', comment }) });
+        toast(`${b.dataset.prreject} 已驳回`, 'ok'); loadPrompts(); refreshGates();
+      } catch (e) { toast(e.message, 'err'); }
+    }));
     box.querySelectorAll('[data-prpreview]').forEach((b) => b.addEventListener('click', () => {
       const pg = d.pages.find((x) => x.page_ref === b.dataset.prpreview);
       openPanelPromptPreview((pg ? pg.panels : []).filter((p) => p.prompt).map((p) => p.panel_ref), b.dataset.prpreview);
@@ -1499,12 +1523,15 @@ async function loadWorkbench() {
 
     box.innerHTML = prompts.map((p) => {
       const pl = p.payload || {}; const l0 = (pl.loras || [])[0] || {};
+      const loraAll = (pl.loras || []).map((l) => `${esc(l.name)}(${l.weight})`).join('、');
       return `<div class="card" data-ref="${esc(p.ref)}" style="margin-bottom:12px;padding:16px">
         <div class="row"><b>${esc(p.ref)}</b> ${pill(p.status)}
+          <span class="pill tag">${pl.width || '?'}×${pl.height || '?'}${pl.frame ? ' · ' + esc(pl.frame) : ''}</span>
           <div class="spacer"></div>
           <label class="fld" style="margin:0">张数</label>
           <input class="wb-count" type="number" value="${$('#wb-count').value}" min="1" max="8" style="width:66px">
           <button class="sm wb-save">保存</button><button class="primary sm wb-gen">出图</button></div>
+        <div class="mut" style="font-size:11.5px;margin-top:2px">出图参数（来自提示词）：${pl.width || '?'}×${pl.height || '?'}${loraAll ? ' · LoRA ' + loraAll : ' · 无 LoRA'}</div>
         <div class="grid2" style="margin-top:10px">
           <div><label class="fld">正向</label><textarea class="wb-pos">${esc(pl.prompt_pos || '')}</textarea></div>
           <div><label class="fld">负向</label><textarea class="wb-neg">${esc(pl.prompt_neg || '')}</textarea></div>

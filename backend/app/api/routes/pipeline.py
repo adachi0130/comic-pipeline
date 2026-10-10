@@ -356,6 +356,7 @@ def prompt_board(project_id: int, session: Session = Depends(get_session)) -> di
             "artifact_id": a.id, "version": a.version, "status": a.status,
             "prompt_pos": p.get("prompt_pos", ""), "prompt_neg": p.get("prompt_neg", ""),
             "loras": p.get("loras", []), "width": p.get("width"), "height": p.get("height"),
+            "frame": p.get("frame", ""),
         }
 
     # 该项目的默认提示词预设：给尚未生成的格子做“出图设置里的正/负向”初始值
@@ -419,6 +420,38 @@ def update_panel_prompt(project_id: int, panel_ref: str, body: dict, session: Se
                    status=ArtifactStatus.REVIEW.value)
     session.commit()
     return {"ok": True, "artifact_id": new.id, "version": new.version}
+
+
+@router.post("/projects/{project_id}/panel-prompts/approve-all")
+def approve_all_panel_prompts(project_id: int, body: dict | None = None, session: Session = Depends(get_session)) -> dict:
+    """一键审核：把该项目所有“待审查”的分镜提示词置为通过。
+
+    body 可带 ``page_ref`` 限定只审某一页。
+    """
+    if session.get(Project, project_id) is None:
+        raise HTTPException(404, "项目不存在")
+    page_ref = (body or {}).get("page_ref")
+    reviews = session.scalars(
+        select(Artifact).where(
+            Artifact.project_id == project_id,
+            Artifact.kind == ArtifactKind.PANEL_PROMPT.value,
+            Artifact.is_current.is_(True),
+            Artifact.status == ArtifactStatus.REVIEW.value,
+        )
+    ).all()
+    n = 0
+    for a in reviews:
+        if page_ref:
+            try:
+                pno = int(a.ref.split(":", 1)[1].split(".", 1)[0])
+            except (IndexError, ValueError):
+                continue
+            if f"page:{pno}" != page_ref:
+                continue
+        A.set_status(session, a, ArtifactStatus.APPROVED.value)
+        n += 1
+    session.commit()
+    return {"ok": True, "approved": n}
 
 
 @router.post("/projects/{project_id}/prompt-board/run-page/{page_ref}")

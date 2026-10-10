@@ -66,29 +66,30 @@ def handle(session: Session, job: Job) -> dict:
     if project is None:
         raise ValueError(f"项目不存在：{project_id}")
 
-    # 提示词/LoRA/尺寸可从 S3 产物回退获取（S3 已按画框算好宽高、并合并预设+角色 LoRA）
+    # 该格的 S3 提示词产物：提示词/尺寸/LoRA 的权威来源（S3 已按画框算好宽高、合并好 LoRA）
+    s3_art = current(session, project_id, ArtifactKind.PANEL_PROMPT.value, panel_ref)
+    s3_payload: dict = (s3_art.payload or {}) if s3_art is not None else {}
+
     prompt_pos = payload.get("prompt_pos")
+    if prompt_pos is None:
+        prompt_pos = s3_payload.get("prompt_pos", "")
     prompt_neg = payload.get("prompt_neg")
-    s3_payload: dict = {}
-    if prompt_pos is None or prompt_neg is None or payload.get("loras") is None:
-        par = current(session, project_id, ArtifactKind.PANEL_PROMPT.value, panel_ref)
-        if par is not None:
-            s3_payload = par.payload or {}
-            prompt_pos = prompt_pos if prompt_pos is not None else s3_payload.get("prompt_pos", "")
-            prompt_neg = prompt_neg if prompt_neg is not None else s3_payload.get("prompt_neg", "")
-            if payload.get("loras") is None and s3_payload.get("loras") is not None:
-                payload = {**payload, "loras": s3_payload["loras"]}
+    if prompt_neg is None:
+        prompt_neg = s3_payload.get("prompt_neg", "")
     prompt_pos = prompt_pos or ""
     prompt_neg = prompt_neg or ""
 
     count = int(payload.get("count") or project.candidates_per_panel or 4)
     params = dict(payload.get("params") or project.gen_params or {})
-    # 尺寸优先用该格 S3 按画框算好的宽高（出图与排版一致）
-    if not params.get("width") and (payload.get("width") or s3_payload.get("width")):
+    # 尺寸：优先 payload，其次该格 S3 按画框算好的宽高（出图与排版一致）
+    if not params.get("width"):
         params["width"] = payload.get("width") or s3_payload.get("width")
-    if not params.get("height") and (payload.get("height") or s3_payload.get("height")):
+    if not params.get("height"):
         params["height"] = payload.get("height") or s3_payload.get("height")
+    # LoRA：优先 payload，其次该格 S3 产物（已合并预设+角色），最后才按项目/单格/角色解析
     loras = payload.get("loras")
+    if loras is None:
+        loras = s3_payload.get("loras")
     if loras is None:
         loras = resolve_loras(session, project_id, panel_ref, payload.get("character_names") or [])
 
