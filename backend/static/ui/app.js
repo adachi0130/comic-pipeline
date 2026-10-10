@@ -1823,7 +1823,7 @@ async function loadWorkbench() {
                 <div class="row"><label class="fld" style="margin:0">LoRA（出图套用；含角色/画风）</label>
                   <div class="spacer"></div>
                   <button class="sm" type="button" data-wb-addlora>＋ 加 LoRA</button>
-                  <button class="sm wb-save">保存</button></div>
+                  <span class="mut" style="font-size:11px" data-wb-lora-msg></span></div>
                 <div class="wb-loras">${(pr.loras || []).map(wbLoraRow).join('') || '<div class="mut" style="font-size:12px">（无）</div>'}</div>
               </div>
               <div class="wb-cands" style="margin-top:10px"></div></div>`;
@@ -2034,15 +2034,38 @@ function bindWorkbench(panels) {
     const wrap = card.querySelector('.wb-loras');
     if (!wrap) return;
     wrap.querySelectorAll('[data-wb-loradel]').forEach((b) =>
-      b.onclick = () => { b.closest('[data-wblorarow]').remove(); });
+      b.onclick = () => { b.closest('[data-wblorarow]').remove(); autoSaveLoras(card); });
     attachLoraCombos(wrap, '.wb-lora-name');
   };
+
+  // LoRA 自动保存（只在真正变化时写一次新版本；不覆盖提示词文本）
+  const lastLora = {};
+  const autoSaveLoras = debounce(async (card) => {
+    const art = byRef[card.dataset.ref]?.prompt;
+    if (!art) return;
+    const cur = readLoras(card);
+    const key = card.dataset.ref, json = JSON.stringify(cur);
+    if (lastLora[key] === json) return;
+    lastLora[key] = json;
+    try {
+      await api(`/api/artifacts/${art.artifact_id}/payload`, { method: 'PATCH', body: JSON.stringify({ loras: cur }) });
+      const msg = card.querySelector('[data-wb-lora-msg]');
+      if (msg) { msg.textContent = 'LoRA 已自动保存'; setTimeout(() => { if (msg.textContent === 'LoRA 已自动保存') msg.textContent = ''; }, 1500); }
+      refreshGates();
+    } catch (e) { lastLora[key] = null; toast('LoRA 保存失败：' + e.message, 'err'); }
+  }, 500);
 
   $$('#wb-list [data-ref]').forEach((card) => {
     const ref = card.dataset.ref;
     const pn = byRef[ref] || {};
     const art = pn.prompt;
     wbBindLoraRows(card);
+    // 初始化 lastLora 基线
+    lastLora[ref] = JSON.stringify(readLoras(card));
+    // LoRA 名字/权重变化即自动保存
+    const lwrap = card.querySelector('.wb-loras');
+    if (lwrap) ['change', 'blur'].forEach((ev) =>
+      lwrap.addEventListener(ev, () => autoSaveLoras(card), true));
 
     // 加 LoRA 行
     const addl = card.querySelector('[data-wb-addlora]');
@@ -2071,6 +2094,9 @@ function bindWorkbench(panels) {
       const wrap = card.querySelector('.wb-loras');
       if (wrap) wrap.innerHTML = merged.map(wbLoraRow).join('') || '<div class="mut" style="font-size:12px">（无）</div>';
       wbBindLoraRows(card);
+      // 填入后自动保存（含画风 LoRA）
+      lastLora[ref] = null;
+      autoSaveLoras(card);
       toast(`已填入提示词与 ${merged.length} 个 LoRA（含画风）`, 'ok');
     });
     // 未生成提示词的格：按钮是「生成提示词」→ 调 LLM 生成这一格
@@ -2082,15 +2108,6 @@ function bindWorkbench(panels) {
         toast(r.reused ? '该格已有提示词' : '已生成该格提示词', 'ok');
         loadWorkbench(); refreshGates();
       } catch (e) { toast('生成失败：' + e.message, 'err'); gp.disabled = false; gp.textContent = '生成提示词'; }
-    });
-    const sv = card.querySelector('.wb-save');
-    if (sv) sv.addEventListener('click', async () => {
-      try {
-        await api(`/api/artifacts/${art.artifact_id}/payload`, { method: 'PATCH', body: JSON.stringify({
-          prompt_pos: card.querySelector('.wb-pos').value, prompt_neg: card.querySelector('.wb-neg').value,
-          loras: readLoras(card) }) });
-        toast(`${ref} 已保存（下游需重跑）`, 'ok'); loadWorkbench(); refreshGates();
-      } catch (e) { toast(e.message, 'err'); }
     });
     card.querySelector('.wb-gen').addEventListener('click', async () => {
       const count = +card.querySelector('.wb-count').value || 4;

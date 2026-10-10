@@ -15,7 +15,7 @@ import json
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -177,10 +177,25 @@ class ComfyClient:
             raise ComfyError(f"取 history 失败：{e}") from e
         return r.json()
 
-    def wait_for(self, prompt_id: str, *, timeout_s: float = 600.0, interval_s: float = 1.5) -> dict[str, Any]:
-        """轮询直到该 prompt 出现在 history 中，返回其条目。"""
+    def wait_for(
+        self,
+        prompt_id: str,
+        *,
+        timeout_s: float = 600.0,
+        interval_s: float = 1.5,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        """轮询直到该 prompt 出现在 history 中，返回其条目。
+
+        若给了 ``should_cancel``，轮询期间会检查；一旦要求取消，就**打断 ComfyUI 当前生成**
+        （``/interrupt``）并把它从队列删掉，然后抛 ``ComfyError("已取消")``。
+        """
         deadline = time.time() + timeout_s
         while time.time() < deadline:
+            if should_cancel and should_cancel():
+                self.interrupt()
+                self.delete_from_queue(prompt_id)
+                raise ComfyError("已取消")
             h = self.history(prompt_id)
             if prompt_id in h:
                 return h[prompt_id]
