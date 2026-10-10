@@ -557,6 +557,60 @@ def set_loras(project_id: int, body: dict, session: Session = Depends(get_sessio
 # ==========================================================================
 # 按格出图
 # ==========================================================================
+@router.post("/projects/{project_id}/artifacts/{artifact_id}/open-in-comfy")
+def open_in_comfy(project_id: int, artifact_id: int, body: dict, session: Session = Depends(get_session)) -> dict:
+    """把某张候选图上传到 ComfyUI 的 input，返回可打开的 ComfyUI 地址。
+
+    这样点「Com工作流」就相当于把这张图放进了 ComfyUI（可在 LoadImage 里选到），
+    并打开出图后端页面继续调试。
+    """
+    from pathlib import Path
+
+    from ...comfy import store as comfy_store
+    from ...models import Artifact
+
+    art = session.get(Artifact, artifact_id)
+    if art is None:
+        raise HTTPException(404, "产物不存在")
+    idx = int(body.get("index", 0))
+    cands = (art.payload or {}).get("candidates") or []
+    if not (0 <= idx < len(cands)):
+        raise HTTPException(400, "候选序号越界")
+    src = Path(cands[idx].get("path", ""))
+    if not src.exists():
+        raise HTTPException(404, "候选文件缺失")
+
+    cfg = comfy_store.load_comfy_config()
+    base = (cfg.active_url() or "").rstrip("/")
+    if not base:
+        raise HTTPException(400, "还没配出图后端地址（出图设置里填）")
+    try:
+        import httpx
+
+        with open(src, "rb") as f:
+            files = {"image": (src.name, f, "image/png")}
+            data = {"overwrite": "true", "type": "input"}
+            r = httpx.post(f"{base}/upload/image", files=files, data=data,
+                           headers=(cfg.active_api_key() and {"Authorization": f"Bearer {cfg.active_api_key()}"}) or {},
+                           timeout=30.0)
+        r.raise_for_status()
+        info = r.json()
+        filename = info.get("name") or src.name
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"上传到 ComfyUI 失败：{e}") from e
+    return {"ok": True, "filename": filename, "comfy_url": base + "/"}
+
+
+def _comfy_base() -> str:
+    from ...comfy import store as comfy_store
+
+    cfg = comfy_store.load_comfy_config()
+    return (cfg.active_url() or "").rstrip("/")
+
+
+# ==========================================================================
+# 按格出图
+# ==========================================================================
 @router.post("/projects/{project_id}/panels/{panel_ref}/generate")
 def generate_panel(
     project_id: int,

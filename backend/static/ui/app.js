@@ -1840,12 +1840,11 @@ async function loadWorkbench() {
                 <button class="sm wb-autofill">自动填写</button>
                 <button class="primary sm wb-gen">出图</button></div>
               <div class="mut" style="font-size:11.5px;margin-top:2px">出图参数：${pr.width || '?'}×${pr.height || '?'}${pStr ? ' · ' + esc(pStr) : ''}${loraAll ? ' · LoRA ' + loraAll : ' · 无 LoRA'}</div>
-              <div class="pn-row row" data-pn-toggle style="cursor:pointer;gap:8px;margin-top:8px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:#fafbfc">
+              <div class="pn-row row" style="gap:8px;margin-top:8px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:#fafbfc">
                 <b style="min-width:76px">${panelFullLabel(p.panel_ref)}</b>
-                <span class="pill ${pr.prompt_pos ? 'ok' : 'tag'}">正 ${pr.prompt_pos ? esc(pr.prompt_pos.slice(0, 16)) + (pr.prompt_pos.length > 16 ? '…' : '') : '（空）'}</span>
-                <span class="pill ${pr.prompt_neg ? 'ok' : 'tag'}">负 ${pr.prompt_neg ? esc(pr.prompt_neg.slice(0, 16)) + (pr.prompt_neg.length > 16 ? '…' : '') : '（空）'}</span>
+                <button class="sm" type="button" data-wb-detail="${esc(p.panel_ref)}">详细信息</button>
                 <div class="spacer"></div>
-                <span class="fold-ic">▸</span>
+                <button class="sm" type="button" data-pn-toggle-btn>展开编辑 ▾</button>
               </div>
               <div class="pn-body hidden">
                 <div class="grid2" style="margin-top:8px">
@@ -1917,20 +1916,68 @@ async function loadCandidateGallery() {
   box.innerHTML = full.map((a) => {
     const cands = (a.payload && a.payload.candidates) || [];
     const sel = a.payload && a.payload.selected_index;
-    return `<div style="margin-bottom:14px">
+    return `<div style="margin-bottom:14px" data-gallery="${esc(a.ref)}">
       <div class="row" style="gap:6px"><b>${panelFullLabel(a.ref)}</b> ${pill(a.status)}
-        <span class="mut" style="font-size:12px">${cands.length} 张</span></div>
+        <span class="mut" style="font-size:12px">${cands.length} 张</span>
+        <div class="spacer"></div>
+        <button class="sm" data-g-up="${esc(a.ref)}">＋ 上传图片</button>
+        <input type="file" accept="image/*" class="g-file" data-g-ref="${esc(a.ref)}" style="display:none"></div>
       <div class="candgrid" style="margin-top:6px">${cands.map((c, i) => `
         <div class="cand ${i === sel ? 'sel' : ''}" data-art="${a.id}" data-idx="${i}">
           <img src="/api/artifacts/${a.id}/candidate/${i}" loading="lazy">
-          <div class="lbl"><span>#${i + 1}</span>${i === sel ? '<span style="color:var(--ok)">已选</span>' : ''}</div></div>`).join('')}</div>
+          <div class="lbl"><span>#${i + 1}${c.uploaded ? ' 上传' : ''}</span>${i === sel ? '<span style="color:var(--ok)">已选</span>' : ''}</div>
+          <div class="cand-ops">
+            <button class="sm" type="button" data-op="dl" title="下载这张">下载</button>
+            <button class="sm" type="button" data-op="comfy" title="上传到 ComfyUI 并打开">Com工作流</button>
+            <button class="sm danger" type="button" data-op="del" title="删除这张">删</button>
+          </div></div>`).join('') || '<div class="empty" style="font-size:12px">还没有图，点「＋ 上传图片」</div>'}</div>
     </div>`;
   }).join('');
-  box.querySelectorAll('.cand').forEach((el) => el.addEventListener('click', () => {
+  box.querySelectorAll('.cand img').forEach((img) => img.addEventListener('click', () => {
+    const el = img.closest('.cand');
     openLightbox(`/api/artifacts/${el.dataset.art}/candidate/${el.dataset.idx}`, async () => {
       await api(`/api/artifacts/${el.dataset.art}/select`, { method: 'POST', body: JSON.stringify({ index: +el.dataset.idx }) });
       toast('已采用', 'ok'); loadCandidateGallery(); refreshGates();
     });
+  }));
+  box.querySelectorAll('.cand-ops button').forEach((b) => b.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const el = b.closest('.cand');
+    const art = +el.dataset.art, idx = +el.dataset.idx;
+    const op = b.dataset.op;
+    if (op === 'dl') {
+      const a = document.createElement('a');
+      a.href = `/api/artifacts/${art}/candidate/${idx}`; a.download = `cand_${art}_${idx + 1}.png`;
+      document.body.appendChild(a); a.click(); a.remove();
+    } else if (op === 'comfy') {
+      toast('上传到 ComfyUI 中…');
+      try {
+        const r = await api(`/api/projects/${state.projectId}/artifacts/${art}/open-in-comfy`, { method: 'POST', body: JSON.stringify({ index: idx }) });
+        toast(`已上传为 ${r.filename}，正在打开 ComfyUI`, 'ok');
+        window.open(r.comfy_url, '_blank');
+      } catch (err) { toast(err.message, 'err'); }
+    } else if (op === 'del') {
+      if (!confirm('删除这张候选图？')) return;
+      try {
+        await api(`/api/artifacts/${art}/candidate/${idx}`, { method: 'DELETE' });
+        toast('已删除', 'ok'); loadCandidateGallery(); refreshGates();
+      } catch (err) { toast(err.message, 'err'); }
+    }
+  }));
+  // 上传图片
+  box.querySelectorAll('[data-g-up]').forEach((b) => b.addEventListener('click', () => {
+    const fi = box.querySelector(`.g-file[data-g-ref="${CSS.escape(b.dataset.gUp)}"]`);
+    if (fi) fi.click();
+  }));
+  box.querySelectorAll('.g-file').forEach((fi) => fi.addEventListener('change', async () => {
+    const f = fi.files && fi.files[0];
+    if (!f) return;
+    const dataUrl = await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(f); });
+    try {
+      await api(`/api/projects/${state.projectId}/panels/${encodeURIComponent(fi.dataset.gRef)}/candidates`, { method: 'POST', body: JSON.stringify({ data_url: dataUrl }) });
+      toast('已上传为该格候选图', 'ok'); loadCandidateGallery(); refreshGates();
+    } catch (e) { toast('上传失败：' + e.message, 'err'); }
+    fi.value = '';
   }));
 }
 
@@ -2168,13 +2215,15 @@ function bindWorkbench(panels) {
     if (lwrap) ['change', 'blur'].forEach((ev) =>
       lwrap.addEventListener(ev, () => autoSaveLoras(card), true));
 
-    // 正/负向：点标题行展开/收起编辑；输入自动保存
-    const pnRow = card.querySelector('[data-pn-toggle]');
+    // 正/负向：点「展开编辑」按钮展开/收起；输入自动保存
+    const pnBtn = card.querySelector('[data-pn-toggle-btn]');
     const pnBody = card.querySelector('.pn-body');
-    if (pnRow && pnBody) pnRow.addEventListener('click', () => {
+    if (pnBtn && pnBody) pnBtn.addEventListener('click', () => {
       const hidden = pnBody.classList.toggle('hidden');
-      const ic = pnRow.querySelector('.fold-ic'); if (ic) ic.style.transform = hidden ? '' : 'rotate(90deg)';
+      pnBtn.textContent = hidden ? '展开编辑 ▾' : '收起编辑 ▴';
     });
+    const dtBtn = card.querySelector('[data-wb-detail]');
+    if (dtBtn) dtBtn.addEventListener('click', () => openPanelPromptEdit(dtBtn.dataset.wbDetail));
     ['input', 'change'].forEach((ev) => {
       card.querySelector('.wb-pos')?.addEventListener(ev, () => autoSavePN(card));
       card.querySelector('.wb-neg')?.addEventListener(ev, () => autoSavePN(card));
