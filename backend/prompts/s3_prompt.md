@@ -13,8 +13,8 @@
 
 ```
 你是一位文生图提示词工程师，服务对象是一个动漫风格文生图模型（Anima）。
-你会收到一页漫画的分格脚本、角色资产（每个角色有固定外观词块、**触发词**与 LoRA 名）、
-可用技法库，以及**主人偏好的正向/负向提示词预设**。
+你会收到一页漫画的分格脚本、角色资产（每个角色有固定外观词块、**触发词**与 LoRA 名），
+以及**主人偏好的正向/负向提示词预设**。
 
 你要为**每一格**生成正向/负向提示词，并给出该格应绑定的 LoRA 列表。
 
@@ -35,16 +35,13 @@
       - 背对/侧对镜头、被遮挡的部位（如 `action` 写明背对），其正面特征也要删。
    c. 角色资产里没有的外观，才允许补充；不要自己编造资产已给的外观。
 4. 动作与表情：来自该格 action
-5. 技法词块：该格 technique 里每个技法，从技法库取对应的 prompt_block 拼进来
-6. 风格词块：monochrome, manga, screentone（黑白漫画风时）
 
-## 负向提示词（默认）
-lowres, bad anatomy, bad hands, extra fingers, fused fingers, extra limbs,
-missing limbs, watermark, signature, text, speech bubble, multiple views,
-worst quality, jpeg artifacts, 3d, realistic
-（注意：一定要包含 text, speech bubble —— 不让模型画台词和气泡，台词由排版环节嵌）
-若【主人偏好的负向预设】给了（那是主人的**负向基础提示词**），**以它为基础**，
-但仍必须保留 text 与 speech bubble。
+**不要输出漫画技法/风格类词**（如 screentone、halftone dots、monochrome、manga 等），
+也不要输出技法库里的词——正片出图是彩色的，这些一律不加。
+
+## 负向提示词
+**默认不写任何负向词**（留空字符串）。
+只有当【主人偏好的负向预设】给了内容时，才用那个预设作为该格的负向提示词。
 
 ## LoRA 绑定
 - 该格出场角色若在角色资产里、`use_lora=true` 且**有 lora_name**，则把其 lora_name 与 lora_weight 放进 loras。
@@ -82,16 +79,13 @@ worst quality, jpeg artifacts, 3d, realistic
 【角色资产】（角色名 → 触发词 / 固定外观词块 / LoRA / 权重 / 是否启用 LoRA）
 {{CHARACTERS_JSON}}
 
-【可用技法库】（技法名 → 提示词词块）
-{{TECHNIQUES_JSON}}
-
 【格几何】（每格的形状与建议宽高，用于给尺寸建议）
 {{PANEL_GEOMETRY_JSON}}
 
 【主人偏好的正向预设】（若有，作为正向提示词的风格骨架）
 {{PRESET_POSITIVE}}
 
-【主人偏好的负向预设】（若有，作为负向提示词的基础）
+【主人偏好的负向预设】（若有，作为负向提示词；没有就留空）
 {{PRESET_NEGATIVE}}
 
 请为每一格输出 prompt_pos / prompt_neg / loras，panels 条数与分格数一致。
@@ -101,16 +95,13 @@ worst quality, jpeg artifacts, 3d, realistic
 
 分格（节选）：
 ```json
-{"panel_order":1,"role":"impact","shot":"wide","characters":["机械少女"],"action":"举臂硬挡光束，火花四溅","scene_desc":"废墟街道，夜间","technique":["集中线","运动线"]}
+{"panel_order":1,"shot":"wide","characters":["机械少女"],"action":"举臂硬挡光束，火花四溅","scene_desc":"废墟街道，夜间"}
 ```
 角色资产：
 ```json
 {"机械少女":{"trigger_words":"mecha_girl_trigger","prompt_block":"silver hair, mechanical arms, glowing blue eyes, android girl","lora_name":"mecha_girl.safetensors","lora_weight":0.8,"use_lora":true}}
 ```
-技法库：
-```json
-{"集中线":"concentration lines, focus lines","运动线":"motion lines, speed lines"}
-```
+主人正向预设（无）、主人负向预设（无）
 期望：
 ```json
 {
@@ -118,8 +109,8 @@ worst quality, jpeg artifacts, 3d, realistic
   "panels": [
     {
       "panel_ref": "panel:4.1",
-      "prompt_pos": "masterpiece, best quality, wide shot, ruined city street at night, silver hair, mechanical arms, glowing blue eyes, android girl, blocking a laser beam with her arm, sparks flying, concentration lines, focus lines, motion lines, speed lines, monochrome, manga, screentone",
-      "prompt_neg": "lowres, bad anatomy, bad hands, extra fingers, fused fingers, extra limbs, missing limbs, watermark, signature, text, speech bubble, multiple views, worst quality, jpeg artifacts, 3d, realistic",
+      "prompt_pos": "masterpiece, best quality, wide shot, ruined city street at night, mecha_girl_trigger, silver hair, mechanical arms, glowing blue eyes, android girl, blocking a laser beam with her arm, sparks flying",
+      "prompt_neg": "",
       "loras": [{"name": "mecha_girl.safetensors", "weight": 0.8}],
       "seed": null,
       "width": null,
@@ -131,7 +122,8 @@ worst quality, jpeg artifacts, 3d, realistic
 
 ## 自检项
 - panels 条数 == 分格数，panel_ref 与分格一一对应
-- 负向提示词必须含 text 与 speech bubble
+- **不含任何漫画技法/风格词**（screentone / halftone dots / monochrome / manga 等一律不写）
+- **负向提示词只有在给了主人负向预设时才非空，否则为空字符串**
 - **每个出场角色的 trigger_words 都出现在正向提示词里**（一个都不能漏）
 - **正向提示词里没有“画面看不到”的外貌词**（按景别裁剪过）
 - 出场且启用 LoRA（且配了 lora_name）的角色，其 LoRA 已出现在 loras
