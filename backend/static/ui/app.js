@@ -75,6 +75,7 @@ function switchTab(tab) {
   if (tab === 'images') loadWorkbench();
   if (tab === 'pages') loadPages();
   if (tab === 'prompts') loadPrompts();
+  if (tab === 'images' || tab === 'prompts') ensureLoraDatalist();
   if (tab === 'settings') { loadProviders(); loadStageBinding(); }
   if (tab === 'projects') {
     // 已选中项目时停在详情（二级），否则显示列表（一级）
@@ -1000,6 +1001,78 @@ async function ensureLoraDatalist() {
   } catch { /* ComfyUI 未启动 */ }
 }
 
+// ---- LoRA 即时搜索下拉（输入即过滤，支持路径子串、高亮、键盘上下选）----
+let _loraListCache = null;
+async function loadLoraList() {
+  if (_loraListCache) return _loraListCache;
+  try { const r = await api('/api/comfy/assets'); _loraListCache = r.loras || []; }
+  catch { _loraListCache = state._loras || []; }
+  return _loraListCache;
+}
+function _hl(text, q) {
+  if (!q) return esc(text);
+  const re = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig');
+  return esc(text).replace(re, '<b>$1</b>');
+}
+/** 给一个输入框挂上 LoRA 即时搜索：multi=true 表示逗号分隔多个（只搜最后一个 token）。 */
+function attachLoraCombo(input, opts = {}) {
+  if (!input || input.dataset.loraCombo) return;
+  input.dataset.loraCombo = '1';
+  const multi = !!opts.multi;
+  input.removeAttribute('list');
+  const wrap = document.createElement('div');
+  wrap.className = 'lora-wrap';
+  input.parentNode.insertBefore(wrap, input);
+  wrap.appendChild(input);
+
+  let menu = null, idx = -1, items = [];
+  const token = () => multi ? input.value.split(',').slice(-1)[0].trim() : input.value.trim();
+  const hide = () => { if (menu) { menu.remove(); menu = null; } idx = -1; items = []; };
+  const render = () => {
+    if (!items.length) { hide(); return; }
+    if (!menu) { menu = document.createElement('div'); menu.className = 'lora-menu'; wrap.appendChild(menu); }
+    const q = token();
+    menu.innerHTML = items.map((l, i) => `<div class="it ${i === idx ? 'on' : ''}" data-i="${i}">${_hl(l, q)}</div>`).join('');
+    menu.querySelectorAll('.it').forEach((el) => el.addEventListener('mousedown', (e) => { e.preventDefault(); pick(+el.dataset.i); }));
+  };
+  const query = async () => {
+    const list = await loadLoraList();
+    const q = token().toLowerCase();
+    items = (q ? list.filter((l) => l.toLowerCase().includes(q)) : list).slice(0, 80);
+    idx = -1;
+    render();
+  };
+  const pick = (i) => {
+    if (i < 0 || i >= items.length) return;
+    const val = items[i];
+    if (multi) {
+      const parts = input.value.split(',');
+      parts[parts.length - 1] = ' ' + val;
+      input.value = parts.join(',').replace(/^\s+/, '');
+    } else { input.value = val; }
+    hide();
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
+  };
+  input.addEventListener('input', query);
+  input.addEventListener('focus', query);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!menu) { query(); return; }
+      idx = e.key === 'ArrowDown' ? Math.min(idx + 1, items.length - 1) : Math.max(idx - 1, 0);
+      render();
+    } else if (e.key === 'Enter') {
+      if (menu) { e.preventDefault(); pick(idx >= 0 ? idx : 0); }
+    } else if (e.key === 'Escape') { hide(); }
+  });
+  input.addEventListener('blur', () => setTimeout(hide, 180));
+}
+/** 便捷：给某容器内所有匹配选择器的 LoRA 输入框挂上即时搜索 */
+function attachLoraCombos(root, selector, opts) {
+  (root || document).querySelectorAll(selector).forEach((el) => attachLoraCombo(el, opts));
+}
+
 // ---- 角色卡 + 提示词预设渲染 ----
 async function loadCharacterPresetPanel() {
   const box = $('#pr-chars');
@@ -1064,6 +1137,10 @@ async function loadCharacterPresetPanel() {
       </div>`).join('') || '<div class="mut" style="font-size:12px;margin-top:8px">还没有角色。点右上「＋ 加角色」。</div>'}`;
 
   // 预设：保存 + 自动保存（边填边存，避免忘点保存 / 面板重绘冲掉）
+  // LoRA 输入框：即时搜索
+  attachLoraCombos(box, '.ch-lora');
+  attachLoraCombos(box, '.pres-loras', { multi: true });
+
   box.querySelectorAll('[data-preset]').forEach((el) => {
     const id = +el.dataset.preset;
     const payload = () => ({
@@ -1190,6 +1267,7 @@ async function loadStyleLoras() {
 function bindStyle() {
   const box = $('#pr-style');
   box.querySelectorAll('.st-del').forEach((b) => b.onclick = () => { b.closest('[data-stylerow]').remove(); });
+  attachLoraCombos(box, '.st-name');
 }
 $('#pr-addstyle').addEventListener('click', () => {
   if (!state.projectId) return toast('先选择项目', 'err');
@@ -1399,11 +1477,13 @@ async function openPanelPromptEdit(panelRef) {
   const rebindDel = () => box.querySelectorAll('.pp-loradel').forEach((b) =>
     b.onclick = () => { b.closest('[data-lorarow]').remove(); });
   rebindDel();
+  attachLoraCombos(box, '.pp-loraname');
   box.querySelector('#pp-addlora').addEventListener('click', () => {
     const wrap = box.querySelector('#pp-loras');
     if (wrap.querySelector('.mut')) wrap.innerHTML = '';
     wrap.insertAdjacentHTML('beforeend', loraRow({}));
     rebindDel();
+    attachLoraCombos(wrap, '.pp-loraname');
   });
 
   box.querySelector('#pp-savep').addEventListener('click', async () => {
@@ -1961,6 +2041,7 @@ function bindWorkbench(panels) {
       finally { btn.disabled = false; btn.textContent = '出图'; }
     });
   });
+  attachLoraCombos(document.querySelector('#wb-list'), '.wb-lora');
 }
 
 async function renderWbCands(pa) {
