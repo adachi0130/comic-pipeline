@@ -197,6 +197,90 @@ def artifact_file(artifact_id: int, session: Session = Depends(get_session)):
     return FileResponse(str(p))
 
 
+def _decode_data_url(data_url: str) -> tuple[bytes, str]:
+    import base64
+
+    if not isinstance(data_url, str) or not data_url.startswith("data:"):
+        raise HTTPException(400, "需要 data:image/... 形式的图片")
+    head, _, b64 = data_url.partition(",")
+    ext = "png"
+    if "image/jpeg" in head or "image/jpg" in head:
+        ext = "jpg"
+    elif "image/webp" in head:
+        ext = "webp"
+    try:
+        return base64.b64decode(b64), ext
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"图片解码失败：{e}") from e
+
+
+@router.post("/projects/{project_id}/panels/{panel_ref}/candidates")
+def upload_candidate(project_id: int, panel_ref: str, body: dict, session: Session = Depends(get_session)) -> dict:
+    """给某一格额外上传一张候选图（追加到候选列表）。body: {data_url}"""
+    from pathlib import Path
+
+    from ...config import get_settings
+
+    if session.get(Project, project_id) is None:
+        raise HTTPException(404, "项目不存在")
+    data, ext = _decode_data_url(body.get("data_url", ""))
+    art = A.current(session, project_id, ArtifactKind.IMAGE.value, panel_ref)
+
+    safe = panel_ref.replace(":", "_").replace("/", "_")
+    out_dir = get_settings().data_dir / "projects" / str(project_id) / "candidates" / safe
+    out_dir.mkdir(parents=True, exist_ok=True)
+    payload = dict(art.payload) if art is not None else {"candidates": [], "selected_index": None}
+    cands = list(payload.get("candidates") or [])
+    idx = len(cands)
+    fname = f"upload_{idx + 1:02d}.{ext}"
+    fpath = out_dir / fname
+    fpath.write_bytes(data)
+    cands.append({"index": idx, "path": str(fpath), "seed": None, "params": {}, "uploaded": True})
+    payload = {**payload, "candidates": cands}
+
+    if art is None:
+        new = A.create(session, project_id=project_id, kind=ArtifactKind.IMAGE.value, ref=panel_ref,
+                       payload=payload, path=str(out_dir), status=ArtifactStatus.REVIEW.value)
+        aid = new.id
+    else:
+        new = A.create(session, project_id=project_id, kind=ArtifactKind.IMAGE.value, ref=panel_ref,
+                       payload=payload, path=art.path or str(out_dir), inputs=[art], status=art.status)
+        aid = new.id
+    session.commit()
+    return {"ok": True, "artifact_id": aid, "index": idx, "url": f"/api/artifacts/{aid}/candidate/{idx}"}
+
+
+@router.delete("/artifacts/{artifact_id}/candidate/{index}")
+def delete_candidate(artifact_id: int, index: int, session: Session = Depends(get_session)) -> dict:
+    """从某一格候选列表里删除第 index 张（含落盘文件），并重新编号。"""
+    from pathlib import Path
+
+    a = session.get(Artifact, artifact_id)
+    if a is None or a.kind != ArtifactKind.IMAGE.value:
+        raise HTTPException(404, "候选产物不存在")
+    payload = dict(a.payload or {})
+    cands = list(payload.get("candidates") or [])
+    if not (0 <= index < len(cands)):
+        raise HTTPException(400, "序号越界")
+    removed = cands.pop(index)
+    try:
+        p = Path(removed.get("path", ""))
+        if p.exists():
+            p.unlink()
+    except OSError:
+        pass
+    for i, c in enumerate(cands):
+        c["index"] = i
+    sel = payload.get("selected_index")
+    if sel is not None:
+        sel = None if sel == index else (sel - 1 if sel > index else sel)
+    new_payload = {**payload, "candidates": cands, "selected_index": sel}
+    new = A.create(session, project_id=a.project_id, kind=ArtifactKind.IMAGE.value, ref=a.ref,
+                   payload=new_payload, path=a.path, inputs=[a], status=a.status)
+    session.commit()
+    return {"ok": True, "artifact_id": new.id, "remaining": len(cands)}
+
+
 def _brief(a: Artifact) -> dict:
     return {
         "id": a.id,
