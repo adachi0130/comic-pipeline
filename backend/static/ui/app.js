@@ -1565,40 +1565,55 @@ async function loadWorkbench() {
   }
   const box = $('#wb-list');
   try {
-    // 1) 先渲染 S2 分格产物（出图的依据），让主人直观看到分出来的版式和格子
+    // 1) 顶部：分格产物（每页卡 + 「详情」看该页所有镜头）
     await renderWorkbenchPages();
 
-    // 2) 再渲染逐格提示词出图卡片
-    const prompts = await api(`/api/projects/${state.projectId}/artifacts?kind=panel_prompt`);
-    if (!prompts.length) {
-      box.innerHTML = '<div class="card"><div class="empty">还没有提示词产物（先跑 S2 分页分格、S3 提示词）</div></div>';
+    // 2) 逐格出图：列出**所有格**（含还没生成提示词的），未生成的给「自动填写」
+    let board = { pages: [] };
+    try { board = await api(`/api/projects/${state.projectId}/prompt-board`); } catch { /* ignore */ }
+    const panels = [];
+    for (const pg of (board.pages || [])) for (const pn of pg.panels) panels.push({ ...pn, page_ref: pg.page_ref });
+    if (!panels.length) {
+      box.innerHTML = '<div class="card"><div class="empty">还没有分格（先跑 S2 分页分格）</div></div>';
       $('#wb-info').textContent = '0 格';
       return;
     }
     let loraOpts = [];
     try { const r = await api('/api/comfy/assets'); loraOpts = r.loras || []; } catch { /* ComfyUI 未启动 */ }
+    const filled = panels.filter((p) => p.prompt).length;
+    $('#wb-info').textContent = `${filled}/${panels.length} 格已生成提示词`;
 
-    box.innerHTML = prompts.map((p) => {
-      const pl = p.payload || {}; const l0 = (pl.loras || [])[0] || {};
-      const loraAll = (pl.loras || []).map((l) => `${esc(l.name)}(${l.weight})`).join('、');
-      return `<div class="card" data-ref="${esc(p.ref)}" style="margin-bottom:12px;padding:16px">
-        <div class="row"><b>${esc(p.ref)}</b> ${pill(p.status)}
-          <span class="pill tag">${pl.width || '?'}×${pl.height || '?'}${pl.frame ? ' · ' + esc(pl.frame) : ''}</span>
+    box.innerHTML = panels.map((p) => {
+      const pr = p.prompt;
+      const head = `<div class="row"><b>${esc(p.panel_ref)}</b>
+          ${pr ? pill(pr.status) : '<span class="pill warn">未生成提示词</span>'}
+          <span class="mut" style="font-size:12px">第 ${p.panel_order} 格 · ${esc(p.shot || '')}</span>
           <div class="spacer"></div>
           <label class="fld" style="margin:0">张数</label>
           <input class="wb-count" type="number" value="${$('#wb-count').value}" min="1" max="8" style="width:66px">
           <button class="sm wb-autofill">自动填写</button>
-          <button class="sm wb-save">保存</button><button class="primary sm wb-gen">出图</button></div>
-        <div class="mut" style="font-size:11.5px;margin-top:2px">出图参数（来自提示词）：${pl.width || '?'}×${pl.height || '?'}${loraAll ? ' · LoRA ' + loraAll : ' · 无 LoRA'}</div>
+          <button class="primary sm wb-gen">出图</button></div>`;
+      if (!pr) {
+        return `<div class="card" data-ref="${esc(p.panel_ref)}" style="margin-bottom:12px;padding:16px">
+          ${head}
+          <div class="mut" style="font-size:12px;margin-top:8px">这格还没生成提示词——点「自动填写」让 AI 按预设+角色生成，或直接点「出图」（会自动先填写）。</div>
+          <div class="wb-cands" style="margin-top:12px"></div></div>`;
+      }
+      const l0 = (pr.loras || [])[0] || {};
+      const loraAll = (pr.loras || []).map((l) => `${esc(l.name)}(${l.weight})`).join('、');
+      return `<div class="card" data-ref="${esc(p.panel_ref)}" style="margin-bottom:12px;padding:16px">
+        ${head}
+        <div class="mut" style="font-size:11.5px;margin-top:2px">出图参数（来自提示词）：${pr.width || '?'}×${pr.height || '?'}${loraAll ? ' · LoRA ' + loraAll : ' · 无 LoRA'}</div>
         <div class="grid2" style="margin-top:10px">
-          <div><label class="fld">正向</label><textarea class="wb-pos">${esc(pl.prompt_pos || '')}</textarea></div>
-          <div><label class="fld">负向</label><textarea class="wb-neg">${esc(pl.prompt_neg || '')}</textarea></div>
+          <div><label class="fld">正向</label><textarea class="wb-pos">${esc(pr.prompt_pos || '')}</textarea></div>
+          <div><label class="fld">负向</label><textarea class="wb-neg">${esc(pr.prompt_neg || '')}</textarea></div>
         </div>
         <div class="row" style="margin-top:8px">
-          <label class="fld" style="margin:0"><input type="checkbox" class="wb-uselora" style="width:auto" ${(pl.loras || []).length ? 'checked' : ''}> 用 LoRA</label>
+          <label class="fld" style="margin:0"><input type="checkbox" class="wb-uselora" style="width:auto" ${(pr.loras || []).length ? 'checked' : ''}> 用 LoRA</label>
           <input class="wb-lora" placeholder="lora 文件名" value="${esc(l0.name || '')}" list="lora-list" style="max-width:280px">
           <label class="fld" style="margin:0">权重</label>
           <input class="wb-loraw" type="number" step="0.05" value="${l0.weight ?? 0.8}" style="width:80px">
+          <button class="sm wb-save">保存</button>
         </div>
         <div class="wb-cands" style="margin-top:12px"></div></div>`;
     }).join('');
@@ -1606,9 +1621,8 @@ async function loadWorkbench() {
     const dl = document.createElement('datalist'); dl.id = 'lora-list';
     dl.innerHTML = loraOpts.map((l) => `<option value="${esc(l)}">`).join('');
     document.body.appendChild(dl);
-    $('#wb-info').textContent = `${prompts.length} 格`;
-    bindWorkbench(prompts);
-    for (const p of prompts) await renderWbCands(p);
+    bindWorkbench(panels);
+    for (const p of panels) if (p.prompt) await renderWbCands({ ref: p.panel_ref });
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -1638,6 +1652,7 @@ async function renderWorkbenchPages() {
             <div class="mut" style="font-size:11.5px">${esc(p.template ? (p.template.layout_desc || p.template_id) : (p.template_id || ''))}</div>
           </div>
           <div class="spacer"></div>
+          <button class="sm primary" data-wbdetail="${esc(p.page_ref)}">详情</button>
           <button class="sm" data-wbpick="${esc(p.page_ref)}">看这页候选图</button>
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:8px;margin-top:10px">
@@ -1665,6 +1680,10 @@ async function renderWorkbenchPages() {
     if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.style.boxShadow = '0 0 0 3px var(--accent)'; setTimeout(() => { el.style.boxShadow = ''; }, 1400); }
     else toast('这页还没有对应的提示词产物（可在「提示词」页生成，或在下面点「出图」自动准备）');
   }));
+  box.querySelectorAll('[data-wbdetail]').forEach((b) => b.addEventListener('click', () => {
+    const pg = pages.find((x) => x.page_ref === b.dataset.wbdetail);
+    openPagePanelsDetail(b.dataset.wbdetail, pg);
+  }));
   box.querySelectorAll('[data-wbedit]').forEach((b) => b.addEventListener('click', () => openPanelPromptEdit(b.dataset.wbedit)));
   box.querySelectorAll('[data-wbprep]').forEach((b) => b.addEventListener('click', async () => {
     b.disabled = true; b.textContent = '准备中…';
@@ -1677,39 +1696,114 @@ async function renderWorkbenchPages() {
 }
 
 
-function bindWorkbench(prompts) {
+/** 某一页所有镜头的详情（只读审查）：逐格看 尺寸/参数/LoRA/正负向，可跳去编辑。 */
+async function openPagePanelsDetail(pageRef, page) {
+  const box = document.createElement('div');
+  box.className = 'modal';
+  box.innerHTML = `<div class="box" style="width:min(1000px,95vw)">
+    <h3>${esc(pageRef)} · 这一页所有镜头
+      <span class="mut" style="font-size:12px;font-weight:400">${esc(page && page.template ? (page.template.layout_desc || '') : '')}</span></h3>
+    <div class="h2sub">只读审查；要改点每格的「改这格」。</div>
+    <div id="wpd-body"><div class="empty">加载中…</div></div>
+    <div class="row" style="margin-top:14px"><div class="spacer"></div>
+      <button class="sm" data-close>关闭</button></div></div>`;
+  document.body.appendChild(box);
+  box.querySelector('[data-close]').addEventListener('click', () => box.remove());
+  box.addEventListener('click', (e) => { if (e.target === box) box.remove(); });
+
+  const panels = (page && page.panels) || [];
+  const rows = [];
+  for (const pn of panels) {
+    let pr = null;
+    if (pn.prompt) {
+      try {
+        const list = await api(`/api/projects/${state.projectId}/artifacts?kind=panel_prompt&ref_prefix=${encodeURIComponent(pn.panel_ref)}`);
+        if (list.length) pr = await api('/api/artifacts/' + list[0].id);
+      } catch { /* ignore */ }
+    }
+    rows.push({ pn, pr });
+  }
+  box.querySelector('#wpd-body').innerHTML = rows.map(({ pn, pr }) => {
+    const pl = (pr && pr.payload) || {};
+    const loras = (pl.loras || []).map((l) => `${esc(l.name)}（${l.weight}）`).join('<br>') || '<span class="mut">无</span>';
+    const size = pl.width ? `${pl.width}×${pl.height}${pl.frame ? ' · ' + esc(pl.frame) : ''}` : '未生成（按画框自动算）';
+    return `<div class="mini-card" style="padding:12px 14px;margin-top:10px">
+      <div class="row" style="gap:6px">
+        <b>第 ${pn.panel_order} 格</b>
+        <span class="mut" style="font-size:12px">${esc(pn.shot || '')}</span>
+        ${pr ? pill(pr.status) : '<span class="pill warn">未生成提示词</span>'}
+        <span class="pill tag">${size}</span>
+        <div class="spacer"></div>
+        ${pr ? `<button class="sm" data-wpd-edit="${esc(pn.panel_ref)}">改这格</button>` : `<button class="sm" data-wpd-prep="${esc(pn.panel_ref)}">自动填写</button>`}
+      </div>
+      <div class="mut" style="font-size:11.5px;margin-top:4px">动作：${esc(pn.action || '（空）')}${pn.dialogue ? '　台词：「' + esc(pn.dialogue) + '」' : ''}</div>
+      ${pr ? `<div style="margin-top:8px"><label class="fld">正向</label><div class="ppv-text">${esc(pl.prompt_pos || '（空）')}</div></div>
+        <div style="margin-top:8px"><label class="fld">负向</label><div class="ppv-text">${esc(pl.prompt_neg || '（空）')}</div></div>
+        <div style="margin-top:8px"><label class="fld">LoRA</label><div class="mut" style="font-size:12px">${loras}</div></div>`
+        : '<div class="mut" style="font-size:12px;margin-top:6px">这格还没生成提示词，点右上「自动填写」。</div>'}
+    </div>`;
+  }).join('') || '<div class="empty">这一页没有格子</div>';
+
+  box.querySelectorAll('[data-wpd-edit]').forEach((b) => b.addEventListener('click', () => { box.remove(); openPanelPromptEdit(b.dataset.wpdEdit); }));
+  box.querySelectorAll('[data-wpd-prep]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true; b.textContent = '生成中…';
+    try {
+      await api(`/api/projects/${state.projectId}/panels/${encodeURIComponent(b.dataset.wpdPrep)}/prepare`, { method: 'POST', body: '{}' });
+      toast('已自动生成该格提示词', 'ok'); box.remove(); loadWorkbench(); refreshGates();
+    } catch (e) { toast('自动填写失败：' + e.message, 'err'); b.disabled = false; b.textContent = '自动填写'; }
+  }));
+}
+
+
+async function regeneratePanel(ref) {
+  if (!confirm(`重新生成 ${ref} 的提示词？（会覆盖这一格）`)) return;
+  try {
+    const r = await api(`/api/projects/${state.projectId}/run/S3`, { method: 'POST', body: JSON.stringify({ panel_ref: ref }) });
+    toast(`${ref} 重新生成已入队 #${r.job_id}`, 'ok');
+    setTimeout(loadWorkbench, 2500);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+
+function bindWorkbench(panels) {
+  const byRef = {};
+  panels.forEach((p) => { byRef[p.panel_ref] = p; });
   $$('#wb-list .card').forEach((card) => {
     const ref = card.dataset.ref;
-    const art = prompts.find((p) => p.ref === ref);
-    card.querySelector('.wb-save').addEventListener('click', async () => {
-      const useLora = card.querySelector('.wb-uselora').checked;
-      const lname = card.querySelector('.wb-lora').value.trim();
-      const lw = +card.querySelector('.wb-loraw').value;
-      await api(`/api/artifacts/${art.id}/payload`, { method: 'PATCH', body: JSON.stringify({
-        prompt_pos: card.querySelector('.wb-pos').value, prompt_neg: card.querySelector('.wb-neg').value,
-        loras: useLora && lname ? [{ name: lname, weight: lw }] : [] }) });
-      toast(`${ref} 已保存（下游需重跑）`, 'ok'); loadWorkbench(); refreshGates();
-    });
-    card.querySelector('.wb-autofill').addEventListener('click', async () => {
-      const btn = card.querySelector('.wb-autofill');
-      btn.disabled = true; btn.textContent = '生成中…';
+    const pn = byRef[ref] || {};
+    const art = pn.prompt;
+    const af = card.querySelector('.wb-autofill');
+    if (af) af.addEventListener('click', async () => {
+      if (art) return regeneratePanel(ref);
+      af.disabled = true; af.textContent = '生成中…';
       try {
         const r = await api(`/api/projects/${state.projectId}/panels/${encodeURIComponent(ref)}/prepare`, { method: 'POST', body: '{}' });
         toast(r.reused ? '该格已有提示词' : '已自动生成该格提示词', 'ok');
         loadWorkbench(); refreshGates();
-      } catch (e) { toast('自动填写失败：' + e.message, 'err'); }
-      finally { btn.disabled = false; btn.textContent = '自动填写'; }
+      } catch (e) { toast('自动填写失败：' + e.message, 'err'); af.disabled = false; af.textContent = '自动填写'; }
+    });
+    const sv = card.querySelector('.wb-save');
+    if (sv) sv.addEventListener('click', async () => {
+      const useLora = card.querySelector('.wb-uselora').checked;
+      const lname = card.querySelector('.wb-lora').value.trim();
+      const lw = +card.querySelector('.wb-loraw').value;
+      try {
+        await api(`/api/artifacts/${art.id}/payload`, { method: 'PATCH', body: JSON.stringify({
+          prompt_pos: card.querySelector('.wb-pos').value, prompt_neg: card.querySelector('.wb-neg').value,
+          loras: useLora && lname ? [{ name: lname, weight: lw }] : [] }) });
+        toast(`${ref} 已保存（下游需重跑）`, 'ok'); loadWorkbench(); refreshGates();
+      } catch (e) { toast(e.message, 'err'); }
     });
     card.querySelector('.wb-gen').addEventListener('click', async () => {
       const count = +card.querySelector('.wb-count').value || 4;
       const btn = card.querySelector('.wb-gen');
-      // 没填提示词就先自动填写（按预设+角色），避免空跑
-      const pos = card.querySelector('.wb-pos').value.trim();
+      const posEl = card.querySelector('.wb-pos');
       btn.disabled = true; btn.textContent = '准备中…';
-      if (!pos) {
+      if ((!posEl || !posEl.value.trim()) && !art) {
         try { await api(`/api/projects/${state.projectId}/panels/${encodeURIComponent(ref)}/prepare`, { method: 'POST', body: '{}' }); }
         catch (e) { /* 交给后端用已有 payload 兜底 */ }
-      }      try {
+      }
+      try {
         const r = await api(`/api/projects/${state.projectId}/panels/${encodeURIComponent(ref)}/generate`, { method: 'POST', body: JSON.stringify({ count }) });
         toast(`${ref} 出图已入队 #${r.job_id}（${count} 张）`);
         setTimeout(() => loadWorkbench(), 4000);
