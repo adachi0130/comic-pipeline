@@ -2716,18 +2716,22 @@ async function renderComposeFinished() {
     ${allRefs.map((ref) => {
       const png = imgByRef[ref];
       const doc = docByRef[ref];
+      // 主预览优先显示「编辑中」的 MED 画布（最新编辑），否则显示已合成的整页 PNG
+      const main = doc && doc.has_file
+        ? { url: `/api/artifacts/${doc.id}/file?v=${doc.version}`, label: '编辑中（MED 画布）', kind: 'warn' }
+        : (png ? { url: `/api/artifacts/${png.id}/file?v=${png.version}`, label: '已合成整页', kind: 'ok' } : null);
       return `<div class="mini-card" style="padding:10px">
         <div class="row" style="gap:6px"><b>${pageLabel(ref)}</b>
           ${png ? '<span class="pill ok"><i class="dotm"></i>已合成</span>' : ''}
           ${doc ? '<span class="pill warn"><i class="dotm"></i>编辑中</span>' : ''}</div>
         <div style="margin-top:8px;border:1px solid var(--line2);border-radius:8px;overflow:hidden;background:#f8fafc">
-          ${png ? `<img src="/api/artifacts/${png.id}/file" style="width:100%;display:block">`
-               : `<div class="empty" style="font-size:12px;padding:24px 0">还没有整页 PNG</div>`}
+          ${main ? `<img src="${main.url}" style="width:100%;display:block">`
+                 : `<div class="empty" style="font-size:12px;padding:24px 0">还没有结果</div>`}
         </div>
-        <div class="row" style="margin-top:8px;gap:6px">
+        <div class="mut" style="font-size:11px;margin-top:4px">预览：${main ? main.label : '—'}</div>
+        <div class="row" style="margin-top:6px;gap:6px">
           <button class="sm primary" data-cps-edit="${esc(ref)}">${doc ? '继续编辑' : '去编辑'}</button>
-          ${png ? `<a class="sm" href="/api/artifacts/${png.id}/file" target="_blank">看 PNG</a>` : ''}
-          ${doc && doc.path ? `<a class="sm" href="/api/artifacts/${doc.id}/file" target="_blank">看编辑图</a>` : ''}
+          ${png ? `<a class="sm" href="/api/artifacts/${png.id}/file?v=${png.version}" target="_blank">看整页图</a>` : ''}
         </div>
       </div>`;
     }).join('')}
