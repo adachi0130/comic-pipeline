@@ -383,6 +383,21 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
           <div id="pr-chars" style="margin-top:12px"></div>
         </div>
       </div>
+      <div class="card">
+        <h2 class="foldable closed" data-fold="pr-style-wrap">项目画风 LoRA（每次生成都带上）
+          <span class="mut" style="font-size:12px;font-weight:400">可加多个（点标题展开）</span>
+          <span class="fold-ic">▾</span>
+        </h2>
+        <div id="pr-style-wrap" class="hidden">
+          <div class="h2sub">这里配的画风/效果 LoRA 会**合入该项目每一格**（生成提示词与出图都会带上）。一行一个，格式 <code>文件名:权重</code>。</div>
+          <div class="row" style="margin-top:6px">
+            <button class="sm" id="pr-addstyle">＋ 加画风 LoRA</button>
+            <div class="spacer"></div>
+            <button class="sm" id="pr-style-save">保存</button>
+          </div>
+          <div id="pr-style" style="margin-top:10px"></div>
+        </div>
+      </div>
       <div class="card" id="pr-blank" style="display:none">
         <div class="empty">还没有分格页。先去「分格」页把页面分好，再回来生成提示词。</div>
       </div>
@@ -482,6 +497,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=41"></script>
+<script type="module" src="/ui/app.js?v=44"></script>
 </body>
 </html>
