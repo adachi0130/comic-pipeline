@@ -1280,27 +1280,74 @@ async function openPanelPromptEdit(panelRef) {
   let art;
   try { art = await api(`/api/projects/${state.projectId}/artifacts?kind=panel_prompt&ref_prefix=${encodeURIComponent(panelRef)}`); }
   catch (e) { return toast(e.message, 'err'); }
-  if (!art.length) return toast('找不到该格提示词', 'err');
+  if (!art.length) return toast('找不到该格提示词（先「准备」或生成）', 'err');
   const full = await api('/api/artifacts/' + art[0].id);
   const pl = full.payload || {};
+  await ensureLoraDatalist();
+
+  const loraRow = (l) => `
+    <div class="row" style="gap:6px;margin-top:5px" data-lorarow>
+      <input class="pp-loraname" list="lora-all" value="${esc((l && l.name) || '')}" placeholder="lora 文件名" style="flex:1;min-width:200px">
+      <input class="pp-loraw" type="number" step="0.05" value="${(l && l.weight) ?? 0.8}" style="width:82px">
+      <button class="sm danger pp-loradel" type="button">删</button>
+    </div>`;
+  const loraHtml = (pl.loras || []).map(loraRow).join('');
+
   const box = document.createElement('div');
   box.className = 'modal';
-  box.innerHTML = `<div class="box" style="width:min(760px,94vw)">
-    <h3>${esc(panelRef)} · 分镜提示词</h3>
-    <div class="h2sub">改完保存会写一个新版本，该格出图需重跑。</div>
+  box.innerHTML = `<div class="box" style="width:min(820px,95vw)">
+    <h3>${esc(panelRef)} · 分格详情 / 编辑</h3>
+    <div class="h2sub">这一格出图会用到的提示词、尺寸、LoRA 都在这。保存会写新版本，该格出图需重跑。</div>
+
+    <div class="row" style="gap:10px;margin-bottom:8px">
+      <div><label class="fld">宽 width</label><input id="pp-w" type="number" value="${pl.width ?? ''}" placeholder="如 1216" style="width:110px"></div>
+      <div><label class="fld">高 height</label><input id="pp-h" type="number" value="${pl.height ?? ''}" placeholder="如 896" style="width:110px"></div>
+      <div><label class="fld">画框</label><input id="pp-frame" value="${esc(pl.frame || '')}" readonly style="width:110px;background:#f2f4f7"></div>
+      <div><label class="fld">种子 seed（空=随机）</label><input id="pp-seed" type="number" value="${pl.seed ?? ''}" style="width:120px"></div>
+    </div>
+
     <div><label class="fld">正向</label><textarea id="pp-pos" style="min-height:120px">${esc(pl.prompt_pos || '')}</textarea></div>
     <div style="margin-top:8px"><label class="fld">负向</label><textarea id="pp-neg" style="min-height:70px">${esc(pl.prompt_neg || '')}</textarea></div>
-    <div class="row" style="margin-top:12px"><div class="spacer"></div>
+
+    <div style="margin-top:10px"><label class="fld">LoRA（出图直接套用）</label>
+      <div id="pp-loras">${loraHtml || '<div class="mut" style="font-size:12px">（无）</div>'}</div>
+      <button class="sm" type="button" id="pp-addlora" style="margin-top:6px">＋ 加一条 LoRA</button></div>
+
+    <div class="row" style="margin-top:14px"><div class="spacer"></div>
       <button class="sm" data-close>取消</button>
       <button class="primary sm" id="pp-savep">保存</button></div></div>`;
   document.body.appendChild(box);
   box.querySelector('[data-close]').addEventListener('click', () => box.remove());
   box.addEventListener('click', (e) => { if (e.target === box) box.remove(); });
+
+  const rebindDel = () => box.querySelectorAll('.pp-loradel').forEach((b) =>
+    b.onclick = () => { b.closest('[data-lorarow]').remove(); });
+  rebindDel();
+  box.querySelector('#pp-addlora').addEventListener('click', () => {
+    const wrap = box.querySelector('#pp-loras');
+    if (wrap.querySelector('.mut')) wrap.innerHTML = '';
+    wrap.insertAdjacentHTML('beforeend', loraRow({}));
+    rebindDel();
+  });
+
   box.querySelector('#pp-savep').addEventListener('click', async () => {
+    const loras = Array.from(box.querySelectorAll('[data-lorarow]')).map((row) => ({
+      name: row.querySelector('.pp-loraname').value.trim(),
+      weight: +row.querySelector('.pp-loraw').value || 0.8,
+    })).filter((l) => l.name);
+    const num = (sel) => { const v = box.querySelector(sel).value.trim(); return v === '' ? null : +v; };
     try {
       await api(`/api/projects/${state.projectId}/panel-prompt/${encodeURIComponent(panelRef)}`, {
-        method: 'PATCH', body: JSON.stringify({ prompt_pos: box.querySelector('#pp-pos').value, prompt_neg: box.querySelector('#pp-neg').value }) });
-      toast('已保存', 'ok'); box.remove(); loadPrompts(); refreshGates();
+        method: 'PATCH', body: JSON.stringify({
+          prompt_pos: box.querySelector('#pp-pos').value,
+          prompt_neg: box.querySelector('#pp-neg').value,
+          width: num('#pp-w'), height: num('#pp-h'), seed: num('#pp-seed'),
+          loras,
+        }) });
+      toast('已保存', 'ok'); box.remove();
+      const t = document.querySelector('.nav button.active')?.dataset.tab;
+      if (t === 'images') loadWorkbench(); else loadPrompts();
+      refreshGates();
     } catch (e) { toast(e.message, 'err'); }
   });
 }
@@ -1566,7 +1613,13 @@ async function renderWorkbenchPages() {
     box.innerHTML = '<div class="empty">还没有分好的页。去「分格」页加一页或让 AI 选版式。</div>';
     return;
   }
-  box.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px">
+  // 取当前出图工作流的默认参数（steps/cfg/sampler…），用于展示“这一格会用什么参数”
+  let gen = {};
+  try { const c = await api('/api/comfy/config'); gen = c.default_params || {}; } catch { /* ignore */ }
+  const genStr = ['steps', 'cfg', 'sampler', 'scheduler', 'denoise']
+    .filter((k) => gen[k] != null).map((k) => `${k} ${gen[k]}`).join(' · ');
+
+  box.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px">
     ${pages.map((p) => `
       <div class="mini-card" style="padding:12px" data-wbpage="${esc(p.page_ref)}">
         <div class="row" style="gap:8px">
@@ -1586,15 +1639,21 @@ async function renderWorkbenchPages() {
           ${p.panels.map((x) => {
             const pr = x.prompt; const fb = x.fallback || {};
             const blk = pr || fb;
-            return `<div class="mini-card" style="padding:8px 10px">
+            const loras = (pr && pr.loras) || (fb.loras) || [];
+            const loraStr = loras.length ? loras.map((l) => `${esc(l.name)}(${l.weight})`).join('、') : '无';
+            const sizeStr = (pr && pr.width) ? `${pr.width}×${pr.height}${pr.frame ? ' · ' + esc(pr.frame) : ''}` : '（未生成，按画框自动算）';
+            return `<div class="mini-card" style="padding:8px 10px" data-wbpanel="${esc(x.panel_ref)}">
               <div class="row" style="gap:6px">
                 <b style="font-size:11.5px">第 ${x.panel_order} 格</b>
                 <span class="mut" style="font-size:11px">${esc(x.shot || '')}</span>
                 ${pr ? pill(pr.status) : '<span class="pill warn">待生成</span>'}
+                <div class="spacer"></div>
+                ${pr ? `<button class="sm" data-wbedit="${esc(x.panel_ref)}">详情/编辑</button>` : `<button class="sm" data-wbprep="${esc(x.panel_ref)}">准备</button>`}
               </div>
-              <div class="mut" style="font-size:11px;margin-top:3px">正向：${esc((blk.prompt_pos || '（空）').slice(0, 110))}</div>
-              ${blk.prompt_neg ? `<div class="mut" style="font-size:11px;margin-top:2px">负向：${esc(blk.prompt_neg.slice(0, 80))}</div>` : ''}
-              ${(pr && (pr.loras || []).length) ? `<div class="mut" style="font-size:11px;margin-top:2px">LoRA ${esc(pr.loras.map((l) => l.name).join('、'))}</div>` : ''}
+              <div class="mut" style="font-size:11px;margin-top:4px"><b>尺寸</b> ${sizeStr}　<b>LoRA</b> ${loraStr}</div>
+              ${genStr ? `<div class="mut" style="font-size:11px;margin-top:2px"><b>参数</b> ${esc(genStr)}${pr && pr.seed != null ? ' · seed ' + pr.seed : ''}</div>` : ''}
+              <div style="font-size:11.5px;margin-top:4px;line-height:1.45"><b class="mut">正向</b> ${esc(blk.prompt_pos || '（空）')}</div>
+              ${blk.prompt_neg ? `<div class="mut" style="font-size:11px;margin-top:3px;line-height:1.4"><b>负向</b> ${esc(blk.prompt_neg)}</div>` : ''}
             </div>`;
           }).join('')}
         </div>
@@ -1604,6 +1663,15 @@ async function renderWorkbenchPages() {
     const el = document.querySelector(`#wb-list .card[data-ref^="${CSS.escape(b.dataset.wbpick.replace('page:', 'panel:'))}"]`);
     if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.style.boxShadow = '0 0 0 3px var(--accent)'; setTimeout(() => { el.style.boxShadow = ''; }, 1400); }
     else toast('这页还没有对应的提示词产物（可在「提示词」页生成，或在下面点「出图」自动准备）');
+  }));
+  box.querySelectorAll('[data-wbedit]').forEach((b) => b.addEventListener('click', () => openPanelPromptEdit(b.dataset.wbedit)));
+  box.querySelectorAll('[data-wbprep]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true; b.textContent = '准备中…';
+    try {
+      await api(`/api/projects/${state.projectId}/panels/${encodeURIComponent(b.dataset.wbprep)}/prepare`, { method: 'POST', body: '{}' });
+      toast('已按预设+角色生成该格提示词', 'ok'); loadWorkbench(); refreshGates();
+    } catch (e) { toast(e.message, 'err'); }
+    finally { b.disabled = false; b.textContent = '准备'; }
   }));
 }
 
