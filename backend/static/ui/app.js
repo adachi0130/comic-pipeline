@@ -721,7 +721,7 @@ async function openPageDetail(pageRef) {
   const tplOpts = tpls.map((x) => `<option value="${x.id}" ${x.id === d.template_id ? 'selected' : ''}>
       ${esc(x.id)}（${x.panels_count}格）</option>`).join('');
   box.innerHTML = `<div class="box" style="width:900px">
-    <h3>${esc(pageRef)} · 分格详情 <span class="mut" style="font-size:13px;font-weight:400">v${d.version}</span></h3>
+    <h3>${pageLabel(pageRef)} · 分格详情 <span class="mut" style="font-size:13px;font-weight:400">v${d.version}</span></h3>
     <div class="row" style="margin-bottom:10px">
       <span class="pill tag">当前模板</span>
       <b>${esc(d.template_id)}</b>
@@ -740,7 +740,7 @@ async function openPageDetail(pageRef) {
     </div></div>`;
   box.querySelector('#pd-panels').innerHTML = (d.panels || []).map((p, i) => `
     <div class="card" style="padding:12px;margin-bottom:10px" data-i="${i}">
-      <div class="row" style="margin-bottom:6px"><b>第 ${p.panel_order} 格</b>
+      <div class="row" style="margin-bottom:6px"><b>第${cnNum(p.panel_order)}格</b>
         <span class="pill tag">${esc(p.role || '')} / ${esc(p.shot || '')}</span>
         ${(p.technique || []).length ? `<span class="pill tag">技法 ${esc((p.technique || []).join('、'))}</span>` : ''}</div>
       <div class="grid2">
@@ -879,7 +879,7 @@ async function loadPages() {
             ${p.template_id ? `<img src="/api/templates/${encodeURIComponent(p.template_id)}/svg" alt="">` : ''}
           </div>
           <div>
-            <div class="row" style="gap:6px"><b>${esc(p.page_ref)}</b> ${pill(p.status)}
+            <div class="row" style="gap:6px"><b>${pageLabel(p.page_ref)}</b> ${pill(p.status)}
               <span class="pill tag">${esc(p.template_id || '?')} · ${p.panels.length} 格</span>
               <span class="pill tag">${p.source === 'ai' ? 'AI 选' : '手动'}</span>
               <span class="mut" style="font-size:12px">v${p.version}</span></div>
@@ -896,7 +896,7 @@ async function loadPages() {
         </div>
         <div class="pg-panels" style="margin-top:10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px">
           ${p.panels.map((x) => `<div class="mini-card" style="padding:8px 10px">
-            <div class="mut" style="font-size:11.5px">第 ${x.panel_order} 格 · ${esc(x.shot || '')}</div>
+            <div class="mut" style="font-size:11.5px">第${cnNum(x.panel_order)}格 · ${esc(x.shot || '')}</div>
             <div style="font-size:12.5px;margin-top:3px">${esc((x.action || '（空）').slice(0, 40))}</div>
             ${x.dialogue ? `<div class="mut" style="font-size:11.5px;margin-top:3px">「${esc(x.dialogue.slice(0, 26))}」</div>` : ''}
             ${(x.technique || []).length ? `<div class="mut" style="font-size:11px;margin-top:3px">技法 ${esc((x.technique || []).join('、'))}</div>` : ''}
@@ -1231,6 +1231,11 @@ function cnNum(n) {
   if (n < 100) return _CN[Math.floor(n / 10)] + '十' + (n % 10 ? _CN[n % 10] : '');
   return String(n);
 }
+// page:1 → 第一页；panel:1.1 → 第一格（只用于显示，内部 ref 不变）
+function pageLabel(ref) { const m = String(ref).match(/page:(\d+)/); return m ? `第${cnNum(+m[1])}页` : String(ref); }
+function panelLabel(ref) { const m = String(ref).match(/panel:\d+\.(\d+)/); return m ? `第${cnNum(+m[1])}格` : String(ref); }
+// 任意 ref → 友好标签
+function refLabel(ref) { const s = String(ref); return s.startsWith('panel:') ? panelLabel(s) : s.startsWith('page:') ? pageLabel(s) : s; }
 
 // LoRA 文本 ⇄ 数组：文本形如 "画风/A.safetensors:0.8, 效果/B.safetensors"
 function parseLoraStr(s) {
@@ -1324,7 +1329,7 @@ async function loadPrompts() {
             ${pg.template_id ? `<img src="/api/templates/${encodeURIComponent(pg.template_id)}/svg" alt="">` : ''}
           </div>
           <div>
-            <div class="row" style="gap:6px"><b>${esc(pg.page_ref)}</b> ${pill(pg.status)}
+            <div class="row" style="gap:6px"><b>${pageLabel(pg.page_ref)}</b> ${pill(pg.status)}
               <span class="pill tag">${pg.panels.length} 格</span>
               <span class="pill tag">${pg.panels.filter((p) => p.prompt).length}/${pg.panels.length} 已生成</span></div>
             <div class="mut" style="font-size:11.5px">${esc(pg.template ? (pg.template.layout_desc || pg.template_id) : (pg.template_id || ''))}</div>
@@ -1337,7 +1342,7 @@ async function loadPrompts() {
           ${pg.panels.map((p) => `
             <div class="mini-card" style="padding:9px 11px">
               <div class="row" style="gap:6px">
-                <b style="font-size:12px">第 ${p.panel_order} 格</b>
+                <b style="font-size:12px">第${cnNum(p.panel_order)}格</b>
                 <span class="mut" style="font-size:11px">${esc(p.shot || '')}</span>
                 ${p.prompt ? pill(p.prompt.status) : '<span class="pill">未生成</span>'}
                 <div class="spacer"></div>
@@ -1413,7 +1418,7 @@ async function openPanelPromptPreview(panelRefs, title) {
     const pl = a.payload || {};
     const loras = (pl.loras || []).map((l) => `${esc(l.name)}（${l.weight}）`).join('<br>') || '<span class="mut">无</span>';
     return `<div class="mini-card" style="padding:12px 14px;margin-top:10px">
-      <div class="row" style="gap:6px"><b>${esc(a.ref)}</b> ${pill(a.status)}
+      <div class="row" style="gap:6px"><b>${panelLabel(a.ref)}</b> ${pill(a.status)}
         <span class="pill tag">${pl.width || '?'}×${pl.height || '?'}${pl.frame ? ' · ' + esc(pl.frame) : ''}</span>
         <div class="spacer"></div>
         <button class="sm" data-ppv-edit="${esc(a.ref)}">改这格</button></div>
@@ -1451,7 +1456,7 @@ async function openPanelPromptEdit(panelRef) {
   const box = document.createElement('div');
   box.className = 'modal';
   box.innerHTML = `<div class="box" style="width:min(820px,95vw)">
-    <h3>${esc(panelRef)} · 分格详情 / 编辑</h3>
+    <h3>${panelLabel(panelRef)} · 分格详情 / 编辑</h3>
     <div class="h2sub">这一格出图会用到的提示词、尺寸、LoRA 都在这。保存会写新版本，该格出图需重跑。</div>
 
     <div class="row" style="gap:10px;margin-bottom:8px">
@@ -1659,7 +1664,7 @@ async function openStageArtifacts(stage) {
   box.innerHTML = `<div class="box" style="width:820px">
     <h3>${stage} · ${esc(blk.label)} <span class="mut" style="font-size:13px;font-weight:400">（${blk.items.length} 项）</span></h3>
     ${blk.items.length ? `<table><thead><tr><th>ref</th><th>版本</th><th>状态</th><th>内容</th><th></th></tr></thead><tbody>
-      ${blk.items.map((it) => `<tr><td>${esc(it.ref)}</td><td>v${it.version}</td><td>${pill(it.status)}</td>
+      ${blk.items.map((it) => `<tr><td>${refLabel(it.ref)}</td><td>v${it.version}</td><td>${pill(it.status)}</td>
         <td class="mut" style="max-width:320px">${esc(it.summary)}</td>
         <td><button class="sm" data-open="${it.id}">JSON</button>
           ${stage === 'S2' ? `<button class="sm primary" data-page="${esc(it.ref)}">详情/编辑</button>` : ''}
@@ -1792,7 +1797,7 @@ async function loadWorkbench() {
       const done = g.panels.filter((x) => x.prompt).length;
       return `<div class="card" style="padding:12px 16px;margin-bottom:10px">
         <div class="row" style="cursor:pointer" data-wb-toggle="${esc(g.page_ref)}">
-          <b>${esc(g.page_ref)}</b>
+          <b>${pageLabel(g.page_ref)}</b>
           <span class="pill tag">${g.panels.length} 格</span>
           <span class="pill tag">${done}/${g.panels.length} 已生成</span>
           <span class="mut" style="font-size:12px">${esc(g.template ? (g.template.layout_desc || '') : '')}</span>
@@ -1804,8 +1809,8 @@ async function loadWorkbench() {
             const pr = p.prompt;
             if (!pr) {
               return `<div class="mini-card" data-ref="${esc(p.panel_ref)}" style="padding:10px;margin-top:8px">
-                <div class="row"><b>${esc(p.panel_ref)}</b> <span class="pill warn">未生成提示词</span>
-                  <span class="mut" style="font-size:12px">第 ${p.panel_order} 格 · ${esc(p.shot || '')}</span>
+                <div class="row"><b>${panelLabel(p.panel_ref)}</b> <span class="pill warn">未生成提示词</span>
+                  <span class="mut" style="font-size:12px">第${cnNum(p.panel_order)}格 · ${esc(p.shot || '')}</span>
                   <div class="spacer"></div>
                   <label class="fld" style="margin:0">张数</label>
                   <input class="wb-count" type="number" value="1" min="1" max="8" style="width:60px">
@@ -1817,7 +1822,7 @@ async function loadWorkbench() {
             const pp = pr.params || {};
             const pStr = ['steps', 'cfg', 'sampler', 'scheduler', 'denoise'].filter((k) => pp[k] != null).map((k) => `${k} ${pp[k]}`).join(' · ');
             return `<div class="mini-card" data-ref="${esc(p.panel_ref)}" style="padding:10px;margin-top:8px">
-              <div class="row"><b>${esc(p.panel_ref)}</b> ${pill(pr.status)}
+              <div class="row"><b>${panelLabel(p.panel_ref)}</b> ${pill(pr.status)}
                 <span class="mut" style="font-size:12px">${esc(p.shot || '')}</span>
                 <div class="spacer"></div>
                 <label class="fld" style="margin:0">张数</label>
@@ -1831,6 +1836,10 @@ async function loadWorkbench() {
                 <span class="pill ${pr.prompt_neg ? 'ok' : 'tag'}">负 ${pr.prompt_neg ? esc(pr.prompt_neg.slice(0, 18)) + (pr.prompt_neg.length > 18 ? '…' : '') : '（空）'}</span>
                 <div class="spacer"></div>
                 <span class="fold-ic">▸</span>
+              </div>
+              <div class="pn-view" style="margin-top:6px;background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.55;max-height:260px;overflow:auto">
+                <div><b class="mut">正向</b> <span class="pn-pos-full">${esc(pr.prompt_pos || '（空）')}</span></div>
+                <div style="margin-top:5px"><b class="mut">负向</b> <span class="pn-neg-full">${esc(pr.prompt_neg || '（空）')}</span></div>
               </div>
               <div class="pn-body hidden" style="margin-top:8px">
                 <div class="grid2">
@@ -1899,7 +1908,7 @@ async function renderWorkbenchPages() {
             ${p.template_id ? `<img src="/api/templates/${encodeURIComponent(p.template_id)}/svg" alt="">` : ''}
           </div>
           <div>
-            <div class="row" style="gap:6px"><b>${esc(p.page_ref)}</b>
+            <div class="row" style="gap:6px"><b>${pageLabel(p.page_ref)}</b>
               <span class="pill tag">${p.panels.length} 格</span>
               <span class="pill tag">${p.panels.filter((x) => x.prompt).length}/${p.panels.length} 已生成</span></div>
             <div class="mut" style="font-size:11.5px">${esc(p.template ? (p.template.layout_desc || p.template_id) : (p.template_id || ''))}</div>
@@ -1914,7 +1923,7 @@ async function renderWorkbenchPages() {
             const sizeStr = (pr && pr.width) ? `${pr.width}×${pr.height}` : '';
             return `<div class="mini-card" style="padding:8px 10px" data-wbpanel="${esc(x.panel_ref)}">
               <div class="row" style="gap:5px">
-                <b style="font-size:11.5px">第 ${x.panel_order} 格</b>
+                <b style="font-size:11.5px">${panelLabel(x.panel_ref)}</b>
                 <span class="mut" style="font-size:11px">${esc(x.shot || '')}</span>
               </div>
               <div style="font-size:11.5px;margin-top:3px">${esc((x.action || x.dialogue || '（空）').slice(0, 30))}</div>
@@ -1973,7 +1982,7 @@ async function openPagePanelsDetail(pageRef, page) {
   const box = document.createElement('div');
   box.className = 'modal';
   box.innerHTML = `<div class="box" style="width:min(1000px,95vw)">
-    <h3>${esc(pageRef)} · 这一页所有镜头
+    <h3>${pageLabel(pageRef)} · 这一页所有镜头
       <span class="mut" style="font-size:12px;font-weight:400">${esc(page && page.template ? (page.template.layout_desc || '') : '')}</span></h3>
     <div class="h2sub">只读审查；要改点每格的「改这格」。</div>
     <div id="wpd-body"><div class="empty">加载中…</div></div>
@@ -2003,7 +2012,7 @@ async function openPagePanelsDetail(pageRef, page) {
     const pStr = ['steps', 'cfg', 'sampler', 'scheduler', 'denoise'].filter((k) => pp[k] != null).map((k) => `${k} ${pp[k]}`).join(' · ');
     return `<div class="mini-card" style="padding:12px 14px;margin-top:10px">
       <div class="row" style="gap:6px">
-        <b>第 ${pn.panel_order} 格</b>
+        <b>第${cnNum(pn.panel_order)}格</b>
         <span class="mut" style="font-size:12px">${esc(pn.shot || '')}</span>
         ${pr ? pill(pr.status) : '<span class="pill warn">未生成提示词</span>'}
         <span class="pill tag">${size}</span>
@@ -2094,6 +2103,9 @@ function bindWorkbench(panels) {
         if (pills[0]) { pills[0].className = 'pill ' + (pos ? 'ok' : 'tag'); pills[0].textContent = '正 ' + (pos ? pos.slice(0, 18) + (pos.length > 18 ? '…' : '') : '（空）'); }
         if (pills[1]) { pills[1].className = 'pill ' + (neg ? 'ok' : 'tag'); pills[1].textContent = '负 ' + (neg ? neg.slice(0, 18) + (neg.length > 18 ? '…' : '') : '（空）'); }
       }
+      // 同步完整展示框
+      const vp = card.querySelector('.pn-pos-full'); if (vp) vp.textContent = pos || '（空）';
+      const vn = card.querySelector('.pn-neg-full'); if (vn) vn.textContent = neg || '（空）';
       const msg = card.querySelector('[data-wb-pn-msg]');
       if (msg) { msg.textContent = '已自动保存'; setTimeout(() => { if (msg.textContent === '已自动保存') msg.textContent = ''; }, 1500); }
       refreshGates();
@@ -2225,7 +2237,7 @@ async function loadArtifacts() {
     for (const r of rows) await fillCandidates(r.id);
   } else {
     box.innerHTML = `<table><thead><tr><th>ref</th><th>版本</th><th>状态</th><th>操作</th></tr></thead><tbody>
-      ${rows.map((r) => `<tr><td>${esc(r.ref)}</td><td>v${r.version}</td><td>${pill(r.status)}</td>
+      ${rows.map((r) => `<tr><td>${refLabel(r.ref)}</td><td>v${r.version}</td><td>${pill(r.status)}</td>
         <td><button class="sm" data-detail="${r.id}">详情</button>
         <button class="sm" data-approve="${r.id}">通过</button>
         <button class="sm danger" data-reject="${r.id}">驳回</button></td></tr>`).join('')}</tbody></table>
