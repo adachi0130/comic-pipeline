@@ -227,12 +227,14 @@ def upload_candidate(project_id: int, panel_ref: str, body: dict, session: Sessi
     art = A.current(session, project_id, ArtifactKind.IMAGE.value, panel_ref)
 
     safe = panel_ref.replace(":", "_").replace("/", "_")
-    out_dir = get_settings().data_dir / "projects" / str(project_id) / "candidates" / safe
+    import time as _time
+
+    out_dir = get_settings().data_dir / "projects" / str(project_id) / "candidates" / safe / "uploads"
     out_dir.mkdir(parents=True, exist_ok=True)
     payload = dict(art.payload) if art is not None else {"candidates": [], "selected_index": None}
     cands = list(payload.get("candidates") or [])
     idx = len(cands)
-    fname = f"upload_{idx + 1:02d}.{ext}"
+    fname = f"upload_{_time.strftime('%Y%m%d_%H%M%S')}_{idx + 1:02d}.{ext}"
     fpath = out_dir / fname
     fpath.write_bytes(data)
     cands.append({"index": idx, "path": str(fpath), "seed": None, "params": {}, "uploaded": True})

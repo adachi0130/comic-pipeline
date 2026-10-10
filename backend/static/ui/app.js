@@ -2738,15 +2738,32 @@ async function renderComposeFinished() {
   }));
 }
 
+// 画框按漫画阅读顺序（右→左、上→下）排序，用于分页合成预览
+function readingOrderGeom(geomPanels) {
+  const arr = (geomPanels || []).map((g) => ({ ...g }));
+  arr.sort((a, b) => (a.y_pct ?? 0) - (b.y_pct ?? 0) || (b.x_pct ?? 0) - (a.x_pct ?? 0));
+  const rows = [];
+  for (const g of arr) {
+    const row = rows.find((r) => Math.abs(r.y - (g.y_pct ?? 0)) < Math.max(6, (g.height_pct || 10) * 0.6));
+    if (row) row.items.push(g);
+    else rows.push({ y: g.y_pct ?? 0, items: [g] });
+  }
+  const out = [];
+  for (const r of rows) { r.items.sort((a, b) => (b.x_pct ?? 0) - (a.x_pct ?? 0)); out.push(...r.items); }
+  return out;
+}
+
 function showComposePage(pageRef) {
   const p = (state._composePages || []).find((x) => x.page_ref === pageRef);
   if (!p) return;
   document.querySelectorAll('[data-cpspage]').forEach((el) => el.classList.toggle('sel', el.dataset.cpspage === pageRef));
   const [cw, ch] = p.canvas || [672, 950];
-  const overlaid = p.panels.map((pn) => {
-    const g = (p.geometry || []).find((x) => String(x.index) === String(pn.panel_order)) || {};
-    const left = (g.x_pct ?? 0) / 100 * 100, top = (g.y_pct ?? 0) / 100 * 100;
-    const w = (g.width_pct ?? 100) / 100 * 100, h = (g.height_pct ?? 100) / 100 * 100;
+  // 漫画为右→左阅读：把画框按阅读顺序排好，第 k 个画框放该页第 k 格
+  const geomOrdered = readingOrderGeom(p.geometry || []);
+  const overlaid = p.panels.map((pn, i) => {
+    const g = geomOrdered[i] || {};
+    const left = (g.x_pct ?? 0), top = (g.y_pct ?? 0);
+    const w = (g.width_pct ?? 100), h = (g.height_pct ?? 100);
     return `<div style="position:absolute;left:${left}%;top:${top}%;width:${w}%;height:${h}%;border:2px solid ${pn.has_image ? '#3ecf8e' : '#ffb454'};border-radius:4px;overflow:hidden;background:${pn.has_image ? '#000' : 'repeating-linear-gradient(45deg,#fff,#fff 8px,#f3f4f6 8px,#f3f4f6 16px)'}">
       ${pn.has_image ? `<img src="${pn.image_url}" style="width:100%;height:100%;object-fit:cover;display:block">` : ''}
       <span style="position:absolute;left:3px;top:3px;background:rgba(0,0,0,.6);color:#fff;font-size:10px;padding:1px 5px;border-radius:8px">${cnNum(pn.panel_order)}</span>

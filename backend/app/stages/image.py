@@ -119,7 +119,11 @@ def handle(session: Session, job: Job) -> dict:
     images = generate(req, should_cancel=lambda: jobq.is_cancelled(job.id))
 
     safe_ref = panel_ref.replace(":", "_").replace("/", "_")
-    out_dir = get_settings().data_dir / "projects" / str(project_id) / "candidates" / safe_ref
+    # 每次出图放进独立子目录（带时间戳），**绝不覆盖**之前的候选文件——避免重跑把旧图冲掉
+    import time as _time
+
+    stamp = _time.strftime("%Y%m%d_%H%M%S")
+    out_dir = get_settings().data_dir / "projects" / str(project_id) / "candidates" / safe_ref / stamp
     paths = save_images(images, out_dir, stem="cand")
     candidates = [{"index": i, "path": str(p), "seed": req.seed, "params": params} for i, p in enumerate(paths)]
 
