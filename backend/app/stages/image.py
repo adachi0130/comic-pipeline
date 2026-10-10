@@ -66,22 +66,28 @@ def handle(session: Session, job: Job) -> dict:
     if project is None:
         raise ValueError(f"项目不存在：{project_id}")
 
-    # 提示词/LoRA 可从 S3 产物回退获取
+    # 提示词/LoRA/尺寸可从 S3 产物回退获取（S3 已按画框算好宽高、并合并预设+角色 LoRA）
     prompt_pos = payload.get("prompt_pos")
     prompt_neg = payload.get("prompt_neg")
+    s3_payload: dict = {}
     if prompt_pos is None or prompt_neg is None or payload.get("loras") is None:
         par = current(session, project_id, ArtifactKind.PANEL_PROMPT.value, panel_ref)
         if par is not None:
-            p = par.payload or {}
-            prompt_pos = prompt_pos if prompt_pos is not None else p.get("prompt_pos", "")
-            prompt_neg = prompt_neg if prompt_neg is not None else p.get("prompt_neg", "")
-            if payload.get("loras") is None and p.get("loras") is not None:
-                payload = {**payload, "loras": p["loras"]}
+            s3_payload = par.payload or {}
+            prompt_pos = prompt_pos if prompt_pos is not None else s3_payload.get("prompt_pos", "")
+            prompt_neg = prompt_neg if prompt_neg is not None else s3_payload.get("prompt_neg", "")
+            if payload.get("loras") is None and s3_payload.get("loras") is not None:
+                payload = {**payload, "loras": s3_payload["loras"]}
     prompt_pos = prompt_pos or ""
     prompt_neg = prompt_neg or ""
 
     count = int(payload.get("count") or project.candidates_per_panel or 4)
     params = dict(payload.get("params") or project.gen_params or {})
+    # 尺寸优先用该格 S3 按画框算好的宽高（出图与排版一致）
+    if not params.get("width") and (payload.get("width") or s3_payload.get("width")):
+        params["width"] = payload.get("width") or s3_payload.get("width")
+    if not params.get("height") and (payload.get("height") or s3_payload.get("height")):
+        params["height"] = payload.get("height") or s3_payload.get("height")
     loras = payload.get("loras")
     if loras is None:
         loras = resolve_loras(session, project_id, panel_ref, payload.get("character_names") or [])

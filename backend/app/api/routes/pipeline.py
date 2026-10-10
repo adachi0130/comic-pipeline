@@ -309,23 +309,28 @@ def prepare_panel(project_id: int, panel_ref: str, session: Session = Depends(ge
                 break
 
     preset_pos, preset_neg = prompt_stage._default_presets(session, project_id)
-    loras: list[dict] = []
-    if panel is not None:
-        from ...models import Character
-
-        names = panel.get("characters") or []
-        if names:
-            for c in session.scalars(
-                select(Character).where(Character.project_id == project_id, Character.name.in_(names))
-            ).all():
-                if c.use_lora and c.lora_name:
-                    loras.append({"name": c.lora_name, "weight": c.lora_weight})
+    chars = (panel or {}).get("characters") or []
+    loras = prompt_stage._merge_loras(
+        prompt_stage._preset_loras(session, project_id),
+        prompt_stage._character_loras(session, project_id, chars),
+    )
+    # 按该格画框算宽高
+    geom = ((page.payload or {}).get("geometry") if page is not None else None) or {}
+    gpan = None
+    for gp in geom.get("panels") or []:
+        if str(gp.get("index")) == order_part:
+            gpan = gp
+            break
+    size = prompt_stage._size_from_geometry(gpan or {}, geom.get("canvas"))
 
     art = A.create(
         session, project_id=project_id, kind=ArtifactKind.PANEL_PROMPT.value, ref=panel_ref,
         payload={
             "prompt_pos": preset_pos, "prompt_neg": preset_neg, "loras": loras,
-            "seed": None, "width": None, "height": None, "prepared": True,
+            "seed": None,
+            "width": size[0] if size else None, "height": size[1] if size else None,
+            "frame": (gpan or {}).get("shape") or "",
+            "prepared": True,
         },
         inputs=[page] if page is not None else [],
         status=ArtifactStatus.REVIEW.value,

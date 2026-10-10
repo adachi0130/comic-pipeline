@@ -69,7 +69,7 @@ def upsert_preset(body: dict, session: Session = Depends(get_session)) -> dict:
     if p is None:
         p = PromptPreset(name=body.get("name", "预设"))
         session.add(p)
-    for f in ("name", "text", "kind", "scope", "project_id", "is_default"):
+    for f in ("name", "text", "kind", "scope", "project_id", "is_default", "loras"):
         if f in body:
             setattr(p, f, body[f])
     if p.kind not in ("positive", "negative"):
@@ -165,6 +165,7 @@ def _preset(p: PromptPreset) -> dict:
         "scope": p.scope,
         "project_id": p.project_id,
         "is_default": p.is_default,
+        "loras": p.loras or [],
     }
 
 
