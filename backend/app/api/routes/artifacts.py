@@ -291,6 +291,8 @@ def _brief(a: Artifact) -> dict:
         "version": a.version,
         "status": a.status,
         "is_current": a.is_current,
+        "has_file": bool(a.path),
+        "has_candidates": bool((a.payload or {}).get("candidates")),
         "created_at": a.created_at.isoformat() if a.created_at else None,
     }
 
