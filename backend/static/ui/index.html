@@ -111,13 +111,19 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
 .seg .txt.clip{display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}
 /* 候选图 */
 .candgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
-.cand{border:2px solid var(--line2);border-radius:10px;overflow:hidden;background:#fff;cursor:pointer;transition:.15s}
+.cand{position:relative;border:2px solid var(--line2);border-radius:10px;overflow:hidden;background:#fff;cursor:pointer;transition:.15s}
 .cand:hover{border-color:#b9c2cf}
 .cand.sel{border-color:var(--ok);box-shadow:0 0 0 3px var(--okbg)}
 .cand img{width:100%;display:block;aspect-ratio:3/4;object-fit:cover;background:#f1f3f6}
-.cand .lbl{font-size:11px;padding:5px 8px;color:var(--muted);display:flex;justify-content:space-between}
-.cand-ops{display:flex;gap:4px;padding:0 6px 6px;flex-wrap:nowrap}
-.cand-ops button{font-size:11px;padding:3px 7px;white-space:nowrap;flex:1}
+.cand .lbl{position:absolute;left:0;right:0;bottom:0;font-size:10px;padding:12px 7px 3px;color:#fff;
+  display:flex;justify-content:space-between;background:linear-gradient(transparent,rgba(0,0,0,.55));pointer-events:none}
+.cand-ops{position:absolute;top:4px;right:4px;display:flex;gap:3px;opacity:.5;transition:opacity .15s}
+.cand:hover .cand-ops{opacity:1}
+.cand-ops button{font-size:10px;line-height:1.5;padding:1px 6px;border:none;border-radius:5px;cursor:pointer;
+  background:rgba(20,25,35,.5);color:#fff;backdrop-filter:blur(2px)}
+.cand-ops button:hover{background:rgba(20,25,35,.85)}
+.cand-ops button.danger{background:rgba(200,55,55,.55)}
+.cand-ops button.danger:hover{background:rgba(200,55,55,.9)}
 .hidden{display:none !important}
 .thumb{width:120px;border:1px solid var(--line2);border-radius:8px;cursor:pointer;display:block;background:#fff}
 .modal{position:fixed;inset:0;background:rgba(16,24,40,.55);display:flex;align-items:center;justify-content:center;z-index:60;padding:24px}
@@ -546,6 +552,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=60"></script>
+<script type="module" src="/ui/app.js?v=61"></script>
 </body>
 </html>
