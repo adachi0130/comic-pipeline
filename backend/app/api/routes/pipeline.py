@@ -370,6 +370,53 @@ def compose_board(project_id: int, session: Session = Depends(get_session)) -> d
     return {"pages": pages}
 
 
+@router.post("/projects/{project_id}/med-doc/{page_ref}")
+def save_med_doc(project_id: int, page_ref: str, body: dict, session: Session = Depends(get_session)) -> dict:
+    """保存 MED 画布存档（编辑中的状态），可日后再打开继续编辑。
+
+    body: {"doc": <canvas JSON 字符串或对象>, "png": "data:image/png;base64,..."（可选预览）}
+    """
+    if session.get(Project, project_id) is None:
+        raise HTTPException(404, "项目不存在")
+    import base64
+    import json
+    from pathlib import Path
+
+    from ...config import get_settings
+
+    doc = body.get("doc")
+    if doc is None:
+        raise HTTPException(400, "缺少 doc")
+    doc_text = doc if isinstance(doc, str) else json.dumps(doc, ensure_ascii=False)
+    png_path = ""
+    png_data = body.get("png") or ""
+    if isinstance(png_data, str) and png_data.startswith("data:"):
+        try:
+            b64 = png_data.split(",", 1)[1]
+            out_dir = get_settings().data_dir / "projects" / str(project_id) / "med_pages"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            png_path = str(out_dir / f"{page_ref.replace(':', '_')}.png")
+            Path(png_path).write_bytes(base64.b64decode(b64))
+        except Exception:  # noqa: BLE001 - 预览存不了不影响主流程
+            png_path = ""
+    art = A.create(
+        session, project_id=project_id, kind=ArtifactKind.MED_DOC.value, ref=page_ref,
+        payload={"doc": doc_text}, path=png_path, status=ArtifactStatus.REVIEW.value,
+    )
+    session.commit()
+    return {"ok": True, "artifact_id": art.id, "version": art.version}
+
+
+@router.get("/projects/{project_id}/med-doc/{page_ref}")
+def get_med_doc(project_id: int, page_ref: str, session: Session = Depends(get_session)) -> dict:
+    """取 MED 画布存档（继续编辑用）。"""
+    art = A.current(session, project_id, ArtifactKind.MED_DOC.value, page_ref)
+    if art is None:
+        raise HTTPException(404, "还没有该页的画布存档")
+    return {"doc": (art.payload or {}).get("doc", ""), "version": art.version,
+            "png_url": f"/api/artifacts/{art.id}/file" if art.path else ""}
+
+
 @router.get("/projects/{project_id}/prompt-board")
 def prompt_board(project_id: int, session: Session = Depends(get_session)) -> dict:
     """S3「提示词」独立页面数据：按页列出每一格的分镜提示词（含未生成的占位）。"""

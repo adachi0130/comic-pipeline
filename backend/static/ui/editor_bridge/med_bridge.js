@@ -201,6 +201,22 @@
       return ImageUtil.canvas2DataURL(m, "png");
     },
 
+    /** 导出当前画布 JSON（含已贴图/已加对话气泡等编辑状态），可日后 loadDoc 继续编辑。 */
+    exportDoc() {
+      // eslint-disable-next-line no-undef
+      return JSON.stringify(canvas.toJSON(["text2img_prompt", "name", "relatedPoly", "isPanel"]));
+    },
+
+    /** 载入画布 JSON，继续编辑。 */
+    async loadDoc(docJson) {
+      const obj = typeof docJson === "string" ? JSON.parse(docJson) : docJson;
+      await new Promise((resolve) => {
+        // eslint-disable-next-line no-undef
+        canvas.loadFromJSON(obj, () => { canvas.renderAll(); resolve(); });
+      });
+      return { ok: true, objects: (canvas.getObjects && canvas.getObjects().length) || 0 };
+    },
+
     /** 快照：每格的现有提示词与是否有图，便于后端核对。 */
     snapshot() {
       return panelList().map((p, i) => ({

@@ -2651,9 +2651,51 @@ async function loadCompose() {
     }).join('');
     menu.querySelectorAll('[data-cpspage]').forEach((el) =>
       el.addEventListener('click', () => showComposePage(el.dataset.cpspage)));
+    // 已完成 / 编辑中的页
+    renderComposeFinished();
     // 默认选中第一页
     if (state._composePages[0]) showComposePage(state._composePages[0].page_ref);
   } catch (e) { menu.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+/** 分页合成下方：已完成整页 PNG + 可继续编辑的画布存档。 */
+async function renderComposeFinished() {
+  const box = $('#cps-finished');
+  if (!box) return;
+  let pages = [], pageImgs = [], docs = [];
+  try {
+    pages = state._composePages || (await api(`/api/projects/${state.projectId}/compose-board`)).pages || [];
+    pageImgs = await api(`/api/projects/${state.projectId}/artifacts?kind=page_image`);
+    docs = await api(`/api/projects/${state.projectId}/artifacts?kind=med_doc`);
+  } catch { /* ignore */ }
+  const docByRef = {}; docs.forEach((d) => { docByRef[d.ref] = d; });
+  const imgByRef = {}; pageImgs.forEach((d) => { imgByRef[d.ref] = d; });
+  const allRefs = Array.from(new Set([...pages.map((p) => p.page_ref), ...pageImgs.map((d) => d.ref), ...docs.map((d) => d.ref)]));
+  if (!allRefs.length) { box.innerHTML = '<div class="empty">还没有合成结果</div>'; return; }
+  box.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px">
+    ${allRefs.map((ref) => {
+      const png = imgByRef[ref];
+      const doc = docByRef[ref];
+      return `<div class="mini-card" style="padding:10px">
+        <div class="row" style="gap:6px"><b>${pageLabel(ref)}</b>
+          ${png ? '<span class="pill ok"><i class="dotm"></i>已合成</span>' : ''}
+          ${doc ? '<span class="pill warn"><i class="dotm"></i>编辑中</span>' : ''}</div>
+        <div style="margin-top:8px;border:1px solid var(--line2);border-radius:8px;overflow:hidden;background:#f8fafc">
+          ${png ? `<img src="/api/artifacts/${png.id}/file" style="width:100%;display:block">`
+               : `<div class="empty" style="font-size:12px;padding:24px 0">还没有整页 PNG</div>`}
+        </div>
+        <div class="row" style="margin-top:8px;gap:6px">
+          <button class="sm primary" data-cps-edit="${esc(ref)}">${doc ? '继续编辑' : '去编辑'}</button>
+          ${png ? `<a class="sm" href="/api/artifacts/${png.id}/file" target="_blank">看 PNG</a>` : ''}
+          ${doc && doc.path ? `<a class="sm" href="/api/artifacts/${doc.id}/file" target="_blank">看编辑图</a>` : ''}
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
+  box.querySelectorAll('[data-cps-edit]').forEach((b) => b.addEventListener('click', () => {
+    const ref = b.dataset.cpsEdit;
+    window.open(`/ui/editor_bridge/index.html?page=${encodeURIComponent(ref)}&p=${state.projectId}&edit=1`, '_blank');
+  }));
 }
 
 function showComposePage(pageRef) {

@@ -56,6 +56,7 @@ class ArtifactKind(str, enum.Enum):
     PANEL_PROMPT = "panel_prompt"  # S4 每格提示词
     IMAGE = "image"            # S5 每格候选图
     PAGE_IMAGE = "page_image"  # S6 合成页图
+    MED_DOC = "med_doc"        # MED 画布存档（可继续编辑的编辑中状态）
     BOOK = "book"              # S7 成册导出
 
 
