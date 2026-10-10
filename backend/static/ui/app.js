@@ -1236,6 +1236,11 @@ function pageLabel(ref) { const m = String(ref).match(/page:(\d+)/); return m ? 
 function panelLabel(ref) { const m = String(ref).match(/panel:\d+\.(\d+)/); return m ? `第${cnNum(+m[1])}格` : String(ref); }
 // 任意 ref → 友好标签
 function refLabel(ref) { const s = String(ref); return s.startsWith('panel:') ? panelLabel(s) : s.startsWith('page:') ? pageLabel(s) : s; }
+// panel:1.1 → 第一页第一格
+function panelFullLabel(ref) {
+  const m = String(ref).match(/panel:(\d+)\.(\d+)/);
+  return m ? `第${cnNum(+m[1])}页第${cnNum(+m[2])}格` : String(ref);
+}
 
 // LoRA 文本 ⇄ 数组：文本形如 "画风/A.safetensors:0.8, 效果/B.safetensors"
 function parseLoraStr(s) {
@@ -1809,7 +1814,7 @@ async function loadWorkbench() {
             const pr = p.prompt;
             if (!pr) {
               return `<div class="mini-card" data-ref="${esc(p.panel_ref)}" style="padding:10px;margin-top:8px">
-                <div class="row"><b>${panelLabel(p.panel_ref)}</b> <span class="pill warn">未生成提示词</span>
+                <div class="row"><b>${panelFullLabel(p.panel_ref)}</b> <span class="pill warn">未生成提示词</span>
                   <span class="mut" style="font-size:12px">第${cnNum(p.panel_order)}格 · ${esc(p.shot || '')}</span>
                   <div class="spacer"></div>
                   <label class="fld" style="margin:0">张数</label>
@@ -1822,7 +1827,7 @@ async function loadWorkbench() {
             const pp = pr.params || {};
             const pStr = ['steps', 'cfg', 'sampler', 'scheduler', 'denoise'].filter((k) => pp[k] != null).map((k) => `${k} ${pp[k]}`).join(' · ');
             return `<div class="mini-card" data-ref="${esc(p.panel_ref)}" style="padding:10px;margin-top:8px">
-              <div class="row"><b>${panelLabel(p.panel_ref)}</b> ${pill(pr.status)}
+              <div class="row"><b>${panelFullLabel(p.panel_ref)}</b> ${pill(pr.status)}
                 <span class="mut" style="font-size:12px">${esc(p.shot || '')}</span>
                 <div class="spacer"></div>
                 <label class="fld" style="margin:0">张数</label>
@@ -1831,18 +1836,22 @@ async function loadWorkbench() {
                 <button class="primary sm wb-gen">出图</button></div>
               <div class="mut" style="font-size:11.5px;margin-top:2px">出图参数：${pr.width || '?'}×${pr.height || '?'}${pStr ? ' · ' + esc(pStr) : ''}${loraAll ? ' · LoRA ' + loraAll : ' · 无 LoRA'}</div>
               <div class="pn-row row" data-pn-toggle style="cursor:pointer;gap:8px;margin-top:8px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:#fafbfc">
-                <b style="min-width:52px">第${cnNum(p.panel_order)}格</b>
-                <span class="pill ${pr.prompt_pos ? 'ok' : 'tag'}">正 ${pr.prompt_pos ? esc(pr.prompt_pos.slice(0, 18)) + (pr.prompt_pos.length > 18 ? '…' : '') : '（空）'}</span>
-                <span class="pill ${pr.prompt_neg ? 'ok' : 'tag'}">负 ${pr.prompt_neg ? esc(pr.prompt_neg.slice(0, 18)) + (pr.prompt_neg.length > 18 ? '…' : '') : '（空）'}</span>
+                <b style="min-width:76px">${panelFullLabel(p.panel_ref)}</b>
+                <span class="pill ${pr.prompt_pos ? 'ok' : 'tag'}">正 ${pr.prompt_pos ? esc(pr.prompt_pos.slice(0, 16)) + (pr.prompt_pos.length > 16 ? '…' : '') : '（空）'}</span>
+                <span class="pill ${pr.prompt_neg ? 'ok' : 'tag'}">负 ${pr.prompt_neg ? esc(pr.prompt_neg.slice(0, 16)) + (pr.prompt_neg.length > 16 ? '…' : '') : '（空）'}</span>
                 <div class="spacer"></div>
                 <span class="fold-ic">▸</span>
               </div>
-              <div class="pn-view" style="margin-top:6px;background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.55;max-height:260px;overflow:auto">
-                <div><b class="mut">正向</b> <span class="pn-pos-full">${esc(pr.prompt_pos || '（空）')}</span></div>
-                <div style="margin-top:5px"><b class="mut">负向</b> <span class="pn-neg-full">${esc(pr.prompt_neg || '（空）')}</span></div>
-              </div>
-              <div class="pn-body hidden" style="margin-top:8px">
-                <div class="grid2">
+              <div class="pn-body hidden">
+                <div class="pn-view" style="margin-top:6px;background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.6;max-height:300px;overflow:auto">
+                  <div class="mut" style="font-size:12px">
+                    <b>镜别</b> ${esc(p.shot || '—')}　<b>出场</b> ${esc((p.characters || []).join('、') || '—')}${(p.technique || []).length ? '　<b>技法</b> ' + esc((p.technique || []).join('、')) : ''}
+                  </div>
+                  ${p.scene_desc ? `<div style="margin-top:5px"><b class="mut">场景</b> ${esc(p.scene_desc)}</div>` : ''}
+                  ${p.action ? `<div style="margin-top:5px"><b class="mut">动作</b> ${esc(p.action)}</div>` : ''}
+                  ${p.dialogue ? `<div style="margin-top:5px"><b class="mut">台词</b> ${esc(p.dialogue)}</div>` : ''}
+                </div>
+                <div class="grid2" style="margin-top:8px">
                   <div><label class="fld">正向</label><textarea class="wb-pos">${esc(pr.prompt_pos || '')}</textarea></div>
                   <div><label class="fld">负向</label><textarea class="wb-neg">${esc(pr.prompt_neg || '')}</textarea></div>
                 </div>
@@ -1923,7 +1932,7 @@ async function renderWorkbenchPages() {
             const sizeStr = (pr && pr.width) ? `${pr.width}×${pr.height}` : '';
             return `<div class="mini-card" style="padding:8px 10px" data-wbpanel="${esc(x.panel_ref)}">
               <div class="row" style="gap:5px">
-                <b style="font-size:11.5px">${panelLabel(x.panel_ref)}</b>
+                <b style="font-size:11.5px">${panelFullLabel(x.panel_ref)}</b>
                 <span class="mut" style="font-size:11px">${esc(x.shot || '')}</span>
               </div>
               <div style="font-size:11.5px;margin-top:3px">${esc((x.action || x.dialogue || '（空）').slice(0, 30))}</div>
@@ -2100,12 +2109,9 @@ function bindWorkbench(panels) {
       const row = card.querySelector('.pn-row');
       if (row) {
         const pills = row.querySelectorAll('.pill');
-        if (pills[0]) { pills[0].className = 'pill ' + (pos ? 'ok' : 'tag'); pills[0].textContent = '正 ' + (pos ? pos.slice(0, 18) + (pos.length > 18 ? '…' : '') : '（空）'); }
-        if (pills[1]) { pills[1].className = 'pill ' + (neg ? 'ok' : 'tag'); pills[1].textContent = '负 ' + (neg ? neg.slice(0, 18) + (neg.length > 18 ? '…' : '') : '（空）'); }
+        if (pills[0]) { pills[0].className = 'pill ' + (pos ? 'ok' : 'tag'); pills[0].textContent = '正 ' + (pos ? pos.slice(0, 16) + (pos.length > 16 ? '…' : '') : '（空）'); }
+        if (pills[1]) { pills[1].className = 'pill ' + (neg ? 'ok' : 'tag'); pills[1].textContent = '负 ' + (neg ? neg.slice(0, 16) + (neg.length > 16 ? '…' : '') : '（空）'); }
       }
-      // 同步完整展示框
-      const vp = card.querySelector('.pn-pos-full'); if (vp) vp.textContent = pos || '（空）';
-      const vn = card.querySelector('.pn-neg-full'); if (vn) vn.textContent = neg || '（空）';
       const msg = card.querySelector('[data-wb-pn-msg]');
       if (msg) { msg.textContent = '已自动保存'; setTimeout(() => { if (msg.textContent === '已自动保存') msg.textContent = ''; }, 1500); }
       refreshGates();
