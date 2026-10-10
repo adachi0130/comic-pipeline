@@ -69,6 +69,7 @@ document.addEventListener('click', (e) => {
 function switchTab(tab) {
   $$('.nav button[data-tab]').forEach((x) => x.classList.toggle('active', x.dataset.tab === tab));
   ['projects', 'novel', 'pipeline', 'pages', 'prompts', 'images', 'compose', 'settings'].forEach((t) => $('#tab-' + t).classList.toggle('hidden', t !== tab));
+  try { localStorage.setItem('comic.tab', tab); } catch { /* ignore */ }   // 记住当前菜单，刷新后回到这里
   $('#view-title').textContent = TITLES[tab][0];
   $('#view-sub').textContent = TITLES[tab][1];
   if (tab === 'novel') loadNovel();
@@ -2694,8 +2695,10 @@ async function loadCompose() {
       el.addEventListener('click', () => showComposePage(el.dataset.cpspage)));
     // 已完成 / 编辑中的页
     renderComposeFinished();
-    // 默认选中第一页
-    if (state._composePages[0]) showComposePage(state._composePages[0].page_ref);
+    // 记住当前选中的页（换模板/刷新后仍停在这一页），否则选第一页
+    const sel = (state._composeSelected && d.pages.find((x) => x.page_ref === state._composeSelected))
+      ? state._composeSelected : (d.pages[0] && d.pages[0].page_ref);
+    if (sel) showComposePage(sel);
   } catch (e) { menu.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
@@ -2743,9 +2746,10 @@ async function renderComposeFinished() {
   }));
 }
 
-// 打开 MED 工作台（每次都带防缓存时间戳，避免旧页面缓存了旧按钮）
+// 打开 MED 工作台（每次都带防缓存时间戳，避免旧页面缓存了旧按钮）；back= 保存后跳回前端分页合成
 function openMedPage(pageRef, mode) {
-  const url = `/ui/editor_bridge/index.html?page=${encodeURIComponent(pageRef)}&p=${state.projectId}&${mode}&_=${Date.now()}`;
+  const back = encodeURIComponent('/ui/?tab=compose');
+  const url = `/ui/editor_bridge/index.html?page=${encodeURIComponent(pageRef)}&p=${state.projectId}&${mode}&back=${back}&_=${Date.now()}`;
   window.open(url, '_blank');
 }
 
@@ -2767,6 +2771,7 @@ function readingOrderGeom(geomPanels) {
 function showComposePage(pageRef) {
   const p = (state._composePages || []).find((x) => x.page_ref === pageRef);
   if (!p) return;
+  state._composeSelected = pageRef;   // 记住当前页，换模板/刷新后仍停在这里
   document.querySelectorAll('[data-cpspage]').forEach((el) => el.classList.toggle('sel', el.dataset.cpspage === pageRef));
   const [cw, ch] = p.canvas || [672, 950];
   // 漫画为右→左阅读：把画框按阅读顺序排好，第 k 个画框放该页第 k 格
@@ -2849,6 +2854,10 @@ function medCompose(page, openOnly) {
     try { localStorage.removeItem('comic.lastProjectId'); } catch { /* ignore */ }
     showProjectView('list');
   }
+  // 恢复上次所在的菜单（或用 ?tab= 指定），刷新/跳转回来都停在原菜单
+  let tab = '';
+  try { tab = new URLSearchParams(location.search).get('tab') || localStorage.getItem('comic.tab') || ''; } catch { /* ignore */ }
+  if (tab && TITLES[tab]) switchTab(tab);
   startJobsSSE();
   startTavernSSE();
   setInterval(refreshGates, 5000);
