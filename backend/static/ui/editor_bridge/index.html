@@ -218,7 +218,11 @@ $('btn-save').addEventListener('click', async () => {
       body: JSON.stringify({ doc, png }),
     });
     const j = await r.json();
-    setMsg(r.ok ? `已保存到「编辑中的页」（v${j.version}），可在分页合成页继续编辑` : '保存失败：' + (j.detail || ''), r.ok ? 'ok' : 'err');
+    if (!r.ok) { setMsg('保存失败：' + (j.detail || ''), 'err'); return; }
+    setMsg(`已保存到「编辑中的页」（v${j.version}），正在返回前端…`, 'ok');
+    // 自动跳回前端「分页合成」页（tab=compose 让前端停在分页合成菜单）
+    const back = q.get('back');
+    if (back) setTimeout(() => { location.href = back; }, 700);
   } catch (e) { setMsg('保存失败：' + e.message, 'err'); }
 });
 
