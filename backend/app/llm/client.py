@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, TypeVar
+from typing import Any, Callable, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -68,6 +68,7 @@ class LLMClient:
         max_tokens: int | None = None,
         json_mode: bool = False,
         extra_body: dict[str, Any] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> ChatResult:
         p = self.provider
         body: dict[str, Any] = {
@@ -106,6 +107,8 @@ class LLMClient:
         with httpx.Client(timeout=p.timeout_s) as client:
             resp = None
             for attempt in range(max_attempts):
+                if should_cancel and should_cancel():
+                    raise LLMError("已取消")
                 try:
                     resp = client.post(p.endpoint, headers=headers, json=body)
                 except httpx.HTTPError as e:
@@ -159,8 +162,10 @@ class LLMClient:
         *,
         temperature: float | None = 0.6,
         max_tokens: int | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> ChatResult:
-        res = self.chat(messages, temperature=temperature, max_tokens=max_tokens, json_mode=True)
+        res = self.chat(messages, temperature=temperature, max_tokens=max_tokens, json_mode=True,
+                        should_cancel=should_cancel)
         res.text = _strip_code_fence(res.text)
         return res
 
@@ -173,14 +178,18 @@ class LLMClient:
         temperature: float | None = 0.6,
         max_tokens: int | None = None,
         log: "LLMLogContext | None" = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> T:
         """要求模型返回符合 ``schema`` 的 JSON；失败则把错误回喂重试。"""
         msgs = list(messages)
         last_error = ""
         for attempt in range(max_retries + 1):
             try:
-                res = self.chat_json(msgs, temperature=temperature, max_tokens=max_tokens)
+                res = self.chat_json(msgs, temperature=temperature, max_tokens=max_tokens,
+                                     should_cancel=should_cancel)
             except LLMError as e:
+                if should_cancel and should_cancel():
+                    raise LLMError("已取消") from e
                 last_error = str(e)
                 if log:
                     log.record(self, msgs, "", {}, last_error)

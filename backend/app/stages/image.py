@@ -114,7 +114,9 @@ def handle(session: Session, job: Job) -> dict:
     job.message = f"出图中：{panel_ref} × {count}"
     session.commit()
 
-    images = generate(req)
+    from .. import jobs as jobq
+
+    images = generate(req, should_cancel=lambda: jobq.is_cancelled(job.id))
 
     safe_ref = panel_ref.replace(":", "_").replace("/", "_")
     out_dir = get_settings().data_dir / "projects" / str(project_id) / "candidates" / safe_ref
