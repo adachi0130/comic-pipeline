@@ -1762,6 +1762,13 @@ async function loadWorkbench() {
     }
     let loraOpts = [];
     try { const r = await api('/api/comfy/assets'); loraOpts = r.loras || []; } catch { /* ComfyUI 未启动 */ }
+    // 项目画风 LoRA：自动填写时额外带上
+    let styleLoras = [];
+    try {
+      const d = await api(`/api/projects/${state.projectId}/loras`);
+      styleLoras = (d.project || d.rows || []).filter((r) => (r.scope || 'project') === 'project')
+        .map((r) => ({ name: r.lora_name || r.name, weight: r.weight ?? 1 }));
+    } catch { /* ignore */ }
     const filled = panels.filter((p) => p.prompt).length;
     $('#wb-info').textContent = `${filled}/${panels.length} 格已生成提示词`;
 
@@ -1796,7 +1803,6 @@ async function loadWorkbench() {
                   <button class="primary sm wb-gen">出图</button></div>
                 <div class="wb-cands" style="margin-top:8px"></div></div>`;
             }
-            const l0 = (pr.loras || [])[0] || {};
             const loraAll = (pr.loras || []).map((l) => `${esc(l.name)}(${l.weight})`).join('、');
             const pp = pr.params || {};
             const pStr = ['steps', 'cfg', 'sampler', 'scheduler', 'denoise'].filter((k) => pp[k] != null).map((k) => `${k} ${pp[k]}`).join(' · ');
@@ -1813,12 +1819,12 @@ async function loadWorkbench() {
                 <div><label class="fld">正向</label><textarea class="wb-pos">${esc(pr.prompt_pos || '')}</textarea></div>
                 <div><label class="fld">负向</label><textarea class="wb-neg">${esc(pr.prompt_neg || '')}</textarea></div>
               </div>
-              <div class="row" style="margin-top:8px">
-                <label class="fld" style="margin:0"><input type="checkbox" class="wb-uselora" style="width:auto" ${(pr.loras || []).length ? 'checked' : ''}> 用 LoRA</label>
-                <input class="wb-lora" placeholder="lora 文件名" value="${esc(l0.name || '')}" list="lora-list" style="max-width:280px">
-                <label class="fld" style="margin:0">权重</label>
-                <input class="wb-loraw" type="number" step="0.05" value="${l0.weight ?? 0.8}" style="width:80px">
-                <button class="sm wb-save">保存</button>
+              <div style="margin-top:8px">
+                <div class="row"><label class="fld" style="margin:0">LoRA（出图套用；含角色/画风）</label>
+                  <div class="spacer"></div>
+                  <button class="sm" type="button" data-wb-addlora>＋ 加 LoRA</button>
+                  <button class="sm wb-save">保存</button></div>
+                <div class="wb-loras">${(pr.loras || []).map(wbLoraRow).join('') || '<div class="mut" style="font-size:12px">（无）</div>'}</div>
               </div>
               <div class="wb-cands" style="margin-top:10px"></div></div>`;
           }).join('')}
@@ -1846,6 +1852,7 @@ async function loadWorkbench() {
     const dl = document.createElement('datalist'); dl.id = 'lora-list';
     dl.innerHTML = loraOpts.map((l) => `<option value="${esc(l)}">`).join('');
     document.body.appendChild(dl);
+    state.styleLoras = styleLoras;
     bindWorkbench(panels);
     for (const p of panels) if (p.prompt) await renderWbCands({ ref: p.panel_ref });
   } catch (e) { toast(e.message, 'err'); }
@@ -1932,6 +1939,15 @@ async function renderWorkbenchPages() {
 }
 
 
+/** 出图卡片里的一行 LoRA（可加/删） */
+function wbLoraRow(l) {
+  return `<div class="row" style="gap:6px;margin-top:5px" data-wblorarow>
+    <input class="wb-lora-name" list="lora-all" value="${esc((l && l.name) || '')}" placeholder="lora 文件名" style="flex:1;min-width:220px">
+    <input class="wb-lora-w" type="number" step="0.05" value="${(l && l.weight) ?? 0.8}" style="width:76px">
+    <button class="sm danger" type="button" data-wb-loradel>删</button>
+  </div>`;
+}
+
 /** 某一页所有镜头的详情（只读审查）：逐格看 尺寸/参数/LoRA/正负向，可跳去编辑。 */
 async function openPagePanelsDetail(pageRef, page) {
   const box = document.createElement('div');
@@ -2007,22 +2023,55 @@ async function regeneratePanel(ref) {
 function bindWorkbench(panels) {
   const byRef = {};
   panels.forEach((p) => { byRef[p.panel_ref] = p; });
+  const styleLoras = state.styleLoras || [];
+
+  const readLoras = (card) => Array.from(card.querySelectorAll('[data-wblorarow]')).map((row) => ({
+    name: row.querySelector('.wb-lora-name').value.trim(),
+    weight: +row.querySelector('.wb-lora-w').value || 0.8,
+  })).filter((l) => l.name);
+
+  const wbBindLoraRows = (card) => {
+    const wrap = card.querySelector('.wb-loras');
+    if (!wrap) return;
+    wrap.querySelectorAll('[data-wb-loradel]').forEach((b) =>
+      b.onclick = () => { b.closest('[data-wblorarow]').remove(); });
+    attachLoraCombos(wrap, '.wb-lora-name');
+  };
+
   $$('#wb-list [data-ref]').forEach((card) => {
     const ref = card.dataset.ref;
     const pn = byRef[ref] || {};
     const art = pn.prompt;
+    wbBindLoraRows(card);
+
+    // 加 LoRA 行
+    const addl = card.querySelector('[data-wb-addlora]');
+    if (addl) addl.addEventListener('click', () => {
+      const wrap = card.querySelector('.wb-loras');
+      if (wrap.querySelector('.mut')) wrap.innerHTML = '';
+      wrap.insertAdjacentHTML('beforeend', wbLoraRow({}));
+      wbBindLoraRows(card);
+    });
+
     const af = card.querySelector('.wb-autofill');
     if (af) af.addEventListener('click', async () => {
-      // 自动填写：把已审核的提示词与该格的出图参数填进下面的输入框（不发 LLM 请求）
+      // 自动填写：把该格已审核的提示词/参数 + 角色 LoRA + 项目画风 LoRA 填进输入框（不发 LLM）
       if (!art) return toast('这格还没有提示词产物', 'err');
       // 注意：art 是 prompt-board 里的对象，字段是平铺的（不是 art.payload）
       const posEl = card.querySelector('.wb-pos'); if (posEl) posEl.value = art.prompt_pos || '';
       const negEl = card.querySelector('.wb-neg'); if (negEl) negEl.value = art.prompt_neg || '';
-      const l0 = (art.loras || [])[0] || {};
-      const loraEl = card.querySelector('.wb-lora'); if (loraEl) loraEl.value = l0.name || '';
-      const lwEl = card.querySelector('.wb-loraw'); if (lwEl) lwEl.value = l0.weight ?? 0.8;
-      const uc = card.querySelector('.wb-uselora'); if (uc) uc.checked = (art.loras || []).length > 0;
-      toast('已填入该格的提示词与出图参数', 'ok');
+      // LoRA 合并：该格已有（含角色）→ 再补画风（同名去重，保留原权重）
+      const merged = [];
+      const seen = new Set();
+      for (const l of [...(art.loras || []), ...styleLoras]) {
+        if (!l.name || seen.has(l.name)) continue;
+        seen.add(l.name);
+        merged.push({ name: l.name, weight: l.weight ?? 0.8 });
+      }
+      const wrap = card.querySelector('.wb-loras');
+      if (wrap) wrap.innerHTML = merged.map(wbLoraRow).join('') || '<div class="mut" style="font-size:12px">（无）</div>';
+      wbBindLoraRows(card);
+      toast(`已填入提示词与 ${merged.length} 个 LoRA（含画风）`, 'ok');
     });
     // 未生成提示词的格：按钮是「生成提示词」→ 调 LLM 生成这一格
     const gp = card.querySelector('.wb-gen-prompt');
@@ -2036,13 +2085,10 @@ function bindWorkbench(panels) {
     });
     const sv = card.querySelector('.wb-save');
     if (sv) sv.addEventListener('click', async () => {
-      const useLora = card.querySelector('.wb-uselora').checked;
-      const lname = card.querySelector('.wb-lora').value.trim();
-      const lw = +card.querySelector('.wb-loraw').value;
       try {
         await api(`/api/artifacts/${art.artifact_id}/payload`, { method: 'PATCH', body: JSON.stringify({
           prompt_pos: card.querySelector('.wb-pos').value, prompt_neg: card.querySelector('.wb-neg').value,
-          loras: useLora && lname ? [{ name: lname, weight: lw }] : [] }) });
+          loras: readLoras(card) }) });
         toast(`${ref} 已保存（下游需重跑）`, 'ok'); loadWorkbench(); refreshGates();
       } catch (e) { toast(e.message, 'err'); }
     });
@@ -2063,7 +2109,7 @@ function bindWorkbench(panels) {
       finally { btn.disabled = false; btn.textContent = '出图'; }
     });
   });
-  attachLoraCombos(document.querySelector('#wb-list'), '.wb-lora');
+  attachLoraCombos(document.querySelector('#wb-list'), '.wb-lora-name');
 }
 
 async function renderWbCands(pa) {
