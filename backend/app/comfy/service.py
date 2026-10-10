@@ -100,8 +100,13 @@ def generate(
     *,
     client: ComfyClient | None = None,
     should_cancel=None,
+    snapshot: dict | None = None,
 ) -> list[GeneratedImage]:
-    """按请求出图，返回所有候选图的字节。"""
+    """按请求出图，返回所有候选图的字节。
+
+    ``snapshot`` 若给了 dict，会把**最后一次实际入队的工作流**（API 格式，含参数/LoRA）
+    写进 ``snapshot['workflow']``，供"保存这张图的工作流快照"用。
+    """
     client = client or get_client()
     params = get_workflow_params()
     if not params.bindings and not params.prompt_placeholder:
@@ -140,6 +145,8 @@ def generate(
         if fixed_seed is None:
             merged["seed"] = random.randint(1, 2**31 - 1)
         applied = apply(wf, params, merged, req.loras)
+        if snapshot is not None:
+            snapshot["workflow"] = applied
         prompt_id = client.queue_prompt(applied)
         entry = client.wait_for(
             prompt_id,
