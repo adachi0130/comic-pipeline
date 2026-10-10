@@ -808,8 +808,9 @@ async function getAllTemplates() {
  * @param {string} [currentId] 当前模板（高亮）
  * @param {string} [title]
  */
-async function openTemplatePicker(onPick, currentId, title) {
-  const tpls = await getAllTemplates();
+async function openTemplatePicker(onPick, currentId, title, filterFn) {
+  let tpls = await getAllTemplates();
+  if (typeof filterFn === 'function') tpls = tpls.filter(filterFn);
   const box = document.createElement('div');
   box.className = 'modal';
   const groups = { vertical: [], landscape: [] };
@@ -2738,8 +2739,14 @@ async function renderComposeFinished() {
   </div>`;
   box.querySelectorAll('[data-cps-edit]').forEach((b) => b.addEventListener('click', () => {
     const ref = b.dataset.cpsEdit;
-    window.open(`/ui/editor_bridge/index.html?page=${encodeURIComponent(ref)}&p=${state.projectId}&edit=1`, '_blank');
+    openMedPage(ref, 'edit=1');
   }));
+}
+
+// 打开 MED 工作台（每次都带防缓存时间戳，避免旧页面缓存了旧按钮）
+function openMedPage(pageRef, mode) {
+  const url = `/ui/editor_bridge/index.html?page=${encodeURIComponent(pageRef)}&p=${state.projectId}&${mode}&_=${Date.now()}`;
+  window.open(url, '_blank');
 }
 
 // 画框按漫画阅读顺序（右→左、上→下）排序，用于分页合成预览
@@ -2779,6 +2786,7 @@ function showComposePage(pageRef) {
       <span class="pill tag">${p.template_id || '?'} · ${p.panels_count} 格</span>
       <span class="pill ${p.ready ? 'ok' : 'warn'}"><i class="dotm"></i>${p.ready ? '可合成' : '有格缺图'}</span>
       <div class="spacer"></div>
+      <button class="sm" id="cps-changetpl">更换模板</button>
       <button class="sm primary" id="cps-do">去 MED 合成</button>
       <button class="sm" id="cps-open">在 MED 打开</button>
       <button class="sm" id="cps-run">后台合成</button>
@@ -2799,13 +2807,22 @@ function showComposePage(pageRef) {
       toast(`${pageLabel(p.page_ref)} 后台合成已入队 #${r.job_id}`, 'ok');
     } catch (e) { toast(e.message, 'err'); }
   });
+  const ct = $('#cps-changetpl');
+  if (ct) ct.addEventListener('click', () => openTemplatePicker(async (tplId) => {
+    try {
+      await api(`/api/projects/${state.projectId}/pages/${encodeURIComponent(p.page_ref)}/template`, { method: 'POST', body: JSON.stringify({ template_id: tplId }) });
+      toast(`${pageLabel(p.page_ref)} 模板已换成 ${tplId}`, 'ok');
+      await loadCompose();
+    } catch (e) { toast(e.message, 'err'); }
+  }, p.template_id, `给 ${pageLabel(p.page_ref)} 换版式（只列 ${p.panels_count} 格模板）`,
+     (t) => t.panels_count === p.panels_count));
 }
 
 /** 打开 MED 并自动装模板 + 贴好已选画面；openOnly=true 时只打开不合成。 */
 function medCompose(page, openOnly) {
-  const url = '/ui/editor_bridge/index.html' + (openOnly ? '' : `?page=${encodeURIComponent(page.page_ref)}&p=${state.projectId}&auto=1`);
-  window.open(url, '_blank');
-  if (!openOnly) toast('已在新标签打开 MED，正在自动装框贴图…', 'ok');
+  if (openOnly) { openMedPage(page.page_ref, 'plain=1'); return; }
+  openMedPage(page.page_ref, 'auto=1');
+  toast('已在新标签打开 MED，正在自动装框贴图…', 'ok');
 }
 
 // ---------- 启动 ----------
