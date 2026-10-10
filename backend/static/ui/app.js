@@ -39,6 +39,7 @@ const TITLES = {
   pages: ['分格', '每页选模板（或让 AI 选）+ 打分格'],
   prompts: ['提示词', 'S3 分镜提示词：每格一句出图词'],
   images: ['出图', '连上后端 → 选工作流 → 出图挑图'],
+  compose: ['分页合成', '选好的画面按漫画框拼成整页'],
   settings: ['设置', 'LLM 供应商 / ComfyUI / 阶段绑定'],
 };
 $$('.nav button[data-tab]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
@@ -67,7 +68,7 @@ document.addEventListener('click', (e) => {
 });
 function switchTab(tab) {
   $$('.nav button[data-tab]').forEach((x) => x.classList.toggle('active', x.dataset.tab === tab));
-  ['projects', 'novel', 'pipeline', 'pages', 'prompts', 'images', 'settings'].forEach((t) => $('#tab-' + t).classList.toggle('hidden', t !== tab));
+  ['projects', 'novel', 'pipeline', 'pages', 'prompts', 'images', 'compose', 'settings'].forEach((t) => $('#tab-' + t).classList.toggle('hidden', t !== tab));
   $('#view-title').textContent = TITLES[tab][0];
   $('#view-sub').textContent = TITLES[tab][1];
   if (tab === 'novel') loadNovel();
@@ -75,6 +76,7 @@ function switchTab(tab) {
   if (tab === 'images') loadWorkbench();
   if (tab === 'pages') loadPages();
   if (tab === 'prompts') loadPrompts();
+  if (tab === 'compose') loadCompose();
   if (tab === 'images' || tab === 'prompts') ensureLoraDatalist();
   if (tab === 'settings') { loadProviders(); loadStageBinding(); }
   if (tab === 'projects') {
@@ -2613,6 +2615,95 @@ async function openComfySettings() {
   }
 }
 
+
+// ---------- 分页合成（S5）----------
+$('#cps-reload').addEventListener('click', loadCompose);
+$('#cps-compose-all').addEventListener('click', async () => {
+  if (!state.projectId) return toast('先选择项目', 'err');
+  const pages = (state._composePages || []).filter((p) => p.ready);
+  if (!pages.length) return toast('没有可合成（就绪）的页', 'err');
+  try {
+    for (const p of pages) {
+      await api(`/api/projects/${state.projectId}/run/S5`, { method: 'POST', body: JSON.stringify({ page_ref: p.page_ref }) });
+    }
+    toast(`已入队合成 ${pages.length} 页`, 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+});
+
+async function loadCompose() {
+  const menu = $('#cps-menu');
+  if (!state.projectId) { menu.innerHTML = '<div class="empty">请先选择项目</div>'; return; }
+  try {
+    const d = await api(`/api/projects/${state.projectId}/compose-board`);
+    state._composePages = d.pages || [];
+    const ready = d.pages.filter((p) => p.ready).length;
+    $('#cps-info').textContent = `${d.pages.length} 页 · ${ready} 页可合成`;
+    if (!d.pages.length) { menu.innerHTML = '<div class="empty">还没有分格页（先跑 S2）</div>'; return; }
+    menu.innerHTML = d.pages.map((p) => {
+      const done = p.panels.filter((x) => x.has_image).length;
+      return `<div class="pitem" data-cpspage="${esc(p.page_ref)}" style="cursor:pointer">
+        <div class="av" style="width:26px;height:26px">${p.page_index}</div>
+        <div><b>${pageLabel(p.page_ref)}</b>
+          <div class="meta">${done}/${p.panels.length} 格有图${p.composed ? ' · 已合成' : ''}</div></div>
+        <div class="spacer"></div>
+        <span class="pill ${p.ready ? 'ok' : 'warn'}"><i class="dotm"></i>${p.ready ? '可合成' : '缺图'}</span>
+      </div>`;
+    }).join('');
+    menu.querySelectorAll('[data-cpspage]').forEach((el) =>
+      el.addEventListener('click', () => showComposePage(el.dataset.cpspage)));
+    // 默认选中第一页
+    if (state._composePages[0]) showComposePage(state._composePages[0].page_ref);
+  } catch (e) { menu.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+function showComposePage(pageRef) {
+  const p = (state._composePages || []).find((x) => x.page_ref === pageRef);
+  if (!p) return;
+  document.querySelectorAll('[data-cpspage]').forEach((el) => el.classList.toggle('sel', el.dataset.cpspage === pageRef));
+  const [cw, ch] = p.canvas || [672, 950];
+  const overlaid = p.panels.map((pn) => {
+    const g = (p.geometry || []).find((x) => String(x.index) === String(pn.panel_order)) || {};
+    const left = (g.x_pct ?? 0) / 100 * 100, top = (g.y_pct ?? 0) / 100 * 100;
+    const w = (g.width_pct ?? 100) / 100 * 100, h = (g.height_pct ?? 100) / 100 * 100;
+    return `<div style="position:absolute;left:${left}%;top:${top}%;width:${w}%;height:${h}%;border:2px solid ${pn.has_image ? '#3ecf8e' : '#ffb454'};border-radius:4px;overflow:hidden;background:${pn.has_image ? '#000' : 'repeating-linear-gradient(45deg,#fff,#fff 8px,#f3f4f6 8px,#f3f4f6 16px)'}">
+      ${pn.has_image ? `<img src="${pn.image_url}" style="width:100%;height:100%;object-fit:cover;display:block">` : ''}
+      <span style="position:absolute;left:3px;top:3px;background:rgba(0,0,0,.6);color:#fff;font-size:10px;padding:1px 5px;border-radius:8px">${cnNum(pn.panel_order)}</span>
+      ${pn.has_image ? '' : `<span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#b45309;font-size:11px">缺图</span>`}
+    </div>`;
+  }).join('');
+  $('#cps-detail').innerHTML = `
+    <div class="row" style="gap:8px"><b>${pageLabel(p.page_ref)}</b>
+      <span class="pill tag">${p.template_id || '?'} · ${p.panels_count} 格</span>
+      <span class="pill ${p.ready ? 'ok' : 'warn'}"><i class="dotm"></i>${p.ready ? '可合成' : '有格缺图'}</span>
+      <div class="spacer"></div>
+      <button class="sm primary" id="cps-do">去 MED 合成</button>
+      <button class="sm" id="cps-open">在 MED 打开</button>
+      <button class="sm" id="cps-run">后台合成</button>
+    </div>
+    <div class="mut" style="font-size:12px;margin-top:6px">漫画框 ${Math.round(cw)}×${Math.round(ch)} · ${esc(p.layout_desc || '')}</div>
+    <div style="position:relative;aspect-ratio:${cw}/${ch};max-width:460px;margin:10px auto;border:1px solid var(--line2);border-radius:8px;background:#fff;box-shadow:0 6px 20px -10px rgba(0,0,0,.25)">
+      ${overlaid}
+    </div>
+    ${p.composed ? `<div class="row" style="gap:8px;margin-top:6px"><span class="mut" style="font-size:12px">已有一个整页成图：</span>
+      <a class="sm" href="${p.composed_url}" target="_blank">打开整页 PNG</a></div>` : ''}`;
+  const doBtn = $('#cps-do');
+  if (doBtn) doBtn.addEventListener('click', () => medCompose(p, false));
+  const ob = $('#cps-open'); if (ob) ob.addEventListener('click', () => medCompose(p, true));
+  const rb = $('#cps-run');
+  if (rb) rb.addEventListener('click', async () => {
+    try {
+      const r = await api(`/api/projects/${state.projectId}/run/S5`, { method: 'POST', body: JSON.stringify({ page_ref: p.page_ref }) });
+      toast(`${pageLabel(p.page_ref)} 后台合成已入队 #${r.job_id}`, 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+  });
+}
+
+/** 打开 MED 并自动装模板 + 贴好已选画面；openOnly=true 时只打开不合成。 */
+function medCompose(page, openOnly) {
+  const url = '/ui/editor_bridge/index.html' + (openOnly ? '' : `?page=${encodeURIComponent(page.page_ref)}&p=${state.projectId}&auto=1`);
+  window.open(url, '_blank');
+  if (!openOnly) toast('已在新标签打开 MED，正在自动装框贴图…', 'ok');
+}
 
 // ---------- 启动 ----------
 (async () => {

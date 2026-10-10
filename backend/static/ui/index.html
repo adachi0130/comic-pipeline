@@ -140,6 +140,8 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
 .lora-menu .it{padding:5px 9px;border-radius:6px;font-size:12.5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lora-menu .it:hover,.lora-menu .it.on{background:#eef4ff}
 .lora-menu .it b{color:var(--accent)}
+.cps-grid{display:grid;grid-template-columns:280px 1fr;gap:14px;align-items:start}
+@media(max-width:820px){.cps-grid{grid-template-columns:1fr}}
 @media(max-width:820px){.app{grid-template-columns:1fr}.side{position:static;height:auto}.grid2,.grid3{grid-template-columns:1fr}}
 
 /* 模板缩略图选择器 */
@@ -168,6 +170,7 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
       <button data-tab="pages"><span class="ic">▥</span>分格</button>
       <button data-tab="prompts"><span class="ic">✧</span>提示词</button>
       <button data-tab="images"><span class="ic">▤</span>出图</button>
+      <button data-tab="compose"><span class="ic">▦</span>分页合成</button>
       <button data-tab="settings"><span class="ic">⚙</span>设置</button>
     </div>
     <div class="sidetitle">当前项目</div>
@@ -472,6 +475,32 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
       </div>
     </section>
 
+    <!-- 分页合成（S5） -->
+    <section id="tab-compose" class="hidden">
+      <div class="card">
+        <h2>分页合成 <span class="pill" id="cps-info">—</span>
+          <span class="mut" style="font-size:12px;font-weight:400">把选好的画面按漫画框拼成整页</span>
+        </h2>
+        <div class="h2sub">左边选择要合成的页，右边预览该页的漫画框与已选画面；点「去 MED 合成」会自动装框、贴图，
+          然后你在 MED 里继续编辑，或直接「导出整页」。</div>
+        <div class="row">
+          <button class="sm" id="cps-reload">刷新</button>
+          <button class="sm" id="cps-compose-all">合成全部就绪页</button>
+          <div class="spacer"></div>
+          <span class="mut" id="cps-msg" style="font-size:12px"></span>
+        </div>
+      </div>
+      <div class="cps-grid">
+        <div class="card" style="padding:10px">
+          <div class="mut" style="font-size:12px;margin-bottom:6px">要合成的页</div>
+          <div id="cps-menu"><div class="empty">加载中…</div></div>
+        </div>
+        <div class="card" id="cps-detail" style="padding:12px">
+          <div class="empty">左边选一页，这里预览漫画框与已选画面</div>
+        </div>
+      </div>
+    </section>
+
     <!-- 设置 -->
     <section id="tab-settings" class="hidden">
       <div class="card">
@@ -509,6 +538,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=56"></script>
+<script type="module" src="/ui/app.js?v=57"></script>
 </body>
 </html>
