@@ -33,6 +33,7 @@
   <h1>分页合成工作台</h1>
   <span class="badge" id="bridge-state">桥：加载中…</span>
   <span class="badge" id="med-state">MED：加载中…</span>
+  <span class="badge warn" id="edit-ctx" style="display:none"></span>
   <span class="hint" style="margin-left:auto">同源 iframe + 注入桥 · 自研后端驱动 Manga Editor Desu</span>
 </div>
 
@@ -43,7 +44,7 @@
   <button class="primary" id="btn-install">装模板</button>
   <button id="btn-order">读阅读顺序</button>
   <button id="btn-sample">套示例提示词</button>
-  <button id="btn-save">保存到项目</button>
+  <button class="primary" id="btn-save" title="把当前 MED 画布（含你中途的编辑）保存到项目的「编辑中的页」">保存到「编辑中的页」</button>
   <button id="btn-export">导出 PNG</button>
   <span class="hint" id="msg"></span>
 </div>
@@ -123,8 +124,31 @@ async function loadTemplates() {
 frame.addEventListener('load', async () => {
   setBadge('med-state', 'MED：已加载', 'ok');
   await ensure();
+  showEditContext();
   autoCompose();
 });
+
+// 顶部显示「正在编辑：第X页第Y格 · 项目 n」，无 page 参数时禁用保存并给提示
+function showEditContext() {
+  const q = new URLSearchParams(location.search);
+  const page = q.get('page'), pid = q.get('p');
+  const el = $('edit-ctx'), btn = $('btn-save');
+  if (page && pid) {
+    const m = String(page).match(/page:(\d+)/);
+    el.style.display = '';
+    el.textContent = '正在编辑：' + (m ? '第' + cnNum(+m[1]) + '页' : page) + ' · 项目 ' + pid;
+    btn.disabled = false;
+  } else {
+    el.style.display = '';
+    el.className = 'badge err';
+    el.textContent = '未关联项目/页 —— 请从「分页合成」页进入才有保存目标';
+    btn.disabled = true;
+    btn.title = '请从「分页合成」页面的「去 MED 合成 / 继续编辑」进入，才有可保存的页';
+  }
+}
+const _CN = ['零','一','二','三','四','五','六','七','八','九','十'];
+function cnNum(n){ n=+n; if(!n||n<0) return String(n); if(n<=10) return _CN[n];
+  if(n<20) return '十'+(n>10?_CN[n-10]:''); if(n<100) return _CN[Math.floor(n/10)]+'十'+(n%10?_CN[n%10]:''); return String(n); }
 
 /** 自动合成 / 继续编辑：URL 带 ?page=&p= 时处理。
  *  auto=1：自动装模板 + 贴入已选画面 + 落提示词；
@@ -145,7 +169,7 @@ async function autoCompose() {
       if (r.ok) {
         const d = await r.json();
         await api.loadDoc(d.doc);
-        setMsg('已载入画布存档，可继续编辑（改完点「保存到项目」）', 'ok');
+        setMsg('已载入画布存档，可继续编辑（改完点「保存到编辑中的页」）', 'ok');
         return;
       }
     } catch (e) { /* 没存档 → 退回自动合成 */ }
@@ -173,7 +197,7 @@ async function autoCompose() {
       } catch (e) { /* 跳过坏图 */ }
     }
     try { api.applyPrompts(pg.panels.map((p) => p.prompt || ''), { rightToLeft: true, append: false }); } catch (e) { /* ignore */ }
-    setMsg(`已装框并贴入 ${placed}/${want} 张，可在 MED 里继续编辑（改完点「保存到项目」）`, 'ok');
+    setMsg(`已装框并贴入 ${placed}/${want} 张，可在 MED 里继续编辑（改完点「保存到编辑中的页」）`, 'ok');
     try { const url = api.exportPNG(1); $('preview').src = url; $('preview').style.display = 'block'; } catch (e) { /* ignore */ }
   } catch (e) { setMsg('自动合成失败：' + e.message, 'err'); }
 }
@@ -194,7 +218,7 @@ $('btn-save').addEventListener('click', async () => {
       body: JSON.stringify({ doc, png }),
     });
     const j = await r.json();
-    setMsg(r.ok ? `已保存到项目（v${j.version}），以后可从此继续编辑` : '保存失败：' + (j.detail || ''), r.ok ? 'ok' : 'err');
+    setMsg(r.ok ? `已保存到「编辑中的页」（v${j.version}），可在分页合成页继续编辑` : '保存失败：' + (j.detail || ''), r.ok ? 'ok' : 'err');
   } catch (e) { setMsg('保存失败：' + e.message, 'err'); }
 });
 
