@@ -134,6 +134,12 @@ h2.foldable{cursor:pointer;user-select:none}
 h2.foldable:hover{color:var(--accent)}
 h2.foldable .fold-ic{float:right;color:var(--muted);transition:transform .15s;font-size:13px}
 h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
+.lora-wrap{position:relative;display:inline-block;flex:1;min-width:200px}
+.lora-wrap>input{width:100%}
+.lora-menu{position:absolute;z-index:70;left:0;right:0;top:calc(100% + 2px);max-height:260px;overflow:auto;background:#fff;border:1px solid var(--line2);border-radius:8px;box-shadow:0 12px 30px -8px rgba(16,24,40,.28);padding:4px}
+.lora-menu .it{padding:5px 9px;border-radius:6px;font-size:12.5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lora-menu .it:hover,.lora-menu .it.on{background:#eef4ff}
+.lora-menu .it b{color:var(--accent)}
 @media(max-width:820px){.app{grid-template-columns:1fr}.side{position:static;height:auto}.grid2,.grid3{grid-template-columns:1fr}}
 
 /* 模板缩略图选择器 */
@@ -497,6 +503,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=44"></script>
+<script type="module" src="/ui/app.js?v=45"></script>
 </body>
 </html>
