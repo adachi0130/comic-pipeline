@@ -283,60 +283,35 @@ def create_page(project_id: int, body: dict, session: Session = Depends(get_sess
 
 @router.post("/projects/{project_id}/panels/{panel_ref}/prepare")
 def prepare_panel(project_id: int, panel_ref: str, session: Session = Depends(get_session)) -> dict:
-    """为某一格准备 S3 提示词产物（若还没有）：生成一条带预设默认值的提示词。
+    """为某一格「自动填写」提示词：调 LLM 真正生成该格的正/负向提示词。
 
-    出图工作台据此预填“出图设置里的正/负向提示词”，免得那一格空着没法出图。
-    S3 正式跑过（已有 AI 提示词）的格子会直接复用，不覆盖。
+    - 已有该格提示词则直接复用（不覆盖）；
+    - 否则按 S3 的逻辑（预设 + 角色触发词/外观裁剪 + 排版尺寸 + 角色 LoRA）生成一格。
     """
     from ...stages import prompt as prompt_stage
 
     if session.get(Project, project_id) is None:
         raise HTTPException(404, "项目不存在")
+    if A.current(session, project_id, ArtifactKind.PANEL_PROMPT.value, panel_ref) is not None:
+        return {"ok": True, "reused": True}
 
-    existing = A.current(session, project_id, ArtifactKind.PANEL_PROMPT.value, panel_ref)
-    if existing is not None:
-        return {"ok": True, "reused": True, "artifact_id": existing.id}
+    page_ref = "page:" + panel_ref.split(":", 1)[1].split(".", 1)[0]
+    if A.current(session, project_id, ArtifactKind.PAGE_SCRIPT.value, page_ref) is None:
+        raise HTTPException(400, f"找不到 {page_ref} 的分格脚本（先跑 S2）")
 
-    # 从 ref（panel:<页>.<格>）反查该格的分格脚本，拿到出场角色
-    page_no, _, order_part = panel_ref.split(":", 1)[1].partition(".")
-    page_ref = f"page:{page_no}"
-    page = A.current(session, project_id, ArtifactKind.PAGE_SCRIPT.value, page_ref)
-    panel = None
-    if page is not None:
-        for p in (page.payload or {}).get("panels", []):
-            if str(p.get("panel_order")) == order_part:
-                panel = p
-                break
+    # 同步调 LLM 生成这一格（S3 的 handle 支持 panel_ref 只生成一格）
+    from ...models import Job as _Job
 
-    preset_pos, preset_neg = prompt_stage._default_presets(session, project_id)
-    chars = (panel or {}).get("characters") or []
-    loras = prompt_stage._merge_loras(
-        prompt_stage._preset_loras(session, project_id),
-        prompt_stage._character_loras(session, project_id, chars),
-    )
-    # 按该格画框算宽高
-    geom = ((page.payload or {}).get("geometry") if page is not None else None) or {}
-    gpan = None
-    for gp in geom.get("panels") or []:
-        if str(gp.get("index")) == order_part:
-            gpan = gp
-            break
-    size = prompt_stage._size_from_geometry(gpan or {}, geom.get("canvas"))
-
-    art = A.create(
-        session, project_id=project_id, kind=ArtifactKind.PANEL_PROMPT.value, ref=panel_ref,
-        payload={
-            "prompt_pos": preset_pos, "prompt_neg": preset_neg, "loras": loras,
-            "seed": None,
-            "width": size[0] if size else None, "height": size[1] if size else None,
-            "frame": (gpan or {}).get("shape") or "",
-            "prepared": True,
-        },
-        inputs=[page] if page is not None else [],
-        status=ArtifactStatus.REVIEW.value,
-    )
-    session.commit()
-    return {"ok": True, "reused": False, "artifact_id": art.id}
+    try:
+        prompt_stage.handle(session, _Job(project_id=project_id, kind="prompt", payload={
+            "project_id": project_id, "page_ref": page_ref, "panel_ref": panel_ref,
+        }))
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:  # noqa: BLE001 - LLM 未配置/失败等，给前端一句人话
+        raise HTTPException(502, f"自动填写失败：{e}") from e
+    art = A.current(session, project_id, ArtifactKind.PANEL_PROMPT.value, panel_ref)
+    return {"ok": True, "reused": False, "artifact_id": art.id if art else None}
 
 
 @router.get("/projects/{project_id}/prompt-board")
@@ -359,9 +334,6 @@ def prompt_board(project_id: int, session: Session = Depends(get_session)) -> di
             "frame": p.get("frame", ""),
         }
 
-    # 该项目的默认提示词预设：给尚未生成的格子做“出图设置里的正/负向”初始值
-    preset_pos, preset_neg = prompt_stage._default_presets(session, project_id)
-
     pages = []
     for a in A.all_current(session, project_id, ArtifactKind.PAGE_SCRIPT.value):
         payload = a.payload or {}
@@ -375,15 +347,12 @@ def prompt_board(project_id: int, session: Session = Depends(get_session)) -> di
             order = p.get("panel_order")
             ref = f"panel:{no}.{order}"
             prompt = prompt_by_ref.get(ref)
-            # 尚未生成时，给出“出图设置里的正/负向”默认（主人预设）
-            fallback = None if prompt else {"prompt_pos": preset_pos, "prompt_neg": preset_neg, "prepared": False}
             panels.append({
                 "panel_order": order, "panel_ref": ref,
                 "shot": p.get("shot", ""), "action": p.get("action", ""),
                 "dialogue": p.get("dialogue", ""),
                 "characters": p.get("characters", []),
                 "prompt": prompt,
-                "fallback": fallback,
             })
         pages.append({
             "page_ref": a.ref, "page_index": no, "status": a.status,

@@ -216,10 +216,12 @@ def handle(session: Session, job: Job) -> dict:
     preset_loras = _preset_loras(session, project_id)
 
     log = LLMLogContext(session=session, stage="S3", project_id=project_id, provider_id=provider.id)
+    # 只生成指定的某一格（panel_ref）时，其余格跳过（从任务 payload 取，别被下面覆盖）
+    only_panel = payload.get("panel_ref")
     out: list[str] = []
     for page in pages:
-        payload = page.payload or {}
-        geom = payload.get("geometry") or {}
+        page_payload = page.payload or {}
+        geom = page_payload.get("geometry") or {}
         geometry_by_order = {p.get("index"): p for p in (geom.get("panels") or [])}
         user = promptlib.render(
             user_tpl,
@@ -238,15 +240,17 @@ def handle(session: Session, job: Job) -> dict:
             log=log,
         )
         # 格数适配校验：必须与分页脚本的 panels 一一对应
-        expected = len(payload.get("panels", []))
+        expected = len(page_payload.get("panels", []))
         if len(prompts.panels) != expected:
             raise ValueError(
                 f"{page.ref} 需 {expected} 格提示词（按该页模板格数），模型给了 {len(prompts.panels)} 格"
             )
 
         # 该页每格的分格脚本（取 characters / panel_order）
-        script_by_order = {p.get("panel_order"): p for p in payload.get("panels", [])}
+        script_by_order = {p.get("panel_order"): p for p in page_payload.get("panels", [])}
         for item in prompts.panels:
+            if only_panel and item.panel_ref != only_panel:
+                continue
             # 第几格（panel_ref = panel:<页>.<格>）
             try:
                 order = int(item.panel_ref.rsplit(".", 1)[1])
