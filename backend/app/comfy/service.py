@@ -145,6 +145,7 @@ def generate(
             prompt_id,
             timeout_s=600.0,
             interval_s=get_settings().comfy_poll_interval_s,
+            should_cancel=should_cancel,
         )
         results.extend(client.collect_images(entry, output_node_ids=params.output_node_ids or None))
     return results
