@@ -1767,6 +1767,9 @@ async function loadWorkbench() {
   }
   const box = $('#wb-list');
   try {
+    // 0) 顶部：候选图库（所有已生成的候选图，攒成列表方便挑）
+    await loadCandidateGallery();
+
     // 1) 顶部：分格产物（每页卡 + 「详情」看该页所有镜头）
     await renderWorkbenchPages();
 
@@ -1896,6 +1899,38 @@ async function loadWorkbench() {
   } catch (e) { toast(e.message, 'err'); }
 }
 
+
+/** 候选图库：把该项目所有已生成的候选图攒成列表（按格分组），点击挑选。 */
+async function loadCandidateGallery() {
+  const box = $('#wb-gallery');
+  if (!box) return;
+  if (!state.projectId) { box.innerHTML = '<div class="empty">先选择项目</div>'; return; }
+  let rows = [];
+  try { rows = await api(`/api/projects/${state.projectId}/artifacts?kind=image`); } catch { /* ignore */ }
+  if (!rows.length) { $('#wb-gallery-info').textContent = '0 张'; box.innerHTML = '<div class="empty">还没有候选图，去下面逐格点「出图」</div>'; return; }
+  const full = [];
+  for (const r of rows) { try { full.push(await api('/api/artifacts/' + r.id)); } catch { /* skip */ } }
+  const total = full.reduce((s, a) => s + (((a.payload && a.payload.candidates) || []).length), 0);
+  $('#wb-gallery-info').textContent = `${full.length} 格 · ${total} 张`;
+  box.innerHTML = full.map((a) => {
+    const cands = (a.payload && a.payload.candidates) || [];
+    const sel = a.payload && a.payload.selected_index;
+    return `<div style="margin-bottom:14px">
+      <div class="row" style="gap:6px"><b>${panelFullLabel(a.ref)}</b> ${pill(a.status)}
+        <span class="mut" style="font-size:12px">${cands.length} 张</span></div>
+      <div class="candgrid" style="margin-top:6px">${cands.map((c, i) => `
+        <div class="cand ${i === sel ? 'sel' : ''}" data-art="${a.id}" data-idx="${i}">
+          <img src="/api/artifacts/${a.id}/candidate/${i}" loading="lazy">
+          <div class="lbl"><span>#${i + 1}</span>${i === sel ? '<span style="color:var(--ok)">已选</span>' : ''}</div></div>`).join('')}</div>
+    </div>`;
+  }).join('');
+  box.querySelectorAll('.cand').forEach((el) => el.addEventListener('click', () => {
+    openLightbox(`/api/artifacts/${el.dataset.art}/candidate/${el.dataset.idx}`, async () => {
+      await api(`/api/artifacts/${el.dataset.art}/select`, { method: 'POST', body: JSON.stringify({ index: +el.dataset.idx }) });
+      toast('已采用', 'ok'); loadCandidateGallery(); refreshGates();
+    });
+  }));
+}
 
 /** 渲染 S2 分格产物：每页一张卡（真版式缩略图 + 每格摘要 + 出图进度）。 */
 async function renderWorkbenchPages() {
