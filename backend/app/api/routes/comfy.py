@@ -557,14 +557,17 @@ def set_loras(project_id: int, body: dict, session: Session = Depends(get_sessio
 # ==========================================================================
 # 按格出图
 # ==========================================================================
-@router.post("/projects/{project_id}/artifacts/{artifact_id}/open-in-comfy")
-def open_in_comfy(project_id: int, artifact_id: int, body: dict, session: Session = Depends(get_session)) -> dict:
-    """把某张候选图上传到 ComfyUI 的 input，返回可打开的 ComfyUI 地址。
+@router.post("/projects/{project_id}/artifacts/{artifact_id}/open-workflow")
+def open_workflow(project_id: int, artifact_id: int, body: dict, session: Session = Depends(get_session)) -> dict:
+    """「工作流」按钮：把这张图上传到 ComfyUI，并把生成它的**完整工作流快照**
+    写到 ComfyUI 的用户工作流目录，然后返回可打开的 ComfyUI 地址。
 
-    这样点「Com工作流」就相当于把这张图放进了 ComfyUI（可在 LoadImage 里选到），
-    并打开出图后端页面继续调试。
+    这样你打开 ComfyUI 就能在侧栏看到这个名字的工作流（等于把这张图的工作流"打开"）。
     """
+    import json as _json
     from pathlib import Path
+
+    import httpx
 
     from ...comfy import store as comfy_store
     from ...models import Artifact
@@ -584,21 +587,36 @@ def open_in_comfy(project_id: int, artifact_id: int, body: dict, session: Sessio
     base = (cfg.active_url() or "").rstrip("/")
     if not base:
         raise HTTPException(400, "还没配出图后端地址（出图设置里填）")
-    try:
-        import httpx
+    headers = {"Authorization": f"Bearer {cfg.active_api_key()}"} if cfg.active_api_key() else {}
 
+    uploaded = ""
+    try:
         with open(src, "rb") as f:
-            files = {"image": (src.name, f, "image/png")}
-            data = {"overwrite": "true", "type": "input"}
-            r = httpx.post(f"{base}/upload/image", files=files, data=data,
-                           headers=(cfg.active_api_key() and {"Authorization": f"Bearer {cfg.active_api_key()}"}) or {},
-                           timeout=30.0)
+            r = httpx.post(f"{base}/upload/image", files={"image": (src.name, f, "image/png")},
+                           data={"overwrite": "true", "type": "input"}, headers=headers, timeout=30.0)
         r.raise_for_status()
-        info = r.json()
-        filename = info.get("name") or src.name
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(502, f"上传到 ComfyUI 失败：{e}") from e
-    return {"ok": True, "filename": filename, "comfy_url": base + "/"}
+        uploaded = (r.json() or {}).get("name") or src.name
+    except Exception as e:  # noqa: BLE001 - 上传失败也算部分成功，继续
+        uploaded = ""
+
+    # 工作流快照写到 ComfyUI 的用户工作流目录（best-effort）
+    workflow = (art.payload or {}).get("workflow")
+    wf_name = f"{art.ref.replace(':', '_')}"
+    saved = False
+    if workflow:
+        try:
+            r = httpx.post(f"{base}/userdata/workflows%2F{wf_name}.json",
+                           content=_json.dumps(workflow, ensure_ascii=False).encode("utf-8"),
+                           headers={**headers, "Content-Type": "application/json"}, timeout=30.0)
+            saved = r.status_code < 400
+        except Exception:  # noqa: BLE001
+            saved = False
+
+    return {
+        "ok": True, "uploaded": uploaded, "workflow_saved": saved,
+        "workflow_name": wf_name if saved else "",
+        "comfy_url": base + "/",
+    }
 
 
 def _comfy_base() -> str:
