@@ -102,8 +102,14 @@ cd backend && ../.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0
 
 - **角色卡**（`characters` 表）：`name` / `trigger_words`（触发词）/ `lora_name`（角色 LoRA，**可留空**）/
   `lora_weight` / `use_lora` / `prompt_block`（固定外观词块）。触发词与角色 LoRA 绑定。
-- **提示词预设**（`prompt_presets` 表）：`kind`=positive/negative、`scope`=global/project、`is_default`。
-  勾「默认」的那个会被 S3 当作风格骨架（正向前缀 / 负向基础）喂给 AI。
+- **提示词预设**（`prompt_presets` 表）：`kind`=positive/negative、`scope`=global/project、`is_default`、
+  `loras`（预设可绑定 LoRA）。勾「默认」的那个会被 S3 当作风格骨架（正向前缀 / 负向基础）喂给 AI，
+  其 `loras` 也会**合入每格提示词**。
+- **S3 生成时一并算出**：每格的**宽高按该格画框（模板几何）**计算（长边 1216、64 对齐，与排版一致）；
+  LoRA 合并顺序 = 预设 → 项目默认 → 出场角色 → 模型给的角色 LoRA（后者覆盖权重）。
+  出图阶段（S5）**直接套用** S3 的宽高与 LoRA，不再重复解析角色。
+- **提示词审查**：S3 页每格有「预览」（看完整正/负向 + LoRA + 尺寸 + 画框），
+  每页有「预览整页」（一次看完整页每格），可就地「改这格」。
 - `_characters()` 与 `_default_presets()` 把这些注入 S3 的提示词模板
   （`{{CHARACTERS_JSON}}` / `{{PRESET_POSITIVE}}` / `{{PRESET_NEGATIVE}}`）。
 - 若角色 `lora_name` 为空，S3 不列它的 LoRA，改用 `prompt_block + trigger_words` 描述外观。

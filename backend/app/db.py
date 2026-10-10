@@ -37,6 +37,7 @@ def init_db() -> None:
 # 只做“加列”，不做改类型/删列——够本项目滚动开发用；正式环境仍以 Alembic 为准。
 _ADDED_COLUMNS = {
     "characters": {"trigger_words": "TEXT DEFAULT ''"},
+    "prompt_presets": {"loras": "JSON DEFAULT '[]'"},
 }
 
 

@@ -291,6 +291,8 @@ class PromptPreset(Base):
     kind: Mapped[str] = mapped_column(String(16), default="positive")  # positive / negative
     name: Mapped[str] = mapped_column(String(128))
     text: Mapped[str] = mapped_column(Text, default="")
+    # 预设自带的 LoRA（[{"name":...,"weight":...}]）：生成提示词时合入每格，出图直接套用
+    loras: Mapped[list] = mapped_column(JSON, default=list)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 

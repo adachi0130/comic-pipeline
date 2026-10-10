@@ -47,6 +47,21 @@ async def lifespan(app: FastAPI):
     register_all()
     jobs.start(max_workers=max(2, settings.comfy_max_concurrency + 2))
 
+    # 一次性回填：把已有提示词产物的宽高按画框重算（早期版本长边算错）
+    try:
+        from .db import SessionLocal
+        from .stages import prompt as prompt_stage
+
+        _s = SessionLocal()
+        try:
+            _n = prompt_stage.backfill_panel_sizes(_s)
+            if _n:
+                log.info("回填提示词宽高：%s 条", _n)
+        finally:
+            _s.close()
+    except Exception as e:  # noqa: BLE001 - 回填失败不影响启动
+        log.warning("回填提示词宽高失败：%s", e)
+
     global _tunnel
     if settings.tunnel.enabled and settings.tunnel.ssh_host:
         _tunnel = SshTunnel(

@@ -956,6 +956,18 @@ function installLoraDatalist(list) {
   document.body.appendChild(dl);
 }
 
+// 页面打开时后台拉一次后端 LoRA，填充下拉联想（失败静默）
+let _loraDatalistTried = false;
+async function ensureLoraDatalist() {
+  if (_loraDatalistTried && document.getElementById('lora-all')) return;
+  _loraDatalistTried = true;
+  try {
+    const r = await api('/api/comfy/assets');
+    state._loras = r.loras || [];
+    installLoraDatalist(state._loras);
+  } catch { /* ComfyUI 未启动 */ }
+}
+
 // ---- 角色卡 + 提示词预设渲染 ----
 async function loadCharacterPresetPanel() {
   const box = $('#pr-chars');
@@ -985,6 +997,9 @@ async function loadCharacterPresetPanel() {
             <button class="sm danger pres-del">删</button>
           </div>
           <textarea class="pres-text" style="margin-top:6px;min-height:60px;font-size:12px;resize:vertical">${esc(p.text)}</textarea>
+          <div class="mut" style="font-size:11px;margin-top:5px">可选：这个预设要挂的 LoRA（生成提示词时合入每格，出图直接套用）</div>
+          <input class="pres-loras" list="lora-all" value="${esc(presetLoraStr(p.loras))}"
+                 placeholder="多个用逗号分隔，如 画风/A.safetensors:0.8, 效果/B.safetensors:1" style="width:100%;margin-top:3px;font-size:11.5px">
         </div>`).join('') || '<div class="mut" style="font-size:12px;margin-top:6px">还没有预设</div>'}
     </div>`;
 
@@ -1022,6 +1037,7 @@ async function loadCharacterPresetPanel() {
     const payload = () => ({
       id, name: el.querySelector('.pres-name').value, text: el.querySelector('.pres-text').value,
       is_default: el.querySelector('.pres-def').checked,
+      loras: parseLoraStr(el.querySelector('.pres-loras').value),
     });
     const save = async (silent) => {
       try {
@@ -1041,7 +1057,7 @@ async function loadCharacterPresetPanel() {
     });
     // 自动保存：输入停下 700ms 后落库（只存本卡，不重绘，避免光标丢失）
     ['input', 'change'].forEach((ev) => {
-      el.querySelectorAll('.pres-name, .pres-text, .pres-def').forEach((inp) =>
+      el.querySelectorAll('.pres-name, .pres-text, .pres-def, .pres-loras').forEach((inp) =>
         inp.addEventListener(ev, debounce(() => save(true), 700)));
     });
   });
@@ -1097,6 +1113,20 @@ function flashSaved(el) {
   setTimeout(() => { el.style.boxShadow = old; }, 500);
 }
 
+// LoRA 文本 ⇄ 数组：文本形如 "画风/A.safetensors:0.8, 效果/B.safetensors"
+function parseLoraStr(s) {
+  return String(s || '').split(/[,\n]/).map((x) => x.trim()).filter(Boolean).map((x) => {
+    const i = x.lastIndexOf(':');
+    if (i > 0 && !isNaN(Number(x.slice(i + 1)))) {
+      return { name: x.slice(0, i).trim(), weight: Number(x.slice(i + 1)) };
+    }
+    return { name: x, weight: 0.8 };
+  });
+}
+function presetLoraStr(loras) {
+  return (loras || []).map((l) => `${l.name}:${l.weight ?? 0.8}`).join(', ');
+}
+
 async function upsertCharacter(data) {
   if (!state.projectId) return toast('先选择项目', 'err');
   try {
@@ -1107,6 +1137,7 @@ async function upsertCharacter(data) {
 
 async function loadPrompts() {
   loadCharacterPresetPanel();
+  ensureLoraDatalist();
   if (!state.projectId) {
     $('#pr-list').innerHTML = '';
     $('#pr-blank').style.display = 'block';
@@ -1135,6 +1166,7 @@ async function loadPrompts() {
             <div class="mut" style="font-size:11.5px">${esc(pg.template ? (pg.template.layout_desc || pg.template_id) : (pg.template_id || ''))}</div>
           </div>
           <div class="spacer"></div>
+          <button class="sm" data-prpreview="${esc(pg.page_ref)}">预览整页</button>
           <button class="sm" data-prrun="${esc(pg.page_ref)}">生成这页</button>
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:8px;margin-top:10px">
@@ -1145,12 +1177,13 @@ async function loadPrompts() {
                 <span class="mut" style="font-size:11px">${esc(p.shot || '')}</span>
                 ${p.prompt ? pill(p.prompt.status) : '<span class="pill">未生成</span>'}
                 <div class="spacer"></div>
-                ${p.prompt ? `<button class="sm" data-predit="${esc(p.panel_ref)}">改</button>` : ''}
+                ${p.prompt ? `<button class="sm" data-prview="${esc(p.panel_ref)}">预览</button>
+                  <button class="sm" data-predit="${esc(p.panel_ref)}">改</button>` : ''}
               </div>
               <div class="mut" style="font-size:11px;margin-top:3px">${esc((p.action || p.dialogue || '').slice(0, 60))}</div>
               ${p.prompt ? `<div style="font-size:11.5px;margin-top:5px;line-height:1.45">${esc((p.prompt.prompt_pos || '').slice(0, 200))}</div>
                 ${p.prompt.prompt_neg ? `<div class="mut" style="font-size:11px;margin-top:3px">负向：${esc(p.prompt.prompt_neg.slice(0, 90))}</div>` : ''}
-                ${(p.prompt.loras || []).length ? `<div class="mut" style="font-size:11px;margin-top:3px">LoRA ${esc((p.prompt.loras || []).map((l) => l.name).join('、'))}</div>` : ''}`
+                <div class="mut" style="font-size:11px;margin-top:3px">${p.prompt.width || '?'}×${p.prompt.height || '?'}${p.prompt.frame ? ' · ' + esc(p.prompt.frame) : ''}${(p.prompt.loras || []).length ? ' · LoRA ' + esc(p.prompt.loras.map((l) => l.name).join('、')) : ''}</div>`
                 : '<div class="mut" style="font-size:11.5px;margin-top:5px">点右上角「生成这页」或顶部「整册生成」</div>'}
             </div>`).join('')}
         </div>
@@ -1166,8 +1199,58 @@ async function loadPrompts() {
       finally { b.disabled = false; b.textContent = '生成这页'; }
     }));
     box.querySelectorAll('[data-predit]').forEach((b) => b.addEventListener('click', () => openPanelPromptEdit(b.dataset.predit)));
+    box.querySelectorAll('[data-prview]').forEach((b) => b.addEventListener('click', () => openPanelPromptPreview([b.dataset.prview])));
+    box.querySelectorAll('[data-prpreview]').forEach((b) => b.addEventListener('click', () => {
+      const pg = d.pages.find((x) => x.page_ref === b.dataset.prpreview);
+      openPanelPromptPreview((pg ? pg.panels : []).filter((p) => p.prompt).map((p) => p.panel_ref), b.dataset.prpreview);
+    }));
   } catch (e) { toast(e.message, 'err'); }
 }
+
+/** 提示词完整预览（审查用）：一页/一格的全部正向、负向、LoRA、尺寸。 */
+async function openPanelPromptPreview(panelRefs, title) {
+  if (!panelRefs || !panelRefs.length) return toast('该页还没有已生成的提示词', 'err');
+  const box = document.createElement('div');
+  box.className = 'modal';
+  box.innerHTML = `<div class="box" style="width:min(1000px,95vw)">
+    <h3>提示词预览 <span class="mut" style="font-size:12px;font-weight:400">${esc(title || (panelRefs.length + ' 格'))}</span></h3>
+    <div class="h2sub">逐格审查完整提示词；要改点下面的「改这格」。</div>
+    <div id="ppv-body"><div class="empty">加载中…</div></div>
+    <div class="row" style="margin-top:14px"><div class="spacer"></div>
+      <button class="sm" data-close>关闭</button></div></div>`;
+  document.body.appendChild(box);
+  box.querySelector('[data-close]').addEventListener('click', () => box.remove());
+  box.addEventListener('click', (e) => { if (e.target === box) box.remove(); });
+
+  const rows = [];
+  for (const ref of panelRefs) {
+    try {
+      const list = await api(`/api/projects/${state.projectId}/artifacts?kind=panel_prompt&ref_prefix=${encodeURIComponent(ref)}`);
+      if (list.length) rows.push(await api('/api/artifacts/' + list[0].id));
+    } catch { /* 跳过 */ }
+  }
+  if (!rows.length) { box.querySelector('#ppv-body').innerHTML = '<div class="empty">没有可预览的提示词产物</div>'; return; }
+  box.querySelector('#ppv-body').innerHTML = rows.map((a) => {
+    const pl = a.payload || {};
+    const loras = (pl.loras || []).map((l) => `${esc(l.name)}（${l.weight}）`).join('<br>') || '<span class="mut">无</span>';
+    return `<div class="mini-card" style="padding:12px 14px;margin-top:10px">
+      <div class="row" style="gap:6px"><b>${esc(a.ref)}</b> ${pill(a.status)}
+        <span class="pill tag">${pl.width || '?'}×${pl.height || '?'}${pl.frame ? ' · ' + esc(pl.frame) : ''}</span>
+        <div class="spacer"></div>
+        <button class="sm" data-ppv-edit="${esc(a.ref)}">改这格</button></div>
+      <div style="margin-top:8px"><label class="fld">正向</label>
+        <div class="ppv-text">${esc(pl.prompt_pos || '（空）')}</div></div>
+      <div style="margin-top:8px"><label class="fld">负向</label>
+        <div class="ppv-text">${esc(pl.prompt_neg || '（空）')}</div></div>
+      <div style="margin-top:8px"><label class="fld">LoRA</label>
+        <div class="mut" style="font-size:12px">${loras}</div></div>
+    </div>`;
+  }).join('');
+  box.querySelectorAll('[data-ppv-edit]').forEach((b) => b.addEventListener('click', () => {
+    box.remove(); openPanelPromptEdit(b.dataset.ppvEdit);
+  }));
+}
+
 
 async function openPanelPromptEdit(panelRef) {
   let art;
