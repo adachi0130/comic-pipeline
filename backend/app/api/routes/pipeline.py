@@ -331,7 +331,7 @@ def prompt_board(project_id: int, session: Session = Depends(get_session)) -> di
             "artifact_id": a.id, "version": a.version, "status": a.status,
             "prompt_pos": p.get("prompt_pos", ""), "prompt_neg": p.get("prompt_neg", ""),
             "loras": p.get("loras", []), "width": p.get("width"), "height": p.get("height"),
-            "frame": p.get("frame", ""),
+            "frame": p.get("frame", ""), "params": p.get("params", {}),
         }
 
     pages = []
@@ -381,7 +381,7 @@ def update_panel_prompt(project_id: int, panel_ref: str, body: dict, session: Se
     if art is None:
         raise HTTPException(404, f"没有 {panel_ref} 的提示词产物（先跑 S3）")
     payload = {**(art.payload or {})}
-    for k in ("prompt_pos", "prompt_neg", "loras", "seed", "width", "height"):
+    for k in ("prompt_pos", "prompt_neg", "loras", "seed", "width", "height", "params"):
         if k in body:
             payload[k] = body[k]
     new = A.create(session, project_id=project_id, kind=ArtifactKind.PANEL_PROMPT.value,

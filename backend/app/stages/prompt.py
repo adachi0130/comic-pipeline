@@ -67,6 +67,21 @@ def _project_loras(session: Session, project_id: int) -> list[dict]:
     return [{"name": r.lora_name, "weight": r.weight} for r in rows]
 
 
+# 出图参数（写进提示词产物，出图时直接套用；不想烙进去就把 comfy 默认参数清空）
+_GEN_PARAM_KEYS = ("steps", "cfg", "sampler", "scheduler", "denoise", "ckpt_name")
+
+
+def _default_gen_params() -> dict:
+    """当前出图后端配置里的默认参数快照，生成提示词时一并带上。"""
+    try:
+        from ..comfy import store
+
+        dp = store.load_comfy_config().default_params or {}
+    except Exception:  # noqa: BLE001 - 配置读不到就不带参数
+        return {}
+    return {k: dp[k] for k in _GEN_PARAM_KEYS if dp.get(k) is not None}
+
+
 def _preset_loras(session: Session, project_id: int) -> list[dict]:
     """默认预设（正向+负向）里绑定的 LoRA，生成提示词时一并合入每格。"""
     from ..models import PromptPreset
@@ -214,6 +229,8 @@ def handle(session: Session, job: Job) -> dict:
     preset_pos, preset_neg = _default_presets(session, project_id)
     # 预设自带的 LoRA（主人的“风格预设”里可能绑了 LoRA）
     preset_loras = _preset_loras(session, project_id)
+    # 出图参数快照（steps/cfg/sampler/scheduler/denoise/ckpt），写进每格出图时直接套用
+    gen_params = _default_gen_params()
 
     log = LLMLogContext(session=session, stage="S3", project_id=project_id, provider_id=provider.id)
     # 只生成指定的某一格（panel_ref）时，其余格跳过（从任务 payload 取，别被下面覆盖）
@@ -280,6 +297,7 @@ def handle(session: Session, job: Job) -> dict:
                     "width": width,
                     "height": height,
                     "frame": gpan.get("shape") or "",
+                    "params": dict(gen_params),
                 },
                 inputs=[page],
                 status=ArtifactStatus.REVIEW.value,

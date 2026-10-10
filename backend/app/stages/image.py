@@ -80,7 +80,9 @@ def handle(session: Session, job: Job) -> dict:
     prompt_neg = prompt_neg or ""
 
     count = int(payload.get("count") or project.candidates_per_panel or 4)
-    params = dict(payload.get("params") or project.gen_params or {})
+    # 出图参数：优先 payload，其次该格 S3 产物里烙好的（steps/cfg/sampler/scheduler/denoise/ckpt），
+    # 最后才用项目级默认
+    params = dict(payload.get("params") or s3_payload.get("params") or project.gen_params or {})
     # 尺寸：优先 payload，其次该格 S3 按画框算好的宽高（出图与排版一致）
     if not params.get("width"):
         params["width"] = payload.get("width") or s3_payload.get("width")
