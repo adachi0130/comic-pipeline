@@ -116,8 +116,7 @@ def handle(session: Session, job: Job) -> dict:
 
     from .. import jobs as jobq
 
-    snap: dict = {}
-    images = generate(req, should_cancel=lambda: jobq.is_cancelled(job.id), snapshot=snap)
+    images = generate(req, should_cancel=lambda: jobq.is_cancelled(job.id))
 
     safe_ref = panel_ref.replace(":", "_").replace("/", "_")
     out_dir = get_settings().data_dir / "projects" / str(project_id) / "candidates" / safe_ref
@@ -136,7 +135,6 @@ def handle(session: Session, job: Job) -> dict:
             "loras": req.loras,
             "candidates": candidates,
             "selected_index": None,
-            "workflow": snap.get("workflow"),   # 这张图的完整工作流快照
         },
         path=str(out_dir),
         status=ArtifactStatus.REVIEW.value,

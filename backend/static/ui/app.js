@@ -1929,7 +1929,6 @@ async function loadCandidateGallery() {
           <div class="lbl"><span>#${i + 1}${c.uploaded ? ' 上传' : ''}</span>${i === sel ? '<span style="color:var(--ok)">已选</span>' : ''}</div>
           <div class="cand-ops">
             <button class="sm" type="button" data-op="dl" title="下载这张">下载</button>
-            <button class="sm" type="button" data-op="comfy" title="把这张图的工作流在 ComfyUI 里打开">工作流</button>
             <button class="sm danger" type="button" data-op="del" title="删除这张">删</button>
           </div></div>`).join('') || '<div class="empty" style="font-size:12px">还没有图，点「＋ 上传图片」</div>'}</div>
     </div>`;
@@ -1950,14 +1949,6 @@ async function loadCandidateGallery() {
       const a = document.createElement('a');
       a.href = `/api/artifacts/${art}/candidate/${idx}`; a.download = `cand_${art}_${idx + 1}.png`;
       document.body.appendChild(a); a.click(); a.remove();
-    } else if (op === 'comfy') {
-      toast('上传图片 + 打开工作流中…');
-      try {
-        const r = await api(`/api/projects/${state.projectId}/artifacts/${art}/open-workflow`, { method: 'POST', body: JSON.stringify({ index: idx }) });
-        const tip = r.workflow_saved ? `已上传并写入工作流「${r.workflow_name}」` : '图片已上传（该图没有工作流快照）';
-        toast(`${tip}，正在打开 ComfyUI`, 'ok');
-        window.open(r.comfy_url, '_blank');
-      } catch (err) { toast(err.message, 'err'); }
     } else if (op === 'del') {
       if (!confirm('删除这张候选图？')) return;
       try {
