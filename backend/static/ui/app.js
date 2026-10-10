@@ -1221,6 +1221,16 @@ function flashSaved(el) {
   el.style.boxShadow = '0 0 0 2px var(--okbg)';
   setTimeout(() => { el.style.boxShadow = old; }, 500);
 }
+// 阿拉伯数字 → 中文（1..99），用于「第一格」
+const _CN = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+function cnNum(n) {
+  n = +n;
+  if (!n || n < 0) return String(n);
+  if (n <= 10) return _CN[n];
+  if (n < 20) return '十' + (n > 10 ? _CN[n - 10] : '');
+  if (n < 100) return _CN[Math.floor(n / 10)] + '十' + (n % 10 ? _CN[n % 10] : '');
+  return String(n);
+}
 
 // LoRA 文本 ⇄ 数组：文本形如 "画风/A.safetensors:0.8, 效果/B.safetensors"
 function parseLoraStr(s) {
@@ -1808,16 +1818,26 @@ async function loadWorkbench() {
             const pStr = ['steps', 'cfg', 'sampler', 'scheduler', 'denoise'].filter((k) => pp[k] != null).map((k) => `${k} ${pp[k]}`).join(' · ');
             return `<div class="mini-card" data-ref="${esc(p.panel_ref)}" style="padding:10px;margin-top:8px">
               <div class="row"><b>${esc(p.panel_ref)}</b> ${pill(pr.status)}
-                <span class="mut" style="font-size:12px">第 ${p.panel_order} 格 · ${esc(p.shot || '')}</span>
+                <span class="mut" style="font-size:12px">${esc(p.shot || '')}</span>
                 <div class="spacer"></div>
                 <label class="fld" style="margin:0">张数</label>
                 <input class="wb-count" type="number" value="1" min="1" max="8" style="width:60px">
                 <button class="sm wb-autofill">自动填写</button>
                 <button class="primary sm wb-gen">出图</button></div>
               <div class="mut" style="font-size:11.5px;margin-top:2px">出图参数：${pr.width || '?'}×${pr.height || '?'}${pStr ? ' · ' + esc(pStr) : ''}${loraAll ? ' · LoRA ' + loraAll : ' · 无 LoRA'}</div>
-              <div class="grid2" style="margin-top:8px">
-                <div><label class="fld">正向</label><textarea class="wb-pos">${esc(pr.prompt_pos || '')}</textarea></div>
-                <div><label class="fld">负向</label><textarea class="wb-neg">${esc(pr.prompt_neg || '')}</textarea></div>
+              <div class="pn-row row" data-pn-toggle style="cursor:pointer;gap:8px;margin-top:8px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:#fafbfc">
+                <b style="min-width:52px">第${cnNum(p.panel_order)}格</b>
+                <span class="pill ${pr.prompt_pos ? 'ok' : 'tag'}">正 ${pr.prompt_pos ? esc(pr.prompt_pos.slice(0, 18)) + (pr.prompt_pos.length > 18 ? '…' : '') : '（空）'}</span>
+                <span class="pill ${pr.prompt_neg ? 'ok' : 'tag'}">负 ${pr.prompt_neg ? esc(pr.prompt_neg.slice(0, 18)) + (pr.prompt_neg.length > 18 ? '…' : '') : '（空）'}</span>
+                <div class="spacer"></div>
+                <span class="fold-ic">▸</span>
+              </div>
+              <div class="pn-body hidden" style="margin-top:8px">
+                <div class="grid2">
+                  <div><label class="fld">正向</label><textarea class="wb-pos">${esc(pr.prompt_pos || '')}</textarea></div>
+                  <div><label class="fld">负向</label><textarea class="wb-neg">${esc(pr.prompt_neg || '')}</textarea></div>
+                </div>
+                <div class="mut" style="font-size:11px" data-wb-pn-msg></div>
               </div>
               <div style="margin-top:8px">
                 <div class="row"><label class="fld" style="margin:0">LoRA（出图套用；含角色/画风）</label>
@@ -2055,17 +2075,55 @@ function bindWorkbench(panels) {
     } catch (e) { lastLora[key] = null; toast('LoRA 保存失败：' + e.message, 'err'); }
   }, 500);
 
+  // 正/负向自动保存（只在真正变化时写一次新版本）
+  const lastPN = {};
+  const autoSavePN = debounce(async (card) => {
+    const art = byRef[card.dataset.ref]?.prompt;
+    if (!art) return;
+    const pos = card.querySelector('.wb-pos')?.value || '';
+    const neg = card.querySelector('.wb-neg')?.value || '';
+    const key = card.dataset.ref, json = JSON.stringify([pos, neg]);
+    if (lastPN[key] === json) return;
+    lastPN[key] = json;
+    try {
+      await api(`/api/artifacts/${art.artifact_id}/payload`, { method: 'PATCH', body: JSON.stringify({ prompt_pos: pos, prompt_neg: neg }) });
+      // 同步左行摘要
+      const row = card.querySelector('.pn-row');
+      if (row) {
+        const pills = row.querySelectorAll('.pill');
+        if (pills[0]) { pills[0].className = 'pill ' + (pos ? 'ok' : 'tag'); pills[0].textContent = '正 ' + (pos ? pos.slice(0, 18) + (pos.length > 18 ? '…' : '') : '（空）'); }
+        if (pills[1]) { pills[1].className = 'pill ' + (neg ? 'ok' : 'tag'); pills[1].textContent = '负 ' + (neg ? neg.slice(0, 18) + (neg.length > 18 ? '…' : '') : '（空）'); }
+      }
+      const msg = card.querySelector('[data-wb-pn-msg]');
+      if (msg) { msg.textContent = '已自动保存'; setTimeout(() => { if (msg.textContent === '已自动保存') msg.textContent = ''; }, 1500); }
+      refreshGates();
+    } catch (e) { lastPN[key] = null; toast('保存失败：' + e.message, 'err'); }
+  }, 700);
+
   $$('#wb-list [data-ref]').forEach((card) => {
     const ref = card.dataset.ref;
     const pn = byRef[ref] || {};
     const art = pn.prompt;
     wbBindLoraRows(card);
-    // 初始化 lastLora 基线
+    // 初始化 lastLora / lastPN 基线
     lastLora[ref] = JSON.stringify(readLoras(card));
+    lastPN[ref] = JSON.stringify([card.querySelector('.wb-pos')?.value || '', card.querySelector('.wb-neg')?.value || '']);
     // LoRA 名字/权重变化即自动保存
     const lwrap = card.querySelector('.wb-loras');
     if (lwrap) ['change', 'blur'].forEach((ev) =>
       lwrap.addEventListener(ev, () => autoSaveLoras(card), true));
+
+    // 正/负向：点标题行展开/收起编辑；输入自动保存
+    const pnRow = card.querySelector('[data-pn-toggle]');
+    const pnBody = card.querySelector('.pn-body');
+    if (pnRow && pnBody) pnRow.addEventListener('click', () => {
+      const hidden = pnBody.classList.toggle('hidden');
+      const ic = pnRow.querySelector('.fold-ic'); if (ic) ic.style.transform = hidden ? '' : 'rotate(90deg)';
+    });
+    ['input', 'change'].forEach((ev) => {
+      card.querySelector('.wb-pos')?.addEventListener(ev, () => autoSavePN(card));
+      card.querySelector('.wb-neg')?.addEventListener(ev, () => autoSavePN(card));
+    });
 
     // 加 LoRA 行
     const addl = card.querySelector('[data-wb-addlora]');
@@ -2096,7 +2154,9 @@ function bindWorkbench(panels) {
       wbBindLoraRows(card);
       // 填入后自动保存（含画风 LoRA）
       lastLora[ref] = null;
+      lastPN[ref] = null;
       autoSaveLoras(card);
+      autoSavePN(card);
       toast(`已填入提示词与 ${merged.length} 个 LoRA（含画风）`, 'ok');
     });
     // 未生成提示词的格：按钮是「生成提示词」→ 调 LLM 生成这一格
