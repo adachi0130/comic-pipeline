@@ -141,8 +141,12 @@ def _run(job_id: int) -> None:
             session.rollback()
             job = session.get(Job, job_id)
             if job is not None:
-                job.status = JobStatus.FAILED.value
-                job.error = f"{e}\n{traceback.format_exc()[-2000:]}"
+                if job.cancel_requested:
+                    # 已被请求取消：保留“已取消”，不要把取消覆盖成失败
+                    job.status = JobStatus.CANCELLED.value
+                else:
+                    job.status = JobStatus.FAILED.value
+                    job.error = f"{e}\n{traceback.format_exc()[-2000:]}"
         finally:
             if job is not None:
                 job.finished_at = utcnow()
@@ -152,13 +156,34 @@ def _run(job_id: int) -> None:
 
 
 def request_cancel(job_id: int) -> bool:
+    """请求取消一个作业。
+
+    排队中的：直接标记取消，worker 拿到时会跳过。
+    运行中的：标记 cancel_requested 并**立即把状态改成已取消**（前端马上看到停），
+    处理函数会在检查点退出；即便某次底层请求挂住，线程结束后也不会覆盖成别的状态。
+    """
     session = SessionLocal()
     try:
         job = session.get(Job, job_id)
-        if job is None or job.status in (JobStatus.DONE.value, JobStatus.FAILED.value):
+        if job is None or job.status in (
+            JobStatus.DONE.value, JobStatus.FAILED.value, JobStatus.CANCELLED.value
+        ):
             return False
         job.cancel_requested = True
+        if job.status in (JobStatus.QUEUED.value, JobStatus.RUNNING.value):
+            job.status = JobStatus.CANCELLED.value
+            job.finished_at = utcnow()
         session.commit()
         return True
+    finally:
+        session.close()
+
+
+def is_cancelled(job_id: int) -> bool:
+    """处理函数在长流程里可周期性调用，判断当前作业是否已被请求取消。"""
+    session = SessionLocal()
+    try:
+        job = session.get(Job, job_id)
+        return bool(job is not None and job.cancel_requested)
     finally:
         session.close()

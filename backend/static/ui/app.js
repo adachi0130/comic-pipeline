@@ -1697,11 +1697,20 @@ function renderJobs(jobs) {
   if (!box) return;
   if (!jobs.length) { box.innerHTML = '<div class="empty">暂无作业</div>'; }
   else {
-    box.innerHTML = jobs.slice(0, 12).map((j) => `
-      <div class="job"><span class="pill tag">${j.stage || j.kind}</span>
+    box.innerHTML = jobs.slice(0, 12).map((j) => {
+      const active = j.status === 'running' || j.status === 'queued';
+      return `<div class="job"><span class="pill tag">${j.stage || j.kind}</span>
         <span class="mut" style="min-width:52px">#${j.id}</span>${pill(j.status)}
         <div class="bar"><i style="width:${j.total ? Math.round(100 * j.progress / j.total) : (j.status === 'done' ? 100 : 6)}%"></i></div>
-        <span class="mut" style="font-size:12px">${esc(j.message || '')}</span></div>`).join('');
+        <span class="mut" style="font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(j.message || '')}</span>
+        ${active ? `<button class="sm danger" data-cancel="${j.id}" title="取消该作业">✕</button>` : ''}</div>`;
+    }).join('');
+    box.querySelectorAll('[data-cancel]').forEach((b) => b.addEventListener('click', async () => {
+      try {
+        await api(`/api/jobs/${b.dataset.cancel}/cancel`, { method: 'POST', body: '{}' });
+        toast(`已请求取消作业 #${b.dataset.cancel}`, 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+    }));
   }
   refreshGates();
 
@@ -1783,7 +1792,7 @@ async function loadWorkbench() {
                   <div class="spacer"></div>
                   <label class="fld" style="margin:0">张数</label>
                   <input class="wb-count" type="number" value="1" min="1" max="8" style="width:60px">
-                  <button class="sm wb-autofill">自动填写</button>
+                  <button class="sm wb-gen-prompt">生成提示词</button>
                   <button class="primary sm wb-gen">出图</button></div>
                 <div class="wb-cands" style="margin-top:8px"></div></div>`;
             }
@@ -2004,13 +2013,26 @@ function bindWorkbench(panels) {
     const art = pn.prompt;
     const af = card.querySelector('.wb-autofill');
     if (af) af.addEventListener('click', async () => {
-      if (art) return regeneratePanel(ref);
-      af.disabled = true; af.textContent = '生成中…';
+      // 自动填写：把已审核的提示词与该格的出图参数填进下面的输入框（不发 LLM 请求）
+      if (!art) return toast('这格还没有提示词产物', 'err');
+      // 注意：art 是 prompt-board 里的对象，字段是平铺的（不是 art.payload）
+      const posEl = card.querySelector('.wb-pos'); if (posEl) posEl.value = art.prompt_pos || '';
+      const negEl = card.querySelector('.wb-neg'); if (negEl) negEl.value = art.prompt_neg || '';
+      const l0 = (art.loras || [])[0] || {};
+      const loraEl = card.querySelector('.wb-lora'); if (loraEl) loraEl.value = l0.name || '';
+      const lwEl = card.querySelector('.wb-loraw'); if (lwEl) lwEl.value = l0.weight ?? 0.8;
+      const uc = card.querySelector('.wb-uselora'); if (uc) uc.checked = (art.loras || []).length > 0;
+      toast('已填入该格的提示词与出图参数', 'ok');
+    });
+    // 未生成提示词的格：按钮是「生成提示词」→ 调 LLM 生成这一格
+    const gp = card.querySelector('.wb-gen-prompt');
+    if (gp) gp.addEventListener('click', async () => {
+      gp.disabled = true; gp.textContent = '生成中…';
       try {
         const r = await api(`/api/projects/${state.projectId}/panels/${encodeURIComponent(ref)}/prepare`, { method: 'POST', body: '{}' });
-        toast(r.reused ? '该格已有提示词' : '已自动生成该格提示词', 'ok');
+        toast(r.reused ? '该格已有提示词' : '已生成该格提示词', 'ok');
         loadWorkbench(); refreshGates();
-      } catch (e) { toast('自动填写失败：' + e.message, 'err'); af.disabled = false; af.textContent = '自动填写'; }
+      } catch (e) { toast('生成失败：' + e.message, 'err'); gp.disabled = false; gp.textContent = '生成提示词'; }
     });
     const sv = card.querySelector('.wb-save');
     if (sv) sv.addEventListener('click', async () => {
@@ -2018,7 +2040,7 @@ function bindWorkbench(panels) {
       const lname = card.querySelector('.wb-lora').value.trim();
       const lw = +card.querySelector('.wb-loraw').value;
       try {
-        await api(`/api/artifacts/${art.id}/payload`, { method: 'PATCH', body: JSON.stringify({
+        await api(`/api/artifacts/${art.artifact_id}/payload`, { method: 'PATCH', body: JSON.stringify({
           prompt_pos: card.querySelector('.wb-pos').value, prompt_neg: card.querySelector('.wb-neg').value,
           loras: useLora && lname ? [{ name: lname, weight: lw }] : [] }) });
         toast(`${ref} 已保存（下游需重跑）`, 'ok'); loadWorkbench(); refreshGates();

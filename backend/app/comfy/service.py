@@ -95,7 +95,12 @@ class GenRequest:
     extra_values: dict = field(default_factory=dict)
 
 
-def generate(req: GenRequest, *, client: ComfyClient | None = None) -> list[GeneratedImage]:
+def generate(
+    req: GenRequest,
+    *,
+    client: ComfyClient | None = None,
+    should_cancel=None,
+) -> list[GeneratedImage]:
     """按请求出图，返回所有候选图的字节。"""
     client = client or get_client()
     params = get_workflow_params()
@@ -129,6 +134,8 @@ def generate(req: GenRequest, *, client: ComfyClient | None = None) -> list[Gene
 
     results: list[GeneratedImage] = []
     for _ in range(max(1, req.count)):
+        if should_cancel and should_cancel():
+            break
         # 每张换一个合法种子，保证候选图不同（除非用户指定了固定 seed）
         if fixed_seed is None:
             merged["seed"] = random.randint(1, 2**31 - 1)

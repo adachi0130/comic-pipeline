@@ -236,7 +236,10 @@ def handle(session: Session, job: Job) -> dict:
     # 只生成指定的某一格（panel_ref）时，其余格跳过（从任务 payload 取，别被下面覆盖）
     only_panel = payload.get("panel_ref")
     out: list[str] = []
+    from .. import jobs as jobq
     for page in pages:
+        if jobq.is_cancelled(job.id):
+            break
         page_payload = page.payload or {}
         geom = page_payload.get("geometry") or {}
         geometry_by_order = {p.get("index"): p for p in (geom.get("panels") or [])}
@@ -255,6 +258,7 @@ def handle(session: Session, job: Job) -> dict:
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             PagePrompts,
             log=log,
+            should_cancel=lambda: jobq.is_cancelled(job.id),
         )
         # 格数适配校验：必须与分页脚本的 panels 一一对应
         expected = len(page_payload.get("panels", []))
