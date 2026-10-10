@@ -1843,26 +1843,26 @@ async function loadWorkbench() {
                 <span class="fold-ic">▸</span>
               </div>
               <div class="pn-body hidden">
-                <div class="pn-view" style="margin-top:6px;background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.6;max-height:300px;overflow:auto">
-                  <div class="mut" style="font-size:12px">
-                    <b>镜别</b> ${esc(p.shot || '—')}　<b>出场</b> ${esc((p.characters || []).join('、') || '—')}${(p.technique || []).length ? '　<b>技法</b> ' + esc((p.technique || []).join('、')) : ''}
-                  </div>
-                  ${p.scene_desc ? `<div style="margin-top:5px"><b class="mut">场景</b> ${esc(p.scene_desc)}</div>` : ''}
-                  ${p.action ? `<div style="margin-top:5px"><b class="mut">动作</b> ${esc(p.action)}</div>` : ''}
-                  ${p.dialogue ? `<div style="margin-top:5px"><b class="mut">台词</b> ${esc(p.dialogue)}</div>` : ''}
-                </div>
                 <div class="grid2" style="margin-top:8px">
                   <div><label class="fld">正向</label><textarea class="wb-pos">${esc(pr.prompt_pos || '')}</textarea></div>
                   <div><label class="fld">负向</label><textarea class="wb-neg">${esc(pr.prompt_neg || '')}</textarea></div>
                 </div>
+                <div style="margin-top:8px">
+                  <div class="row"><label class="fld" style="margin:0">LoRA（出图套用；含角色/画风）</label>
+                    <div class="spacer"></div>
+                    <button class="sm" type="button" data-wb-addlora>＋ 加 LoRA</button>
+                    <span class="mut" style="font-size:11px" data-wb-lora-msg></span></div>
+                  <div class="wb-loras">${(pr.loras || []).map(wbLoraRow).join('') || '<div class="mut" style="font-size:12px">（无）</div>'}</div>
+                </div>
                 <div class="mut" style="font-size:11px" data-wb-pn-msg></div>
               </div>
-              <div style="margin-top:8px">
-                <div class="row"><label class="fld" style="margin:0">LoRA（出图套用；含角色/画风）</label>
-                  <div class="spacer"></div>
-                  <button class="sm" type="button" data-wb-addlora>＋ 加 LoRA</button>
-                  <span class="mut" style="font-size:11px" data-wb-lora-msg></span></div>
-                <div class="wb-loras">${(pr.loras || []).map(wbLoraRow).join('') || '<div class="mut" style="font-size:12px">（无）</div>'}</div>
+              <div class="pn-view" style="margin-top:8px;background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.6;max-height:300px;overflow:auto">
+                <div class="mut" style="font-size:12px">
+                  <b>镜别</b> ${esc(p.shot || '—')}　<b>出场</b> ${esc((p.characters || []).join('、') || '—')}${(p.technique || []).length ? '　<b>技法</b> ' + esc((p.technique || []).join('、')) : ''}
+                </div>
+                ${p.scene_desc ? `<div style="margin-top:5px"><b class="mut">场景</b> ${esc(p.scene_desc)}</div>` : ''}
+                ${p.action ? `<div style="margin-top:5px"><b class="mut">动作</b> ${esc(p.action)}</div>` : ''}
+                ${p.dialogue ? `<div style="margin-top:5px"><b class="mut">台词</b> ${esc(p.dialogue)}</div>` : ''}
               </div>
               <div class="wb-cands" style="margin-top:10px"></div></div>`;
           }).join('')}
