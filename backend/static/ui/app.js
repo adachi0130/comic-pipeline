@@ -1315,6 +1315,15 @@ async function openPanelPromptEdit(panelRef) {
       <div><label class="fld">画框</label><input id="pp-frame" value="${esc(pl.frame || '')}" readonly style="width:110px;background:#f2f4f7"></div>
       <div><label class="fld">种子 seed（空=随机）</label><input id="pp-seed" type="number" value="${pl.seed ?? ''}" style="width:120px"></div>
     </div>
+    <div class="row" style="gap:10px;margin-bottom:8px">
+      ${(() => { const p = pl.params || {}; return `
+        <div><label class="fld">步数 steps</label><input id="pp-steps" type="number" value="${p.steps ?? ''}" style="width:92px"></div>
+        <div><label class="fld">CFG</label><input id="pp-cfg" type="number" step="0.5" value="${p.cfg ?? ''}" style="width:80px"></div>
+        <div><label class="fld">采样器 sampler</label><input id="pp-sampler" value="${esc(p.sampler || '')}" style="width:120px"></div>
+        <div><label class="fld">scheduler</label><input id="pp-sched" value="${esc(p.scheduler || '')}" style="width:120px"></div>
+        <div><label class="fld">denoise</label><input id="pp-denoise" type="number" step="0.05" value="${p.denoise ?? ''}" style="width:90px"></div>
+      `; })()}
+    </div>
 
     <div><label class="fld">正向</label><textarea id="pp-pos" style="min-height:120px">${esc(pl.prompt_pos || '')}</textarea></div>
     <div style="margin-top:8px"><label class="fld">负向</label><textarea id="pp-neg" style="min-height:70px">${esc(pl.prompt_neg || '')}</textarea></div>
@@ -1346,13 +1355,21 @@ async function openPanelPromptEdit(panelRef) {
       weight: +row.querySelector('.pp-loraw').value || 0.8,
     })).filter((l) => l.name);
     const num = (sel) => { const v = box.querySelector(sel).value.trim(); return v === '' ? null : +v; };
+    const txt = (sel) => { const v = box.querySelector(sel).value.trim(); return v === '' ? null : v; };
+    const params = {};
+    const si = num('#pp-steps'), cf = num('#pp-cfg'), sa = txt('#pp-sampler'), sc = txt('#pp-sched'), dn = num('#pp-denoise');
+    if (si != null) params.steps = si;
+    if (cf != null) params.cfg = cf;
+    if (sa) params.sampler = sa;
+    if (sc) params.scheduler = sc;
+    if (dn != null) params.denoise = dn;
     try {
       await api(`/api/projects/${state.projectId}/panel-prompt/${encodeURIComponent(panelRef)}`, {
         method: 'PATCH', body: JSON.stringify({
           prompt_pos: box.querySelector('#pp-pos').value,
           prompt_neg: box.querySelector('#pp-neg').value,
           width: num('#pp-w'), height: num('#pp-h'), seed: num('#pp-seed'),
-          loras,
+          loras, params,
         }) });
       toast('已保存', 'ok'); box.remove();
       const t = document.querySelector('.nav button.active')?.dataset.tab;
@@ -1601,9 +1618,11 @@ async function loadWorkbench() {
       }
       const l0 = (pr.loras || [])[0] || {};
       const loraAll = (pr.loras || []).map((l) => `${esc(l.name)}(${l.weight})`).join('、');
+      const pp = pr.params || {};
+      const pStr = ['steps', 'cfg', 'sampler', 'scheduler', 'denoise'].filter((k) => pp[k] != null).map((k) => `${k} ${pp[k]}`).join(' · ');
       return `<div class="card" data-ref="${esc(p.panel_ref)}" style="margin-bottom:12px;padding:16px">
         ${head}
-        <div class="mut" style="font-size:11.5px;margin-top:2px">出图参数（来自提示词）：${pr.width || '?'}×${pr.height || '?'}${loraAll ? ' · LoRA ' + loraAll : ' · 无 LoRA'}</div>
+        <div class="mut" style="font-size:11.5px;margin-top:2px">出图参数（来自提示词）：${pr.width || '?'}×${pr.height || '?'}${pStr ? ' · ' + esc(pStr) : ''}${loraAll ? ' · LoRA ' + loraAll : ' · 无 LoRA'}</div>
         <div class="grid2" style="margin-top:10px">
           <div><label class="fld">正向</label><textarea class="wb-pos">${esc(pr.prompt_pos || '')}</textarea></div>
           <div><label class="fld">负向</label><textarea class="wb-neg">${esc(pr.prompt_neg || '')}</textarea></div>
@@ -1727,6 +1746,8 @@ async function openPagePanelsDetail(pageRef, page) {
     const pl = (pr && pr.payload) || {};
     const loras = (pl.loras || []).map((l) => `${esc(l.name)}（${l.weight}）`).join('<br>') || '<span class="mut">无</span>';
     const size = pl.width ? `${pl.width}×${pl.height}${pl.frame ? ' · ' + esc(pl.frame) : ''}` : '未生成（按画框自动算）';
+    const pp = pl.params || {};
+    const pStr = ['steps', 'cfg', 'sampler', 'scheduler', 'denoise'].filter((k) => pp[k] != null).map((k) => `${k} ${pp[k]}`).join(' · ');
     return `<div class="mini-card" style="padding:12px 14px;margin-top:10px">
       <div class="row" style="gap:6px">
         <b>第 ${pn.panel_order} 格</b>
@@ -1737,6 +1758,7 @@ async function openPagePanelsDetail(pageRef, page) {
         ${pr ? `<button class="sm" data-wpd-edit="${esc(pn.panel_ref)}">改这格</button>` : `<button class="sm" data-wpd-prep="${esc(pn.panel_ref)}">自动填写</button>`}
       </div>
       <div class="mut" style="font-size:11.5px;margin-top:4px">动作：${esc(pn.action || '（空）')}${pn.dialogue ? '　台词：「' + esc(pn.dialogue) + '」' : ''}</div>
+      ${pStr ? `<div class="mut" style="font-size:11.5px;margin-top:2px">出图参数：${esc(pStr)}</div>` : ''}
       ${pr ? `<div style="margin-top:8px"><label class="fld">正向</label><div class="ppv-text">${esc(pl.prompt_pos || '（空）')}</div></div>
         <div style="margin-top:8px"><label class="fld">负向</label><div class="ppv-text">${esc(pl.prompt_neg || '（空）')}</div></div>
         <div style="margin-top:8px"><label class="fld">LoRA</label><div class="mut" style="font-size:12px">${loras}</div></div>`
