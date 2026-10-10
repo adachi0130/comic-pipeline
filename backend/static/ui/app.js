@@ -43,7 +43,19 @@ const TITLES = {
 };
 $$('.nav button[data-tab]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
 
-// 可折叠标题：点标题收起/展开它指向的内容块
+// 可折叠标题：点标题收起/展开它指向的内容块（状态记在 localStorage，刷新后保留）
+function getFold(key, defClosed) {
+  try { const v = localStorage.getItem('comic.fold.' + key); return v == null ? !!defClosed : v === '1'; }
+  catch { return !!defClosed; }
+}
+function setFold(key, closed) { try { localStorage.setItem('comic.fold.' + key, closed ? '1' : '0'); } catch { /* ignore */ } }
+function applyFold(h) {
+  const t = document.getElementById(h.dataset.fold);
+  if (!t) return;
+  const closed = getFold(h.dataset.fold, h.classList.contains('closed'));
+  t.classList.toggle('hidden', closed);
+  h.classList.toggle('closed', closed);
+}
 document.addEventListener('click', (e) => {
   const h = e.target.closest && e.target.closest('h2.foldable');
   if (!h || !h.dataset.fold) return;
@@ -51,6 +63,7 @@ document.addEventListener('click', (e) => {
   if (!t) return;
   const hidden = t.classList.toggle('hidden');
   h.classList.toggle('closed', hidden);
+  setFold(h.dataset.fold, hidden);
 });
 function switchTab(tab) {
   $$('.nav button[data-tab]').forEach((x) => x.classList.toggle('active', x.dataset.tab === tab));
@@ -1154,8 +1167,52 @@ async function upsertCharacter(data) {
   } catch (e) { toast(e.message, 'err'); }
 }
 
+// ---- 项目画风 LoRA（项目级，合入该项目每一格，生成提示词与出图都带上）----
+function styleLoraRow(l) {
+  return `<div class="row" style="gap:6px;margin-top:5px" data-stylerow>
+    <input class="st-name" list="lora-all" value="${esc((l && (l.name || l.lora_name)) || '')}" placeholder="画风 lora 文件名" style="flex:1;min-width:240px">
+    <input class="st-w" type="number" step="0.05" value="${(l && (l.weight ?? 1)) ?? 1}" style="width:82px">
+    <button class="sm danger st-del" type="button">删</button>
+  </div>`;
+}
+async function loadStyleLoras() {
+  const box = $('#pr-style');
+  if (!box) return;
+  if (!state.projectId) { box.innerHTML = '<div class="empty">先选择项目</div>'; return; }
+  let rows = [];
+  try {
+    const d = await api(`/api/projects/${state.projectId}/loras`);
+    rows = (d.project || d.rows || []).filter((r) => (r.scope || 'project') === 'project');
+  } catch { /* ignore */ }
+  box.innerHTML = (rows.length ? rows.map(styleLoraRow).join('') : '<div class="mut" style="font-size:12px">还没配画风 LoRA</div>');
+  bindStyle();
+}
+function bindStyle() {
+  const box = $('#pr-style');
+  box.querySelectorAll('.st-del').forEach((b) => b.onclick = () => { b.closest('[data-stylerow]').remove(); });
+}
+$('#pr-addstyle').addEventListener('click', () => {
+  if (!state.projectId) return toast('先选择项目', 'err');
+  const box = $('#pr-style');
+  if (box.querySelector('.mut') && !box.querySelector('[data-stylerow]')) box.innerHTML = '';
+  box.insertAdjacentHTML('beforeend', styleLoraRow({}));
+  bindStyle();
+});
+$('#pr-style-save').addEventListener('click', async () => {
+  if (!state.projectId) return toast('先选择项目', 'err');
+  const loras = Array.from($('#pr-style').querySelectorAll('[data-stylerow]')).map((r) => ({
+    name: r.querySelector('.st-name').value.trim(),
+    weight: +r.querySelector('.st-w').value || 1,
+  })).filter((l) => l.name);
+  try {
+    await api(`/api/projects/${state.projectId}/loras`, { method: 'PUT', body: JSON.stringify({ scope: 'project', loras }) });
+    toast(`已保存 ${loras.length} 个画风 LoRA（下次生成提示词时带上）`, 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+});
+
 async function loadPrompts() {
   loadCharacterPresetPanel();
+  loadStyleLoras();
   ensureLoraDatalist();
   if (!state.projectId) {
     $('#pr-list').innerHTML = '';
@@ -1558,15 +1615,34 @@ function startJobsSSE() {
 function renderJobs(jobs) {
   const box = $('#jobs');
   if (!box) return;
-  if (!jobs.length) { box.innerHTML = '<div class="empty">暂无作业</div>'; return; }
-  box.innerHTML = jobs.slice(0, 12).map((j) => `
-    <div class="job"><span class="pill tag">${j.stage || j.kind}</span>
-      <span class="mut" style="min-width:52px">#${j.id}</span>${pill(j.status)}
-      <div class="bar"><i style="width:${j.total ? Math.round(100 * j.progress / j.total) : (j.status === 'done' ? 100 : 6)}%"></i></div>
-      <span class="mut" style="font-size:12px">${esc(j.message || '')}</span></div>`).join('');
+  if (!jobs.length) { box.innerHTML = '<div class="empty">暂无作业</div>'; }
+  else {
+    box.innerHTML = jobs.slice(0, 12).map((j) => `
+      <div class="job"><span class="pill tag">${j.stage || j.kind}</span>
+        <span class="mut" style="min-width:52px">#${j.id}</span>${pill(j.status)}
+        <div class="bar"><i style="width:${j.total ? Math.round(100 * j.progress / j.total) : (j.status === 'done' ? 100 : 6)}%"></i></div>
+        <span class="mut" style="font-size:12px">${esc(j.message || '')}</span></div>`).join('');
+  }
   refreshGates();
-  const t = document.querySelector('.nav button.active')?.dataset.tab;
-  if (t === 'novel') loadNovel();
+
+  // 作业完成/失败时，自动刷新当前标签页（否则出图完成后前端不更新，要手动刷新才看到）
+  const nowDone = {};
+  jobs.forEach((j) => { if (j.status === 'done' || j.status === 'failed') nowDone[j.id] = j.status; });
+  const newlyDone = Object.keys(nowDone).filter((id) => !state._doneJobs?.[id]);
+  state._doneJobs = nowDone;
+  if (newlyDone.length) {
+    // 失败的作业弹个提示，说明原因（如 LoRA 名不存在、工作流校验失败）
+    jobs.filter((j) => newlyDone.includes(String(j.id)) && j.status === 'failed')
+      .forEach((j) => toast(`作业 #${j.id} 失败：${(j.error || '').slice(0, 160)}`, 'err'));
+    const t = document.querySelector('.nav button.active')?.dataset.tab;
+    if (t === 'images') loadWorkbench();
+    else if (t === 'novel') loadNovel();
+    else if (t === 'prompts') loadPrompts();
+    else if (t === 'pages') loadPages();
+  } else {
+    const t = document.querySelector('.nav button.active')?.dataset.tab;
+    if (t === 'novel') loadNovel();
+  }
 }
 
 // ---------- 出图工作台 ----------
@@ -1600,42 +1676,83 @@ async function loadWorkbench() {
     const filled = panels.filter((p) => p.prompt).length;
     $('#wb-info').textContent = `${filled}/${panels.length} 格已生成提示词`;
 
-    box.innerHTML = panels.map((p) => {
-      const pr = p.prompt;
-      const head = `<div class="row"><b>${esc(p.panel_ref)}</b>
-          ${pr ? pill(pr.status) : '<span class="pill warn">未生成提示词</span>'}
-          <span class="mut" style="font-size:12px">第 ${p.panel_order} 格 · ${esc(p.shot || '')}</span>
+    // 按“页”分组，每页一张卡（默认收起，点标题展开）
+    const pageGroups = (board.pages || []).map((pg) => ({
+      page_ref: pg.page_ref,
+      template: pg.template,
+      panels: pg.panels.map((pn) => ({ ...pn, page_ref: pg.page_ref })),
+    }));
+    box.innerHTML = pageGroups.map((g) => {
+      const done = g.panels.filter((x) => x.prompt).length;
+      return `<div class="card" style="padding:12px 16px;margin-bottom:10px">
+        <div class="row" style="cursor:pointer" data-wb-toggle="${esc(g.page_ref)}">
+          <b>${esc(g.page_ref)}</b>
+          <span class="pill tag">${g.panels.length} 格</span>
+          <span class="pill tag">${done}/${g.panels.length} 已生成</span>
+          <span class="mut" style="font-size:12px">${esc(g.template ? (g.template.layout_desc || '') : '')}</span>
           <div class="spacer"></div>
-          <label class="fld" style="margin:0">张数</label>
-          <input class="wb-count" type="number" value="${$('#wb-count').value}" min="1" max="8" style="width:66px">
-          <button class="sm wb-autofill">自动填写</button>
-          <button class="primary sm wb-gen">出图</button></div>`;
-      if (!pr) {
-        return `<div class="card" data-ref="${esc(p.panel_ref)}" style="margin-bottom:12px;padding:16px">
-          ${head}
-          <div class="mut" style="font-size:12px;margin-top:8px">这格还没生成提示词——点「自动填写」让 AI 按预设+角色生成，或直接点「出图」（会自动先填写）。</div>
-          <div class="wb-cands" style="margin-top:12px"></div></div>`;
-      }
-      const l0 = (pr.loras || [])[0] || {};
-      const loraAll = (pr.loras || []).map((l) => `${esc(l.name)}(${l.weight})`).join('、');
-      const pp = pr.params || {};
-      const pStr = ['steps', 'cfg', 'sampler', 'scheduler', 'denoise'].filter((k) => pp[k] != null).map((k) => `${k} ${pp[k]}`).join(' · ');
-      return `<div class="card" data-ref="${esc(p.panel_ref)}" style="margin-bottom:12px;padding:16px">
-        ${head}
-        <div class="mut" style="font-size:11.5px;margin-top:2px">出图参数（来自提示词）：${pr.width || '?'}×${pr.height || '?'}${pStr ? ' · ' + esc(pStr) : ''}${loraAll ? ' · LoRA ' + loraAll : ' · 无 LoRA'}</div>
-        <div class="grid2" style="margin-top:10px">
-          <div><label class="fld">正向</label><textarea class="wb-pos">${esc(pr.prompt_pos || '')}</textarea></div>
-          <div><label class="fld">负向</label><textarea class="wb-neg">${esc(pr.prompt_neg || '')}</textarea></div>
+          <span class="mut" style="font-size:12px">点击展开/收起</span>
         </div>
-        <div class="row" style="margin-top:8px">
-          <label class="fld" style="margin:0"><input type="checkbox" class="wb-uselora" style="width:auto" ${(pr.loras || []).length ? 'checked' : ''}> 用 LoRA</label>
-          <input class="wb-lora" placeholder="lora 文件名" value="${esc(l0.name || '')}" list="lora-list" style="max-width:280px">
-          <label class="fld" style="margin:0">权重</label>
-          <input class="wb-loraw" type="number" step="0.05" value="${l0.weight ?? 0.8}" style="width:80px">
-          <button class="sm wb-save">保存</button>
+        <div class="wb-page-body" data-wb-body="${esc(g.page_ref)}" style="margin-top:10px">
+          ${g.panels.map((p) => {
+            const pr = p.prompt;
+            if (!pr) {
+              return `<div class="mini-card" data-ref="${esc(p.panel_ref)}" style="padding:10px;margin-top:8px">
+                <div class="row"><b>${esc(p.panel_ref)}</b> <span class="pill warn">未生成提示词</span>
+                  <span class="mut" style="font-size:12px">第 ${p.panel_order} 格 · ${esc(p.shot || '')}</span>
+                  <div class="spacer"></div>
+                  <label class="fld" style="margin:0">张数</label>
+                  <input class="wb-count" type="number" value="1" min="1" max="8" style="width:60px">
+                  <button class="sm wb-autofill">自动填写</button>
+                  <button class="primary sm wb-gen">出图</button></div>
+                <div class="wb-cands" style="margin-top:8px"></div></div>`;
+            }
+            const l0 = (pr.loras || [])[0] || {};
+            const loraAll = (pr.loras || []).map((l) => `${esc(l.name)}(${l.weight})`).join('、');
+            const pp = pr.params || {};
+            const pStr = ['steps', 'cfg', 'sampler', 'scheduler', 'denoise'].filter((k) => pp[k] != null).map((k) => `${k} ${pp[k]}`).join(' · ');
+            return `<div class="mini-card" data-ref="${esc(p.panel_ref)}" style="padding:10px;margin-top:8px">
+              <div class="row"><b>${esc(p.panel_ref)}</b> ${pill(pr.status)}
+                <span class="mut" style="font-size:12px">第 ${p.panel_order} 格 · ${esc(p.shot || '')}</span>
+                <div class="spacer"></div>
+                <label class="fld" style="margin:0">张数</label>
+                <input class="wb-count" type="number" value="1" min="1" max="8" style="width:60px">
+                <button class="sm wb-autofill">自动填写</button>
+                <button class="primary sm wb-gen">出图</button></div>
+              <div class="mut" style="font-size:11.5px;margin-top:2px">出图参数：${pr.width || '?'}×${pr.height || '?'}${pStr ? ' · ' + esc(pStr) : ''}${loraAll ? ' · LoRA ' + loraAll : ' · 无 LoRA'}</div>
+              <div class="grid2" style="margin-top:8px">
+                <div><label class="fld">正向</label><textarea class="wb-pos">${esc(pr.prompt_pos || '')}</textarea></div>
+                <div><label class="fld">负向</label><textarea class="wb-neg">${esc(pr.prompt_neg || '')}</textarea></div>
+              </div>
+              <div class="row" style="margin-top:8px">
+                <label class="fld" style="margin:0"><input type="checkbox" class="wb-uselora" style="width:auto" ${(pr.loras || []).length ? 'checked' : ''}> 用 LoRA</label>
+                <input class="wb-lora" placeholder="lora 文件名" value="${esc(l0.name || '')}" list="lora-list" style="max-width:280px">
+                <label class="fld" style="margin:0">权重</label>
+                <input class="wb-loraw" type="number" step="0.05" value="${l0.weight ?? 0.8}" style="width:80px">
+                <button class="sm wb-save">保存</button>
+              </div>
+              <div class="wb-cands" style="margin-top:10px"></div></div>`;
+          }).join('')}
         </div>
-        <div class="wb-cands" style="margin-top:12px"></div></div>`;
+      </div>`;
     }).join('');
+
+    // 每页卡：展开/收起（状态记忆）
+    const applyPageFolds = () => box.querySelectorAll('[data-wb-toggle]').forEach((h) => {
+      const body = box.querySelector(`[data-wb-body="${CSS.escape(h.dataset.wbToggle)}"]`);
+      if (!body) return;
+      const closed = getFold('wbpage.' + h.dataset.wbToggle, true);   // 默认收起
+      body.classList.toggle('hidden', closed);
+      h.classList.toggle('closed', closed);
+    });
+    applyPageFolds();
+    box.querySelectorAll('[data-wb-toggle]').forEach((h) => h.addEventListener('click', () => {
+      const body = box.querySelector(`[data-wb-body="${CSS.escape(h.dataset.wbToggle)}"]`);
+      const hidden = body.classList.toggle('hidden');
+      h.classList.toggle('closed', hidden);
+      setFold('wbpage.' + h.dataset.wbToggle, hidden);
+    }));
+
     const old = document.getElementById('lora-list'); if (old) old.remove();
     const dl = document.createElement('datalist'); dl.id = 'lora-list';
     dl.innerHTML = loraOpts.map((l) => `<option value="${esc(l)}">`).join('');
@@ -1644,6 +1761,7 @@ async function loadWorkbench() {
     for (const p of panels) if (p.prompt) await renderWbCands({ ref: p.panel_ref });
   } catch (e) { toast(e.message, 'err'); }
 }
+
 
 /** 渲染 S2 分格产物：每页一张卡（真版式缩略图 + 每格摘要 + 出图进度）。 */
 async function renderWorkbenchPages() {
@@ -1695,7 +1813,17 @@ async function renderWorkbenchPages() {
       </div>`).join('')}
   </div>`;
   box.querySelectorAll('[data-wbpick]').forEach((b) => b.addEventListener('click', () => {
-    const el = document.querySelector(`#wb-list .card[data-ref^="${CSS.escape(b.dataset.wbpick.replace('page:', 'panel:'))}"]`);
+    const pageRef = b.dataset.wbpick;
+    // 先把「逐格出图」里对应的页展开，再滚到那一格
+    const body = document.querySelector(`[data-wb-body="${CSS.escape(pageRef)}"]`);
+    const panelPrefix = pageRef.replace('page:', 'panel:');
+    if (body) {
+      body.classList.remove('hidden');
+      const h = document.querySelector(`[data-wb-toggle="${CSS.escape(pageRef)}"]`);
+      if (h) h.classList.remove('closed');
+      setFold('wbpage.' + pageRef, false);
+    }
+    const el = document.querySelector(`#wb-list [data-ref^="${CSS.escape(panelPrefix)}"]`);
     if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.style.boxShadow = '0 0 0 3px var(--accent)'; setTimeout(() => { el.style.boxShadow = ''; }, 1400); }
     else toast('这页还没有对应的提示词产物（可在「提示词」页生成，或在下面点「出图」自动准备）');
   }));
@@ -1790,7 +1918,7 @@ async function regeneratePanel(ref) {
 function bindWorkbench(panels) {
   const byRef = {};
   panels.forEach((p) => { byRef[p.panel_ref] = p; });
-  $$('#wb-list .card').forEach((card) => {
+  $$('#wb-list [data-ref]').forEach((card) => {
     const ref = card.dataset.ref;
     const pn = byRef[ref] || {};
     const art = pn.prompt;
@@ -1836,7 +1964,7 @@ function bindWorkbench(panels) {
 }
 
 async function renderWbCands(pa) {
-  const card = document.querySelector(`#wb-list .card[data-ref="${CSS.escape(pa.ref)}"]`);
+  const card = document.querySelector(`#wb-list [data-ref="${CSS.escape(pa.ref)}"]`);
   if (!card) return;
   const box = card.querySelector('.wb-cands');
   const imgs = await api(`/api/projects/${state.projectId}/artifacts?kind=image&ref_prefix=${encodeURIComponent(pa.ref)}`);
