@@ -43,6 +43,7 @@
   <button class="primary" id="btn-install">装模板</button>
   <button id="btn-order">读阅读顺序</button>
   <button id="btn-sample">套示例提示词</button>
+  <button id="btn-save">保存到项目</button>
   <button id="btn-export">导出 PNG</button>
   <span class="hint" id="msg"></span>
 </div>
@@ -125,14 +126,32 @@ frame.addEventListener('load', async () => {
   autoCompose();
 });
 
-/** 自动合成：URL 带 ?page=page:1&p=1&auto=1 时，自动装模板 + 贴入已选画面 + 落提示词。 */
+/** 自动合成 / 继续编辑：URL 带 ?page=&p= 时处理。
+ *  auto=1：自动装模板 + 贴入已选画面 + 落提示词；
+ *  edit=1：载入已保存的画布存档（可继续编辑），没有存档则退回自动合成。
+ */
 async function autoCompose() {
   const q = new URLSearchParams(location.search);
   const page = q.get('page');
   const pid = q.get('p');
-  if (!page || !pid || q.get('auto') !== '1') return;
+  if (!page || !pid) return;
   const api = await ensure();
-  if (!api) { setMsg('桥未就绪，无法自动合成', 'err'); return; }
+  if (!api) { setMsg('桥未就绪', 'err'); return; }
+
+  if (q.get('edit') === '1') {
+    setMsg('载入画布存档中…');
+    try {
+      const r = await fetch(`/api/projects/${pid}/med-doc/${encodeURIComponent(page)}`);
+      if (r.ok) {
+        const d = await r.json();
+        await api.loadDoc(d.doc);
+        setMsg('已载入画布存档，可继续编辑（改完点「保存到项目」）', 'ok');
+        return;
+      }
+    } catch (e) { /* 没存档 → 退回自动合成 */ }
+  }
+  if (q.get('auto') !== '1' && q.get('edit') !== '1') return;
+
   setMsg('自动合成中…');
   try {
     const board = await (await fetch(`/api/projects/${pid}/compose-board`)).json();
@@ -154,10 +173,30 @@ async function autoCompose() {
       } catch (e) { /* 跳过坏图 */ }
     }
     try { api.applyPrompts(pg.panels.map((p) => p.prompt || ''), { rightToLeft: true, append: false }); } catch (e) { /* ignore */ }
-    setMsg(`已装框并贴入 ${placed}/${want} 张，可在 MED 里继续编辑`, 'ok');
+    setMsg(`已装框并贴入 ${placed}/${want} 张，可在 MED 里继续编辑（改完点「保存到项目」）`, 'ok');
     try { const url = api.exportPNG(1); $('preview').src = url; $('preview').style.display = 'block'; } catch (e) { /* ignore */ }
   } catch (e) { setMsg('自动合成失败：' + e.message, 'err'); }
 }
+
+// 保存当前画布（含编辑）到项目，供以后继续编辑
+$('btn-save').addEventListener('click', async () => {
+  const q = new URLSearchParams(location.search);
+  const page = q.get('page'), pid = q.get('p');
+  if (!page || !pid) { setMsg('没有关联的项目/页，无法保存', 'err'); return; }
+  const api = await ensure(); if (!api) return;
+  setMsg('保存中…');
+  try {
+    const doc = api.exportDoc();
+    let png = '';
+    try { png = api.exportPNG(1); } catch (e) { /* ignore */ }
+    const r = await fetch(`/api/projects/${pid}/med-doc/${encodeURIComponent(page)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ doc, png }),
+    });
+    const j = await r.json();
+    setMsg(r.ok ? `已保存到项目（v${j.version}），以后可从此继续编辑` : '保存失败：' + (j.detail || ''), r.ok ? 'ok' : 'err');
+  } catch (e) { setMsg('保存失败：' + e.message, 'err'); }
+});
 
 $('btn-install').addEventListener('click', async () => {
   const api = await ensure(); if (!api) return;
