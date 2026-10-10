@@ -350,8 +350,11 @@ def prompt_board(project_id: int, session: Session = Depends(get_session)) -> di
             panels.append({
                 "panel_order": order, "panel_ref": ref,
                 "shot": p.get("shot", ""), "action": p.get("action", ""),
+                "scene_desc": p.get("scene_desc", ""),
                 "dialogue": p.get("dialogue", ""),
                 "characters": p.get("characters", []),
+                "role": p.get("role", ""),
+                "technique": p.get("technique", []),
                 "prompt": prompt,
             })
         pages.append({
