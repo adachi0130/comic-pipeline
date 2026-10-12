@@ -16,6 +16,7 @@ data/
 backend/static/out/
 backend/static/tmp/
 outputs/
+logs/
 
 # --- 密钥 ---
 .env
