@@ -342,6 +342,20 @@ $('#tv-error-close').addEventListener('click', async () => {
   try { await api('/api/tavern/live/clear', { method: 'POST' }); } catch { /* 忽略 */ }
 });
 $('#tv-send').addEventListener('click', sendToTavern);
+$('#tv-use-outline').addEventListener('click', async () => {
+  if (!state.projectId) return toast('先选择项目', 'err');
+  try {
+    const p = state.project && state.project.id === state.projectId
+      ? state.project : await api('/api/projects/' + state.projectId);
+    state.project = p;
+    const outline = (p.outline || '').trim();
+    if (!outline) return toast('这个项目还没有填故事大纲，请到「项目」详情里填写', 'err');
+    const box = $('#tv-input');
+    box.value = box.value.trim() ? box.value.replace(/\s*$/, '') + '\n\n' + outline : outline;
+    box.focus();
+    toast('已引用故事大纲到输入框', 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+});
 $('#tv-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendToTavern(); }
 });

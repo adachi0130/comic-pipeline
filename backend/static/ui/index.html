@@ -310,7 +310,11 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
               <div class="txt" id="tv-error-text"></div></div>
           </div>
           <div class="row" style="margin-top:12px;align-items:flex-end">
-            <div style="flex:1"><label class="fld">直接发一条给酒馆（<b>只把这次新返回的内容</b>存为正文）</label>
+            <div style="flex:1">
+              <label class="fld" style="display:flex;align-items:center;gap:8px">
+                <span>直接发一条给酒馆（<b>只把这次新返回的内容</b>存为正文）</span>
+                <button class="sm" id="tv-use-outline" title="把项目详情里的故事大纲复制到输入框">引用故事大纲</button>
+              </label>
               <textarea id="tv-input" style="min-height:64px" placeholder="例：写一段雨夜追车，节奏快一点。Ctrl+Enter 发送"></textarea></div>
             <button class="primary" id="tv-send">发送</button>
           </div>
@@ -324,18 +328,18 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
             <span class="spacer"></span>
             <button class="sm" id="nv-llm-tpl" title="编辑「调用 LLM 写」的系统提示词与用户模板">提示词模板</button>
           </h2>
-          <div class="h2sub">用本项目「设置」里配置的 LLM 供应商写作；<b>会自动带上项目详情里的标题与故事大纲</b>。
-            需先在「设置」页配好 LLM 供应商（或从酒馆导入）。措辞可在右上角「提示词模板」里改。</div>
+          <div class="h2sub"><b>项目标题与故事大纲会自动发送给 LLM</b> 作为写作依据；下方输入框是<b>额外补充或续写要求</b>（可留空）。
+            用本项目「设置」里配置的 LLM 供应商写作，需先在「设置」页配好（或从酒馆导入）。措辞可在右上角「提示词模板」里改。</div>
           <div class="grid2">
-            <div><label class="fld">写作/续写提示（可空）</label>
-              <input id="nv-llm-instr" placeholder="如：第三段写追逐高潮；或「接着写两人逃出封锁区」"></div>
+            <div><label class="fld">额外需求 / 续写要求（可空）</label>
+              <input id="nv-llm-instr" placeholder="如：这段写追逐高潮、节奏加快；或「接着写两人逃出封锁区」"></div>
             <div style="display:flex;align-items:flex-end;gap:10px">
               <button class="primary" id="nv-llm-start">开始写作</button>
               <button id="nv-llm-continue">续写</button>
             </div>
           </div>
           <div class="row" style="margin-top:10px">
-            <span class="mut" style="font-size:12.5px">续写需先通过前面的分段；生成结果作为一段正文，进入底部「分段审核」。</span>
+            <span class="mut" style="font-size:12.5px">「续写」会带上已通过的前文结尾，且需先通过前面的分段；生成结果作为一段正文，进入底部「分段审核」。</span>
           </div>
         </div>
       </div>
@@ -607,6 +611,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=67"></script>
+<script type="module" src="/ui/app.js?v=68"></script>
 </body>
 </html>
