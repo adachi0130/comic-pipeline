@@ -380,9 +380,12 @@ def save_med_doc(project_id: int, page_ref: str, body: dict, session: Session = 
         raise HTTPException(404, "项目不存在")
     import base64
     import json
-    from pathlib import Path
+    from ...storage import StorageError, new_output_dir, validate_ref, write_new
 
-    from ...config import get_settings
+    try:
+        validate_ref(page_ref, "page")
+    except StorageError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     doc = body.get("doc")
     if doc is None:
@@ -393,10 +396,13 @@ def save_med_doc(project_id: int, page_ref: str, body: dict, session: Session = 
     if isinstance(png_data, str) and png_data.startswith("data:"):
         try:
             b64 = png_data.split(",", 1)[1]
-            out_dir = get_settings().data_dir / "projects" / str(project_id) / "med_pages"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            png_path = str(out_dir / f"{page_ref.replace(':', '_')}.png")
-            Path(png_path).write_bytes(base64.b64decode(b64))
+            data = base64.b64decode(b64, validate=True)
+            out_dir = new_output_dir(project_id, "med_pages", ref=page_ref)
+            preview_path = out_dir / f"{page_ref.replace(':', '_')}.png"
+            write_new(preview_path, data)
+            png_path = str(preview_path)
+        except StorageError as exc:
+            raise HTTPException(403, str(exc)) from exc
         except Exception:  # noqa: BLE001 - 预览存不了不影响主流程
             png_path = ""
     art = A.create(

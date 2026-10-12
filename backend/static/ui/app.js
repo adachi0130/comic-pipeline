@@ -36,7 +36,7 @@ const TITLES = {
   projects: ['项目', '选择或新建一部漫画'],
   novel: ['正文', '用酒馆写小说，逐段审核，然后进入分页'],
   pipeline: ['流水线', '各阶段与中间产物'],
-  pages: ['分格', '每页选模板（或让 AI 选）+ 打分格'],
+  pages: ['分格分页', '每页选模板（或让 AI 选）+ 打分格，并预览正文产物'],
   prompts: ['提示词', 'S3 分镜提示词：每格一句出图词'],
   images: ['出图', '连上后端 → 选工作流 → 出图挑图'],
   compose: ['分页合成', '选好的画面按漫画框拼成整页'],
@@ -72,7 +72,7 @@ function switchTab(tab) {
   try { localStorage.setItem('comic.tab', tab); } catch { /* ignore */ }   // 记住当前菜单，刷新后回到这里
   $('#view-title').textContent = TITLES[tab][0];
   $('#view-sub').textContent = TITLES[tab][1];
-  if (tab === 'novel') loadNovel();
+  if (tab === 'novel') { loadNovel(); setNovelMethod(getNovelMethod()); }
   if (tab === 'pipeline') renderFlow().then(refreshGates);
   if (tab === 'images') loadWorkbench();
   if (tab === 'pages') loadPages();
@@ -342,6 +342,20 @@ $('#tv-error-close').addEventListener('click', async () => {
   try { await api('/api/tavern/live/clear', { method: 'POST' }); } catch { /* 忽略 */ }
 });
 $('#tv-send').addEventListener('click', sendToTavern);
+$('#tv-use-outline').addEventListener('click', async () => {
+  if (!state.projectId) return toast('先选择项目', 'err');
+  try {
+    const p = state.project && state.project.id === state.projectId
+      ? state.project : await api('/api/projects/' + state.projectId);
+    state.project = p;
+    const outline = (p.outline || '').trim();
+    if (!outline) return toast('这个项目还没有填故事大纲，请到「项目」详情里填写', 'err');
+    const box = $('#tv-input');
+    box.value = box.value.trim() ? box.value.replace(/\s*$/, '') + '\n\n' + outline : outline;
+    box.focus();
+    toast('已引用故事大纲到输入框', 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+});
 $('#tv-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendToTavern(); }
 });
@@ -583,17 +597,53 @@ bindCollapse('nv-segs-toggle', 'nv-segs-body', 'nv-segs-arrow');
 bindCollapse('nv-full-toggle', 'nv-full-body', 'nv-full-arrow');
 
 // ---------- 正文（小说） ----------
-$('#nv-start').addEventListener('click', () => requestProse('start'));
-$('#nv-continue').addEventListener('click', () => requestProse('continue'));
+// 酒馆 pane 不再有「开始写作/续写」——改为在「酒馆对话」里直接发一条（见 sendToTavern）。
 
-async function requestProse(mode) {
-  if (!state.projectId) return toast('先选择项目', 'err');
-  try {
-    const r = await api(`/api/projects/${state.projectId}/prose/request`, { method: 'POST',
-      body: JSON.stringify({ mode, instruction: $('#nv-instr').value }) });
-    toast(`已请求酒馆${mode === 'continue' ? '续写' : '开始写作'} #${r.job_id}（需酒馆标签页打开）`);
-  } catch (e) { toast(e.message, 'err'); }
+// ---------- S1 三种写作方式：先选，再显示对应操作区 ----------
+const NV_METHODS = ['tavern', 'llm', 'paste'];
+function getNovelMethod() { try { return localStorage.getItem('comic.novelMethod') || ''; } catch { return ''; } }
+function setNovelMethod(m) {
+  if (m) { try { localStorage.setItem('comic.novelMethod', m); } catch { /* ignore */ } }
+  $$('#nv-methods [data-method]').forEach((b) => b.classList.toggle('primary', b.dataset.method === m));
+  NV_METHODS.forEach((k) => { const el = $('#nv-pane-' + k); if (el) el.classList.toggle('hidden', k !== m); });
+  if (m === 'tavern') loadTavern();
 }
+$$('#nv-methods [data-method]').forEach((b) => b.addEventListener('click', () => setNovelMethod(b.dataset.method)));
+
+// 方式二：调用 LLM 写（带上项目标题 + 故事大纲）
+$('#nv-llm-tpl').addEventListener('click', () => openPromptEditor('s1_prose'));
+$('#nv-llm-start').addEventListener('click', () => requestProseLLM('start'));
+$('#nv-llm-continue').addEventListener('click', () => requestProseLLM('continue'));
+async function requestProseLLM(mode) {
+  if (!state.projectId) return toast('先选择项目', 'err');
+  const sb = $('#nv-llm-start'), cb = $('#nv-llm-continue');
+  const old = sb.textContent;
+  sb.disabled = cb.disabled = true;
+  sb.textContent = mode === 'continue' ? old : 'LLM 写作中…';
+  if (mode === 'continue') cb.textContent = 'LLM 续写中…';
+  try {
+    const r = await api(`/api/projects/${state.projectId}/prose/llm`, { method: 'POST',
+      body: JSON.stringify({ mode, instruction: $('#nv-llm-instr').value }) });
+    toast(`LLM 已生成一段正文（${r.chars} 字），见下方「分段审核」`, 'ok');
+    $('#nv-llm-instr').value = '';
+    loadNovel(); refreshGates();
+  } catch (e) { toast('LLM 写作失败：' + e.message, 'err'); }
+  finally { sb.disabled = cb.disabled = false; sb.textContent = old; cb.textContent = '续写'; }
+}
+
+// 方式三：自己粘贴正文
+$('#nv-paste-add').addEventListener('click', async () => {
+  if (!state.projectId) return toast('先选择项目', 'err');
+  const text = $('#nv-paste-text').value.trim();
+  if (!text) return toast('请先粘贴正文内容', 'err');
+  try {
+    const r = await api(`/api/projects/${state.projectId}/prose/paste`, { method: 'POST',
+      body: JSON.stringify({ text }) });
+    toast(`已追加为一段正文（${r.chars} 字），见下方「分段审核」`, 'ok');
+    $('#nv-paste-text').value = '';
+    loadNovel(); refreshGates();
+  } catch (e) { toast(e.message, 'err'); }
+});
 
 async function loadNovel() {
   if (!state.projectId) { $('#nv-segs').innerHTML = '<div class="empty">请先选择项目</div>'; return; }
@@ -604,7 +654,7 @@ async function loadNovel() {
     $('#nv-state').innerHTML = `<i class="dotm"></i>${n.approved_count}/${n.total_count} 段已通过`;
     const sc = $('#nv-segs-count'); if (sc) sc.textContent = `${n.approved_count}/${n.total_count} 已通过`;
     const fc = $('#nv-full-count'); if (fc) fc.textContent = `${n.chars} 字`;
-    $('#nv-continue').disabled = !(n.can_continue && n.total_count > 0);
+    const cb = $('#nv-continue'); if (cb) cb.disabled = !(n.can_continue && n.total_count > 0);
 
     // 分段
     const box = $('#nv-segs');
@@ -646,11 +696,14 @@ async function loadNovel() {
 }
 
 function bindSegments() {
-  $$('[data-fold]').forEach((h) => h.addEventListener('click', (e) => {
+  // 只绑「分段审核」里的分段头；不要用全局 [data-fold]（那会连静态折叠卡片一起绑，
+  // 导致找不到 seg-body-* 而报 null）。静态折叠由全局 h2.foldable 委托处理。
+  $$('#nv-segs [data-fold]').forEach((h) => h.addEventListener('click', (e) => {
     if (e.target.closest('button')) return;  // 点按钮不触发折叠
     const id = h.dataset.fold;
     const body = document.getElementById('seg-body-' + id);
     const arrow = document.getElementById('seg-arrow-' + id);
+    if (!body) return;
     const hidden = body.classList.toggle('hidden');
     if (arrow) arrow.textContent = hidden ? '▸' : '▾';
   }));
@@ -689,6 +742,7 @@ async function openSegEdit(id) {
     const text = box.querySelector('#seg-edit').value;
     await api(`/api/artifacts/${id}/payload`, { method: 'PATCH', body: JSON.stringify({ text }) });
     box.remove(); toast('已保存（下游标记需重跑）', 'ok'); loadNovel(); refreshGates();
+    if (!$('#tab-pages').classList.contains('hidden')) loadPages();   // 分格分页的正文预览同步刷新
   });
 }
 
@@ -873,6 +927,12 @@ async function loadPages() {
     $('#pg-count').textContent = `${d.pages.length} 页`;
     $('#pg-meta').textContent = `已审核正文 ${d.novel_chars} 字 · 目标 ${d.target_pages} 页 · 提示词 ${d.panel_prompt_count} 条`;
 
+    // 正文产物预览（可编辑）：复用 /novel 拿分段，改动走产物编辑接口
+    try {
+      const nv = await api(`/api/projects/${state.projectId}/novel`);
+      renderPagesNovel(nv);
+    } catch { /* 预览失败不影响分格主流程 */ }
+
     const box = $('#pg-list');
     $('#pg-blank').style.display = d.pages.length ? 'none' : 'block';
     if (!d.pages.length) { box.innerHTML = ''; return; }
@@ -937,6 +997,28 @@ async function loadPages() {
       toast('已删除该页', 'ok'); loadPages(); refreshGates();
     }));
   } catch (e) { toast(e.message, 'err'); }
+}
+
+/** 「分格分页」页里的正文产物预览：列出作为分格依据的正文分段，可就地编辑。 */
+function renderPagesNovel(nv) {
+  const box = $('#pg-novel-list');
+  if (!box) return;
+  const segs = nv.segments || [];
+  const c = $('#pg-novel-count');
+  if (c) c.textContent = `${nv.approved_count}/${nv.total_count} 段 · ${nv.chars} 字`;
+  if (!segs.length) { box.innerHTML = '<div class="empty">还没有正文，请到「正文」页写或粘贴</div>'; return; }
+  const modeTag = (m) => m === 'continue' ? '续写' : m === 'raw' ? '直发' : m === 'llm' ? 'LLM' : m === 'paste' ? '粘贴' : '起笔';
+  box.innerHTML = segs.map((s) => `
+    <div class="seg" style="margin-bottom:8px">
+      <div class="segh"><b>第 ${s.index} 段</b> ${pill(s.status)}
+        <span class="pill tag">${modeTag(s.mode)}</span>
+        <span class="mut" style="font-size:12px">${s.chars} 字</span>
+        <div class="spacer"></div>
+        <button class="sm" data-pgedit="${s.id}">编辑</button>
+      </div>
+      <div class="txt" style="max-height:180px;overflow:auto">${esc(s.text)}</div>
+    </div>`).join('');
+  box.querySelectorAll('[data-pgedit]').forEach((b) => b.addEventListener('click', () => openSegEdit(+b.dataset.pgedit)));
 }
 
 async function aiFillPage(pageRef, btn) {
@@ -1627,6 +1709,7 @@ async function openPromptEditor(name) {
     <div class="row" style="margin-top:12px">
       <span class="mut" style="font-size:12px" id="pp-hint">可用占位：${
         name === 's2_script' ? 'NOVEL / START_PAGE / END_PAGE / TOTAL_PAGES / TEMPLATE_MENU / TECHNIQUES'
+        : name === 's1_prose' ? 'TITLE / OUTLINE / INSTRUCTION / CONTEXT_TAIL'
                              : 'PAGE_SCRIPT_JSON / CHARACTERS_JSON / TECHNIQUES_JSON / PANEL_GEOMETRY_JSON'}</span>
       <div class="spacer"></div>
       <button class="sm" data-close>取消</button>

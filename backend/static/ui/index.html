@@ -165,6 +165,16 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
 .tplthumb-sm{width:46px;height:62px;flex:0 0 auto;background:#f4f6f9;border:1px solid var(--line2);
   border-radius:6px;display:flex;align-items:center;justify-content:center;overflow:hidden}
 .tplthumb-sm img{max-width:90%;max-height:92%;display:block}
+
+/* 问号提示：小圆圈 + 悬停弹出说明 */
+.help-dot{position:relative;display:inline-flex;align-items:center;justify-content:center;
+  width:16px;height:16px;border-radius:50%;border:1px solid var(--line2);background:#f0f2f5;
+  color:var(--muted);font-size:11px;font-weight:700;cursor:help;user-select:none;flex:0 0 auto}
+.help-dot:hover{border-color:var(--accent);color:var(--accent)}
+.help-dot .tip{position:absolute;top:150%;right:0;z-index:50;width:300px;padding:8px 10px;
+  background:#232733;color:#e8eaee;border-radius:8px;font-size:12px;font-weight:400;line-height:1.55;
+  box-shadow:0 6px 20px rgba(0,0,0,.22);opacity:0;visibility:hidden;transition:.12s;text-align:left}
+.help-dot:hover .tip{opacity:1;visibility:visible}
 </style>
 </head>
 <body>
@@ -175,7 +185,7 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
       <button data-tab="projects" class="active"><span class="ic">▦</span>项目</button>
       <button data-tab="novel"><span class="ic">✎</span>正文</button>
       <button data-tab="pipeline"><span class="ic">≡</span>流水线</button>
-      <button data-tab="pages"><span class="ic">▥</span>分格</button>
+      <button data-tab="pages"><span class="ic">▥</span>分格分页</button>
       <button data-tab="prompts"><span class="ic">✧</span>提示词</button>
       <button data-tab="images"><span class="ic">▤</span>出图</button>
       <button data-tab="compose"><span class="ic">▦</span>分页合成</button>
@@ -253,60 +263,109 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     <!-- 正文（小说） -->
     <section id="tab-novel" class="hidden">
       <div class="card">
-        <h2><span class="step">S1</span>正文 · 用酒馆写</h2>
-        <div class="h2sub">配好角色卡 / 世界书后，把任务发给酒馆；正文回传后你逐段审核，通过后继续写。</div>
-        <div class="grid2">
-          <div><label class="fld">写作/续写提示（可空）</label>
-            <input id="nv-instr" placeholder="如：突出机械少女的疏离感；或「接着写两人逃出封锁区」"></div>
-          <div style="display:flex;align-items:flex-end;gap:10px">
-            <button class="primary" id="nv-start">开始写作</button>
-            <button id="nv-continue">续写</button>
-            <span class="pill" id="nv-state">—</span>
-          </div>
-        </div>
-        <div class="row" style="margin-top:10px">
-          <span class="mut" style="font-size:12.5px">需酒馆标签页打开且扩展已启用；生成会走完整角色卡/世界书管线。</span>
+        <h2><span class="step">S1</span>正文</h2>
+        <div class="h2sub">先选一种写作方式，下方才会显示对应的操作区。三种方式产出的正文完全等价，都会进入底部「分段审核」，通过后才计入小说全文。</div>
+        <div class="row" id="nv-methods">
+          <button class="sm" data-method="tavern">① 用酒馆写</button>
+          <button class="sm" data-method="llm">② 调用 LLM 写</button>
+          <button class="sm" data-method="paste">③ 自己粘贴</button>
+          <span class="spacer"></span>
+          <span class="pill" id="nv-state">—</span>
         </div>
       </div>
 
-      <div class="card">
-        <h2 style="cursor:pointer" id="tv-chats-toggle">对话列表
-          <span class="pill" id="tv-cur">—</span>
-          <span class="mut" style="font-size:12.5px;font-weight:400">酒馆的 Recent Chats，点标题收起/展开，点条目切换</span>
-          <span class="spacer"></span><span class="mut" id="tv-chats-arrow">▸</span>
-        </h2>
-        <div id="tv-chats-body" class="hidden">
-          <div class="h2sub">与酒馆「Recent Chats」一致；切换会同步改变酒馆当前对话。</div>
-          <div id="tv-chats"><div class="empty">等待酒馆扩展推送…</div></div>
+      <!-- 方式一：用酒馆写 -->
+      <div id="nv-pane-tavern" class="hidden">
+        <div class="card">
+          <h2 style="cursor:pointer" id="tv-chats-toggle">对话列表
+            <span class="pill" id="tv-cur">—</span>
+            <span class="spacer"></span>
+            <span class="help-dot" title="">?
+              <span class="tip">配好角色卡 / 世界书后，在下方「酒馆对话」里<b>直接发一条</b>给酒馆（相当于你在酒馆聊天框里发话），
+                只把这次新返回的内容存为正文；历史消息不会写入产物。<br><br>
+                需酒馆标签页打开且扩展已启用（或常驻桥在跑）。也可用本列表切换当前会话。</span>
+            </span>
+            <span class="mut" id="tv-chats-arrow">▸</span>
+          </h2>
+          <div id="tv-chats-body" class="hidden">
+            <div class="h2sub">与酒馆「Recent Chats」一致；点条目切换会同步改变酒馆当前对话。</div>
+            <div id="tv-chats"><div class="empty">等待酒馆扩展推送…</div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2 class="foldable" data-fold="tv-chat-wrap" style="cursor:pointer">酒馆对话
+            <span class="mut" style="font-size:12.5px;font-weight:400">历史消息仅供查看，不会写入产物</span>
+            <span class="fold-ic">▾</span>
+          </h2>
+          <div id="tv-chat-wrap">
+          <div class="h2sub" id="tv-meta">正在读取酒馆状态…</div>
+          <div class="row" style="margin-bottom:10px">
+            <span class="pill" id="tv-receipt">生成依据：—</span>
+            <span class="mut" style="font-size:12px" id="tv-lastcount">—</span>
+            <button class="sm" id="tv-refresh">刷新</button>
+          </div>
+          <div class="novel" id="tv-chat" style="max-height:380px"><div class="empty">等待酒馆扩展推送…</div></div>
+          <div id="tv-live" class="hidden" style="margin-top:10px">
+            <div class="seg" style="border-color:var(--accent);background:#f7f9ff">
+              <div class="segh"><b>生成中…</b> <span class="pill run" id="tv-live-state"><i class="dotm"></i>流式接收</span>
+                <span class="mut" id="tv-live-chars" style="font-size:12px"></span></div>
+              <div class="txt" id="tv-live-text" style="max-height:220px"></div>
+            </div>
+          </div>
+          <div id="tv-error" class="hidden" style="margin-top:10px">
+            <div class="seg" style="border-color:var(--err);background:var(--errbg)">
+              <div class="segh"><b>生成失败</b><div class="spacer"></div>
+                <button class="sm" id="tv-error-close">关闭</button></div>
+              <div class="txt" id="tv-error-text"></div></div>
+          </div>
+          <div class="row" style="margin-top:12px;align-items:flex-end">
+            <div style="flex:1">
+              <label class="fld" style="display:flex;align-items:center;gap:8px">
+                <span>直接发一条给酒馆（<b>只把这次新返回的内容</b>存为正文）</span>
+                <button class="sm" id="tv-use-outline" title="把项目详情里的故事大纲复制到输入框">引用故事大纲</button>
+              </label>
+              <textarea id="tv-input" style="min-height:64px" placeholder="例：写一段雨夜追车，节奏快一点。Ctrl+Enter 发送"></textarea></div>
+            <button class="primary" id="tv-send">发送</button>
+          </div>
+          </div>
         </div>
       </div>
 
-      <div class="card">
-        <h2>酒馆对话 <span class="mut" style="font-size:12.5px;font-weight:400">历史消息仅供查看，不会写入产物</span></h2>
-        <div class="h2sub" id="tv-meta">正在读取酒馆状态…</div>
-        <div class="row" style="margin-bottom:10px">
-          <span class="pill" id="tv-receipt">生成依据：—</span>
-          <span class="mut" style="font-size:12px" id="tv-lastcount">—</span>
-          <button class="sm" id="tv-refresh">刷新</button>
-        </div>
-        <div class="novel" id="tv-chat" style="max-height:380px"><div class="empty">等待酒馆扩展推送…</div></div>
-        <div id="tv-live" class="hidden" style="margin-top:10px">
-          <div class="seg" style="border-color:var(--accent);background:#f7f9ff">
-            <div class="segh"><b>生成中…</b> <span class="pill run" id="tv-live-state"><i class="dotm"></i>流式接收</span>
-              <span class="mut" id="tv-live-chars" style="font-size:12px"></span></div>
-            <div class="txt" id="tv-live-text" style="max-height:220px"></div>
+      <!-- 方式二：调用 LLM 写 -->
+      <div id="nv-pane-llm" class="hidden">
+        <div class="card">
+          <h2>调用 LLM 写 <span class="mut" style="font-size:12.5px;font-weight:400">用项目标题 + 故事大纲</span>
+            <span class="spacer"></span>
+            <button class="sm" id="nv-llm-tpl" title="编辑「调用 LLM 写」的系统提示词与用户模板">提示词模板</button>
+          </h2>
+          <div class="h2sub"><b>项目标题与故事大纲会自动发送给 LLM</b> 作为写作依据；下方输入框是<b>额外补充或续写要求</b>（可留空）。
+            用本项目「设置」里配置的 LLM 供应商写作，需先在「设置」页配好（或从酒馆导入）。措辞可在右上角「提示词模板」里改。</div>
+          <div class="grid2">
+            <div><label class="fld">额外需求 / 续写要求（可空）</label>
+              <input id="nv-llm-instr" placeholder="如：这段写追逐高潮、节奏加快；或「接着写两人逃出封锁区」"></div>
+            <div style="display:flex;align-items:flex-end;gap:10px">
+              <button class="primary" id="nv-llm-start">开始写作</button>
+              <button id="nv-llm-continue">续写</button>
+            </div>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <span class="mut" style="font-size:12.5px">「续写」会带上已通过的前文结尾，且需先通过前面的分段；生成结果作为一段正文，进入底部「分段审核」。</span>
           </div>
         </div>
-        <div id="tv-error" class="hidden" style="margin-top:10px">
-          <div class="seg" style="border-color:var(--err);background:var(--errbg)">
-            <div class="segh"><b>生成失败</b><div class="spacer"></div>
-              <button class="sm" id="tv-error-close">关闭</button></div>
-            <div class="txt" id="tv-error-text"></div></div>
-        </div>
-        <div class="row" style="margin-top:12px;align-items:flex-end">
-          <div style="flex:1"><label class="fld">直接发一条给酒馆（<b>只把这次新返回的内容</b>存为正文）</label>
-            <textarea id="tv-input" style="min-height:64px" placeholder="例：写一段雨夜追车，节奏快一点。Ctrl+Enter 发送"></textarea></div>
-          <button class="primary" id="tv-send">发送</button>
+      </div>
+
+      <!-- 方式三：自己粘贴 -->
+      <div id="nv-pane-paste" class="hidden">
+        <div class="card">
+          <h2>自己粘贴正文</h2>
+          <div class="h2sub">把你已写好的正文粘进来，作为一段正文产物；与其它方式产出一致，可审核、可编辑、可参与后续分格。</div>
+          <textarea id="nv-paste-text" style="min-height:200px" placeholder="把正文粘贴到这里…"></textarea>
+          <div class="row" style="margin-top:10px">
+            <span class="mut" style="font-size:12.5px">粘贴会追加为新的正文分段</span>
+            <div class="spacer"></div>
+            <button class="primary sm" id="nv-paste-add">追加为正文</button>
+          </div>
         </div>
       </div>
 
@@ -358,6 +417,17 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
           <div class="spacer"></div>
           <button class="sm" data-prompt="s2_script">分格提示词</button>
           <span class="mut" id="pg-meta" style="font-size:12.5px">—</span>
+        </div>
+      </div>
+      <div class="card">
+        <h2 class="foldable closed" data-fold="pg-novel">正文产物预览（可编辑）
+          <span class="mut" style="font-size:12px;font-weight:400">S1 产出，是分格的依据（点标题展开）</span>
+          <span class="pill" id="pg-novel-count">—</span>
+          <span class="fold-ic">▾</span>
+        </h2>
+        <div id="pg-novel" class="hidden">
+          <div class="h2sub">这里是作为分格依据的正文（只含已通过分段）。可直接编辑：保存会生成新版本，下游分格会标记「需重跑」。</div>
+          <div id="pg-novel-list"><div class="empty">—</div></div>
         </div>
       </div>
       <div class="card" id="pg-blank" style="display:none">
@@ -552,6 +622,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=65"></script>
+<script type="module" src="/ui/app.js?v=70"></script>
 </body>
 </html>

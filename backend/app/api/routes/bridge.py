@@ -77,6 +77,104 @@ def request_prose(project_id: int, body: dict, session: Session = Depends(get_se
     return {"job_id": job.id, "status": job.status, "mode": mode}
 
 
+@router.post("/projects/{project_id}/prose/llm")
+def prose_llm(project_id: int, body: dict, session: Session = Depends(get_session)) -> dict:
+    """用本项目配置的 LLM 直接写一段正文（不经过酒馆）。
+
+    body: {"mode": "start"|"continue", "instruction": "..."}
+    与酒馆路径共用同一套「正文产物」；**一定会用上项目详情里的标题与故事大纲**。
+    """
+    p = session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(404, "项目不存在")
+
+    mode = body.get("mode", "start")
+    if mode not in ("start", "continue"):
+        raise HTTPException(400, "mode 必须是 start 或 continue")
+    instruction = (body.get("instruction") or "").strip()
+
+    segments = prose.segments(session, project_id)
+    if mode == "continue":
+        if not segments:
+            raise HTTPException(400, "还没有任何正文，无法续写；请先写第一段")
+        if not all(s.status == "approved" for s in segments):
+            raise HTTPException(400, "仍有未审核的分段，请先审核通过再续写")
+
+    tail = ""
+    if mode == "continue":
+        full = prose.novel_text(session, project_id, only_approved=True)
+        tail = full[-1200:] if len(full) > 1200 else full
+
+    from ...llm import LLMClient, LLMError, LLMLogContext
+    from ...stages import promptlib
+
+    try:
+        provider, cfg = promptlib.resolve_provider(session, "S1")
+    except RuntimeError as e:
+        raise HTTPException(400, str(e)) from e
+
+    # 系统提示词与用户模板都可在前端「提示词模板」里编辑（存 prompt_overrides，优先于 s1_prose.md）
+    system, user_tpl = promptlib.get_prompt(session, "s1_prose")
+    mapping = prose.llm_user_mapping(
+        title=p.title or "", outline=p.outline or "",
+        instruction=instruction, mode=mode, context_tail=tail,
+    )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": promptlib.render(user_tpl, mapping)},
+    ]
+    client = LLMClient(cfg)
+    log = LLMLogContext(session=session, stage="S1", project_id=project_id, provider_id=provider.id)
+    try:
+        res = client.chat(messages)
+    except LLMError as e:
+        log.record(client, messages, "", {}, str(e))
+        session.commit()
+        raise HTTPException(502, f"LLM 调用失败：{e}") from e
+
+    log.record(client, messages, res.text or "", res.usage or {}, "")
+    text = (res.text or "").strip()
+    if not text:
+        session.commit()
+        raise HTTPException(502, "LLM 返回为空")
+
+    art = prose.append_segment(
+        session,
+        project_id=project_id,
+        text=text,
+        mode=("continue" if mode == "continue" else "llm"),
+        instruction=instruction,
+        status="approved" if p.review_mode == "auto" else "review",
+        receipt={"source": "llm", "model": cfg.model, "title": p.title or ""},
+    )
+    session.commit()
+    return {"ok": True, "artifact_id": art.id, "ref": art.ref, "chars": len(text)}
+
+
+@router.post("/projects/{project_id}/prose/paste")
+def prose_paste(project_id: int, body: dict, session: Session = Depends(get_session)) -> dict:
+    """手动粘贴正文：把一段文本作为新的正文分段追加（与酒馆/LLM 产物同源）。
+
+    body: {"text": "..."}
+    """
+    p = session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(404, "项目不存在")
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "正文不能为空")
+    art = prose.append_segment(
+        session,
+        project_id=project_id,
+        text=text,
+        mode="paste",
+        instruction="",
+        status="approved" if p.review_mode == "auto" else "review",
+    )
+    session.commit()
+    return {"ok": True, "artifact_id": art.id, "ref": art.ref, "chars": len(text)}
+
+
 @router.get("/bridge/tasks/claim")
 def claim(session: Session = Depends(get_session)) -> dict:
     """扩展领取一个待办任务（正文生成 / 酒馆操作）；没有则返回空。"""
@@ -105,6 +203,7 @@ def claim(session: Session = Depends(get_session)) -> dict:
             "mode": payload.get("mode", "start"),
             "instruction": payload.get("instruction", ""),
             "context_tail": payload.get("context_tail", ""),
+            "title": (project.title if project else "") or "",
             "outline": (project.outline if project else "") or "",
             "tavern_binding": (project.tavern_binding if project else {}) or {},
         })

@@ -77,6 +77,7 @@ def resolve_provider(session: Session, stage: str) -> tuple[LLMProvider, Provide
 # 用户可编辑提示词（数据库覆盖 .md 默认值）
 # --------------------------------------------------------------------------
 PROMPT_STAGES = {
+    "s1_prose": "S1 正文（调用 LLM 写）",
     "s2_script": "S2 分页分格",
     "s3_prompt": "S3 分镜提示词",
 }

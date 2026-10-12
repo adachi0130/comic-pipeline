@@ -203,10 +203,33 @@ LoRA 支持三种节点（多 `LoraLoader` 串联、rgthree `Lora Loader Stack`�
 ## 自测
 
 ```bash
+.venv/Scripts/python.exe -X utf8 -B -m unittest discover -s tests -p 'test_*safety.py' -v
 .venv/Scripts/python.exe tests/test_workflow_mapping.py   # 工作流参数映射 + LoRA 链/旁路
 .venv/Scripts/python.exe tests/test_artifacts.py          # 版本化 + 血缘 + 失效传播
 .venv/Scripts/python.exe tests/test_med_bridge.py         # MED 桥端到端（无头，需已拉取 MED）
 ```
+
+安全回归使用 `tests/` 下独立临时目录及内存 SQLite，进程、网络出图和 MED 均隔离或 mock；
+PDF/CBZ 使用临时图片真实导出。它不启动应用 lifespan、不访问实际项目数据库，也不需要下载浏览器。
+
+### 数据安全修复：存储与兼容性
+
+- 启动工具不再扫描或强杀已有 Python / 浏览器进程；已有后端在线时退出。
+  在原启动终端按 **Ctrl+C** 停止本次子进程。`start_all.py --stop` 保留参数，
+  只显示手动停止指引并返回退出码 2。
+- 常驻酒馆桥不扫描、读取或删除会话文件，旧的会话清理函数已禁用。
+- 产物文件必须属于 `data/projects/<project_id>/`。绝对路径、相对路径均会检查实际解析结果；
+  越界路径、跨项目路径、Windows ADS、外部符号链接/联接均拒绝。
+  通用 payload 编辑禁止改写 `candidates/files/path` 文件引用；上传、生成及普通提示词编辑接口保留。
+- 新候选图、上传图、整页 PNG、MED 预览及 PDF/CBZ 各次写入使用独立 UUID 子目录，
+  文件采用排他创建。API URL 和数据库 `path/payload` 格式保持兼容。
+- 删除候选仅从新版本列表移除该项，保留物理文件和旧版本；该操作不会立即释放磁盘空间。
+- **没有数据库迁移或旧文件搬移。**已有合法项目文件继续通过原产物 ID 读取，
+  新生成结果不再写入旧的固定文件名。历史已被覆盖/删除的内容无法由本次修复恢复。
+- 旧记录若指向项目目录外，访问会被拒绝；不会自动复制、改写或修复该记录。
+  项目目录及 `projects/` 目录的联接也会被拒绝；数据根目录仍可由 `COMIC_DATA_DIR` 配置。
+- **回滚：**停止程序后恢复代码版本即可，数据库结构保持原样，新旧路径均存于既有字段。
+  保留所有新增 UUID 目录；回滚后旧代码会重新带来清理和覆盖风险，应先保留完整数据副本。
 
 ---
 
