@@ -23,6 +23,49 @@ DEFAULT_INSTRUCTION = (
     "对话精炼。只输出正文，不要标题、不要解释。"
 )
 
+# 「调用 LLM 写正文」时的系统提示词。
+LLM_SYSTEM = (
+    "你是一位漫画原作小说作者。请依据给定的作品标题与故事大纲，用小说笔法把它扩写成正文。"
+    "要求：画面感强、人物内心清晰（便于后续改编成分镜），对话精炼，段落有节奏起伏。"
+    "只输出小说正文本身——不要写标题、不要分节小标题、不要任何解释或说明文字。"
+)
+
+
+def llm_messages(
+    *,
+    title: str,
+    outline: str,
+    instruction: str = "",
+    mode: str = "start",
+    context_tail: str = "",
+) -> list[dict[str, str]]:
+    """构造「调用 LLM 写正文」的消息。
+
+    与酒馆路径的区别：这里**一定会带上项目的标题与故事大纲**（这是本项目自己的
+    LLM 调用，没有酒馆的角色卡/世界书兜底，标题与大纲是它唯一的设定来源）。
+    """
+    ctx: list[str] = []
+    if (title or "").strip():
+        ctx.append(f"作品标题：{title.strip()}")
+    if (outline or "").strip():
+        ctx.append(f"故事大纲：\n{outline.strip()}")
+    if mode == "continue" and (context_tail or "").strip():
+        ctx.append("已写好的前文结尾（仅供衔接，不要重复）：\n……" + context_tail.strip())
+
+    if (instruction or "").strip():
+        ctx.append("本次写作要求：" + instruction.strip())
+    elif mode == "continue":
+        ctx.append("请接着上面的前文继续往下写，保持文风、人称与节奏一致。")
+    else:
+        ctx.append("请根据标题与大纲，写出这个故事的开篇正文。")
+
+    user = "\n\n".join(ctx)
+    return [
+        {"role": "system", "content": LLM_SYSTEM},
+        {"role": "user", "content": user},
+    ]
+
+
 
 def seg_index(ref: str) -> int:
     try:

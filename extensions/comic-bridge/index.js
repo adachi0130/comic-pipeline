@@ -306,12 +306,17 @@ async function runTask(task) {
   } else if (mode === 'continue') {
     const hint = task.instruction || '请自然地接着往下写，保持文风与人称一致。';
     const tail = task.context_tail || '';
-    message = tail
+    const head = task.title ? `作品标题：${task.title}\n\n` : '';
+    message = head + (tail
       ? `【续写】以下是已写好的前文结尾（仅供衔接，不要重复）：\n……${tail}\n\n续写要求：${hint}`
-      : `【续写】${hint}`;
+      : `【续写】${hint}`);
   } else {
+    // 起笔：把作品标题和故事大纲一起交给酒馆（标题之前没传，导致标题未被用上）
     const base = task.instruction ? `写作要求：${task.instruction}` : '请根据设定开始写作。';
-    message = task.outline ? `故事大纲：${task.outline}\n\n${base}` : base;
+    const head = [];
+    if (task.title) head.push(`作品标题：${task.title}`);
+    if (task.outline) head.push(`故事大纲：${task.outline}`);
+    message = head.length ? `${head.join('\n')}\n\n${base}` : base;
   }
 
   // 程序化发送（不用斜杠命令，避免转义问题），然后触发生成
