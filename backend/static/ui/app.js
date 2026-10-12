@@ -2754,6 +2754,15 @@ $('#cps-compose-all').addEventListener('click', async () => {
     toast(`已入队合成 ${pages.length} 页`, 'ok');
   } catch (e) { toast(e.message, 'err'); }
 });
+// 一键审核：把所有「待审查」的整页成图（S5 产物）置为通过
+$('#cps-approve-all').addEventListener('click', async () => {
+  if (!state.projectId) return toast('先选择项目', 'err');
+  try {
+    const r = await api(`/api/projects/${state.projectId}/page-images/approve-all`, { method: 'POST', body: '{}' });
+    toast(r.approved ? `已通过 ${r.approved} 页` : '没有待审查的整页成图', r.approved ? 'ok' : '');
+    loadCompose(); refreshGates();
+  } catch (e) { toast(e.message, 'err'); }
+});
 
 async function loadCompose() {
   const menu = $('#cps-menu');
@@ -2766,9 +2775,10 @@ async function loadCompose() {
     if (!d.pages.length) { menu.innerHTML = '<div class="empty">还没有分格页（先跑 S2）</div>'; return; }
     menu.innerHTML = d.pages.map((p) => {
       const done = p.panels.filter((x) => x.has_image).length;
+      const statusPill = p.composed ? ` ${pill(p.page_image_status)}` : '';
       return `<div class="pitem" data-cpspage="${esc(p.page_ref)}" style="cursor:pointer">
         <div class="av" style="width:26px;height:26px">${p.page_index}</div>
-        <div><b>${pageLabel(p.page_ref)}</b>
+        <div><b>${pageLabel(p.page_ref)}</b>${statusPill}
           <div class="meta">${done}/${p.panels.length} 格有图${p.composed ? ' · 已合成' : ''}</div></div>
         <div class="spacer"></div>
         <span class="pill ${p.ready ? 'ok' : 'warn'}"><i class="dotm"></i>${p.ready ? '可合成' : '缺图'}</span>
@@ -2810,13 +2820,16 @@ async function renderComposeFinished() {
       return `<div class="mini-card" style="padding:10px">
         <div class="row" style="gap:6px"><b>${pageLabel(ref)}</b>
           ${png ? '<span class="pill ok"><i class="dotm"></i>已合成</span>' : ''}
-          ${doc ? '<span class="pill warn"><i class="dotm"></i>编辑中</span>' : ''}</div>
+          ${doc ? '<span class="pill warn"><i class="dotm"></i>编辑中</span>' : ''}
+          ${png ? pill(png.status) : ''}</div>
         <div style="margin-top:8px;border:1px solid var(--line2);border-radius:8px;overflow:hidden;background:#f8fafc">
           ${main ? `<img src="${main.url}" style="width:100%;display:block">`
                  : `<div class="empty" style="font-size:12px;padding:24px 0">还没有结果</div>`}
         </div>
         <div class="mut" style="font-size:11px;margin-top:4px">预览：${main ? main.label : '—'}</div>
         <div class="row" style="margin-top:6px;gap:6px">
+          ${png && png.status !== 'approved' ? `<button class="sm primary" data-cps-approve="${png.id}">通过</button>
+          <button class="sm" data-cps-reject="${png.id}">驳回</button>` : ''}
           <button class="sm primary" data-cps-edit="${esc(ref)}">${doc ? '继续编辑' : '去编辑'}</button>
           ${png ? `<a class="sm" href="/api/artifacts/${png.id}/file?v=${png.version}" target="_blank">看整页图</a>` : ''}
         </div>
@@ -2826,6 +2839,17 @@ async function renderComposeFinished() {
   box.querySelectorAll('[data-cps-edit]').forEach((b) => b.addEventListener('click', () => {
     const ref = b.dataset.cpsEdit;
     openMedPage(ref, 'edit=1');
+  }));
+  box.querySelectorAll('[data-cps-approve]').forEach((b) => b.addEventListener('click', async () => {
+    try { await api(`/api/artifacts/${b.dataset.cpsApprove}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'approve' }) });
+      toast('整页已通过', 'ok'); loadCompose(); refreshGates();
+    } catch (e) { toast(e.message, 'err'); }
+  }));
+  box.querySelectorAll('[data-cps-reject]').forEach((b) => b.addEventListener('click', async () => {
+    const comment = prompt('驳回批注（可留空）：') || '';
+    try { await api(`/api/artifacts/${b.dataset.cpsReject}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'reject', comment }) });
+      toast('整页已驳回', 'ok'); loadCompose(); refreshGates();
+    } catch (e) { toast(e.message, 'err'); }
   }));
 }
 
@@ -2873,7 +2897,11 @@ function showComposePage(pageRef) {
     <div class="row" style="gap:8px"><b>${pageLabel(p.page_ref)}</b>
       <span class="pill tag">${p.template_id || '?'} · ${p.panels_count} 格</span>
       <span class="pill ${p.ready ? 'ok' : 'warn'}"><i class="dotm"></i>${p.ready ? '可合成' : '有格缺图'}</span>
+      ${p.composed ? pill(p.page_image_status) : ''}
       <div class="spacer"></div>
+      ${p.composed && p.page_image_status !== 'approved'
+        ? `<button class="sm primary" id="cps-approve">通过</button>
+           <button class="sm" id="cps-reject">驳回</button>` : ''}
       <button class="sm" id="cps-changetpl">更换模板</button>
       <button class="sm primary" id="cps-do">去 MED 合成</button>
       <button class="sm" id="cps-open">在 MED 打开</button>
@@ -2888,6 +2916,21 @@ function showComposePage(pageRef) {
   const doBtn = $('#cps-do');
   if (doBtn) doBtn.addEventListener('click', () => medCompose(p, false));
   const ob = $('#cps-open'); if (ob) ob.addEventListener('click', () => medCompose(p, true));
+  const apb = $('#cps-approve');
+  if (apb) apb.addEventListener('click', async () => {
+    try {
+      await api(`/api/artifacts/${p.page_image_id}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'approve' }) });
+      toast(`${pageLabel(p.page_ref)} 整页已通过`, 'ok'); loadCompose(); refreshGates();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+  const rjb = $('#cps-reject');
+  if (rjb) rjb.addEventListener('click', async () => {
+    const comment = prompt('驳回批注（可留空）：') || '';
+    try {
+      await api(`/api/artifacts/${p.page_image_id}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'reject', comment }) });
+      toast(`${pageLabel(p.page_ref)} 整页已驳回`, 'ok'); loadCompose(); refreshGates();
+    } catch (e) { toast(e.message, 'err'); }
+  });
   const rb = $('#cps-run');
   if (rb) rb.addEventListener('click', async () => {
     try {

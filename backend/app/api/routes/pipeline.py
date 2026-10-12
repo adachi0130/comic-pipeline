@@ -365,6 +365,10 @@ def compose_board(project_id: int, session: Session = Depends(get_session)) -> d
             "ready": ready,
             "composed": page_img is not None,
             "composed_url": f"/api/artifacts/{page_img.id}/file" if page_img else "",
+            # 整页成图（S5）的审核信息：供「分页合成」页做通过/驳回
+            "page_image_id": page_img.id if page_img else None,
+            "page_image_status": page_img.status if page_img else "",
+            "page_image_version": page_img.version if page_img else 0,
         })
     pages.sort(key=lambda x: x["page_index"])
     return {"pages": pages}
@@ -529,6 +533,33 @@ def approve_all_panel_prompts(project_id: int, body: dict | None = None, session
                 continue
             if f"page:{pno}" != page_ref:
                 continue
+        A.set_status(session, a, ArtifactStatus.APPROVED.value)
+        n += 1
+    session.commit()
+    return {"ok": True, "approved": n}
+
+
+@router.post("/projects/{project_id}/page-images/approve-all")
+def approve_all_page_images(project_id: int, body: dict | None = None, session: Session = Depends(get_session)) -> dict:
+    """一键审核：把该项目所有“待审查”的整页成图（S5 分页合成产物）置为通过。
+
+    body 可带 ``page_ref`` 限定只审某一页。
+    """
+    if session.get(Project, project_id) is None:
+        raise HTTPException(404, "项目不存在")
+    page_ref = (body or {}).get("page_ref")
+    reviews = session.scalars(
+        select(Artifact).where(
+            Artifact.project_id == project_id,
+            Artifact.kind == ArtifactKind.PAGE_IMAGE.value,
+            Artifact.is_current.is_(True),
+            Artifact.status == ArtifactStatus.REVIEW.value,
+        )
+    ).all()
+    n = 0
+    for a in reviews:
+        if page_ref and a.ref != page_ref:
+            continue
         A.set_status(session, a, ArtifactStatus.APPROVED.value)
         n += 1
     session.commit()
