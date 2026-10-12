@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
@@ -10,8 +12,18 @@ from ... import artifacts as A
 from ...db import get_session
 from ...models import Artifact, ArtifactEdge, ArtifactKind, ArtifactStatus, Project
 from ...schemas import ReviewAction
+from ...storage import StorageError, resolve_project_path, validate_payload_edit, validate_ref
 
 router = APIRouter(tags=["artifacts"])
+
+
+def _project_file(raw, project_id: int, *, must_exist: bool = True):
+    try:
+        return resolve_project_path(raw, project_id, must_exist=must_exist)
+    except StorageError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "产物文件缺失") from exc
 
 
 @router.get("/projects/{project_id}/artifacts")
@@ -147,6 +159,10 @@ def update_payload(artifact_id: int, body: dict, session: Session = Depends(get_
     a = session.get(Artifact, artifact_id)
     if a is None:
         raise HTTPException(404, "产物不存在")
+    try:
+        validate_payload_edit(a.payload or {}, body)
+    except StorageError as exc:
+        raise HTTPException(400, str(exc)) from exc
     merged = {**(a.payload or {}), **body}
     new = A.create(
         session,
@@ -165,8 +181,6 @@ def update_payload(artifact_id: int, body: dict, session: Session = Depends(get_
 @router.get("/artifacts/{artifact_id}/candidate/{index}")
 def candidate_image(artifact_id: int, index: int, session: Session = Depends(get_session)):
     """内联返回某个候选图（供前端 <img> 直接展示）。"""
-    from pathlib import Path
-
     from fastapi.responses import FileResponse
 
     a = session.get(Artifact, artifact_id)
@@ -175,25 +189,19 @@ def candidate_image(artifact_id: int, index: int, session: Session = Depends(get
     cands = (a.payload or {}).get("candidates") or []
     if not (0 <= index < len(cands)):
         raise HTTPException(404, "候选不存在")
-    p = Path(cands[index]["path"])
-    if not p.exists():
-        raise HTTPException(404, "候选文件缺失")
+    p = _project_file(cands[index].get("path"), a.project_id)
     return FileResponse(str(p))
 
 
 @router.get("/artifacts/{artifact_id}/file")
 def artifact_file(artifact_id: int, session: Session = Depends(get_session)):
     """内联返回产物落盘文件（如 S6 的整页 PNG）。"""
-    from pathlib import Path
-
     from fastapi.responses import FileResponse
 
     a = session.get(Artifact, artifact_id)
     if a is None or not a.path:
         raise HTTPException(404, "产物或文件不存在")
-    p = Path(a.path)
-    if not p.exists():
-        raise HTTPException(404, "文件缺失")
+    p = _project_file(a.path, a.project_id)
     return FileResponse(str(p))
 
 
@@ -217,26 +225,27 @@ def _decode_data_url(data_url: str) -> tuple[bytes, str]:
 @router.post("/projects/{project_id}/panels/{panel_ref}/candidates")
 def upload_candidate(project_id: int, panel_ref: str, body: dict, session: Session = Depends(get_session)) -> dict:
     """给某一格额外上传一张候选图（追加到候选列表）。body: {data_url}"""
-    from pathlib import Path
-
-    from ...config import get_settings
+    from ...storage import new_output_dir, write_new
 
     if session.get(Project, project_id) is None:
         raise HTTPException(404, "项目不存在")
+    try:
+        validate_ref(panel_ref, "panel")
+    except StorageError as exc:
+        raise HTTPException(400, str(exc)) from exc
     data, ext = _decode_data_url(body.get("data_url", ""))
     art = A.current(session, project_id, ArtifactKind.IMAGE.value, panel_ref)
 
-    safe = panel_ref.replace(":", "_").replace("/", "_")
-    import time as _time
-
-    out_dir = get_settings().data_dir / "projects" / str(project_id) / "candidates" / safe / "uploads"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        out_dir = new_output_dir(project_id, "candidates", ref=panel_ref)
+    except StorageError as exc:
+        raise HTTPException(403, str(exc)) from exc
     payload = dict(art.payload) if art is not None else {"candidates": [], "selected_index": None}
     cands = list(payload.get("candidates") or [])
     idx = len(cands)
-    fname = f"upload_{_time.strftime('%Y%m%d_%H%M%S')}_{idx + 1:02d}.{ext}"
+    fname = f"upload_{idx + 1:02d}.{ext}"
     fpath = out_dir / fname
-    fpath.write_bytes(data)
+    write_new(fpath, data)
     cands.append({"index": idx, "path": str(fpath), "seed": None, "params": {}, "uploaded": True})
     payload = {**payload, "candidates": cands}
 
@@ -254,23 +263,17 @@ def upload_candidate(project_id: int, panel_ref: str, body: dict, session: Sessi
 
 @router.delete("/artifacts/{artifact_id}/candidate/{index}")
 def delete_candidate(artifact_id: int, index: int, session: Session = Depends(get_session)) -> dict:
-    """从某一格候选列表里删除第 index 张（含落盘文件），并重新编号。"""
-    from pathlib import Path
+    """从新版候选列表移除一张，保留历史版本引用的物理文件。"""
 
     a = session.get(Artifact, artifact_id)
     if a is None or a.kind != ArtifactKind.IMAGE.value:
         raise HTTPException(404, "候选产物不存在")
-    payload = dict(a.payload or {})
+    payload = deepcopy(a.payload or {})
     cands = list(payload.get("candidates") or [])
     if not (0 <= index < len(cands)):
         raise HTTPException(400, "序号越界")
-    removed = cands.pop(index)
-    try:
-        p = Path(removed.get("path", ""))
-        if p.exists():
-            p.unlink()
-    except OSError:
-        pass
+    _project_file(cands[index].get("path"), a.project_id, must_exist=False)
+    cands.pop(index)
     for i, c in enumerate(cands):
         c["index"] = i
     sel = payload.get("selected_index")
