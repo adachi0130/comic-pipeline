@@ -13,8 +13,8 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from ..artifacts import create, current, set_status
-from ..config import get_settings
 from ..models import ArtifactKind, ArtifactStatus, Job, Project, Template
+from ..storage import new_output_dir, resolve_project_path, validate_ref, write_new
 from . import select as select_mod
 
 KIND = "compose"
@@ -31,6 +31,7 @@ def handle(session: Session, job: Job) -> dict:
     project = session.get(Project, project_id)
     if project is None:
         raise ValueError(f"项目不存在：{project_id}")
+    validate_ref(page_ref, "page")
 
     page_art = current(session, project_id, ArtifactKind.PAGE_SCRIPT.value, page_ref)
     if page_art is None:
@@ -66,7 +67,8 @@ def handle(session: Session, job: Job) -> dict:
             if idx is None:
                 idx = select_mod.select_index(cands, project.select_strategy)
             if idx is not None and 0 <= idx < len(cands):
-                arts.append(PanelArt(order=order, image_path=cands[idx]["path"], prompt=prompts[-1]))
+                image_path = resolve_project_path(cands[idx]["path"], project_id)
+                arts.append(PanelArt(order=order, image_path=str(image_path), prompt=prompts[-1]))
 
     tones: list[ToneOp] = []
     for panel in (page_art.payload or {}).get("panels", []):
@@ -94,10 +96,9 @@ def handle(session: Session, job: Job) -> dict:
     if not result.ok:
         raise RuntimeError(f"分页合成失败：{result.error}")
 
-    out_dir = get_settings().data_dir / "projects" / str(project_id) / "pages"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = new_output_dir(project_id, "pages", ref=page_ref)
     out_path = out_dir / f"{page_ref.replace(':', '_')}.png"
-    out_path.write_bytes(png_bytes)
+    write_new(out_path, png_bytes)
 
     art = create(
         session,

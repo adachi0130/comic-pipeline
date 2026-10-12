@@ -36,6 +36,7 @@
 ## 四、提交前自测
 
 ```bash
+.venv/Scripts/python.exe -X utf8 -B -m unittest discover -s tests -p 'test_*safety.py' -v
 .venv/Scripts/python.exe tests/test_workflow_mapping.py
 .venv/Scripts/python.exe tests/test_artifacts.py
 # 改了 MED 桥或升级 MED 后必须跑：

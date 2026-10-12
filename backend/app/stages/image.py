@@ -11,8 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..artifacts import create, current, set_status
-from ..config import get_settings
 from ..models import ArtifactKind, ArtifactStatus, Job, Project
+from ..storage import new_output_dir, validate_ref
 from .select import select_index
 
 KIND = "image"
@@ -61,6 +61,7 @@ def handle(session: Session, job: Job) -> dict:
     panel_ref = str(payload.get("panel_ref") or "")
     if not project_id or not panel_ref:
         raise ValueError("payload 缺少 project_id / panel_ref")
+    validate_ref(panel_ref, "panel")
 
     project = session.get(Project, project_id)
     if project is None:
@@ -118,12 +119,7 @@ def handle(session: Session, job: Job) -> dict:
 
     images = generate(req, should_cancel=lambda: jobq.is_cancelled(job.id))
 
-    safe_ref = panel_ref.replace(":", "_").replace("/", "_")
-    # 每次出图放进独立子目录（带时间戳），**绝不覆盖**之前的候选文件——避免重跑把旧图冲掉
-    import time as _time
-
-    stamp = _time.strftime("%Y%m%d_%H%M%S")
-    out_dir = get_settings().data_dir / "projects" / str(project_id) / "candidates" / safe_ref / stamp
+    out_dir = new_output_dir(project_id, "candidates", ref=panel_ref)
     paths = save_images(images, out_dir, stem="cand")
     candidates = [{"index": i, "path": str(p), "seed": req.seed, "params": params} for i, p in enumerate(paths)]
 
