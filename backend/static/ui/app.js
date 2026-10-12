@@ -2775,11 +2775,11 @@ async function loadCompose() {
     if (!d.pages.length) { menu.innerHTML = '<div class="empty">还没有分格页（先跑 S2）</div>'; return; }
     menu.innerHTML = d.pages.map((p) => {
       const done = p.panels.filter((x) => x.has_image).length;
-      const statusPill = p.composed ? ` ${pill(p.page_image_status)}` : '';
+      const statusPill = p.result_id ? ` ${pill(p.result_status)}` : '';
       return `<div class="pitem" data-cpspage="${esc(p.page_ref)}" style="cursor:pointer">
         <div class="av" style="width:26px;height:26px">${p.page_index}</div>
         <div><b>${pageLabel(p.page_ref)}</b>${statusPill}
-          <div class="meta">${done}/${p.panels.length} 格有图${p.composed ? ' · 已合成' : ''}</div></div>
+          <div class="meta">${done}/${p.panels.length} 格有图${p.composed ? ' · 已合成' : (p.med_doc_id ? ' · 编辑中' : '')}</div></div>
         <div class="spacer"></div>
         <span class="pill ${p.ready ? 'ok' : 'warn'}"><i class="dotm"></i>${p.ready ? '可合成' : '缺图'}</span>
       </div>`;
@@ -2817,19 +2817,21 @@ async function renderComposeFinished() {
       const main = doc && doc.has_file
         ? { url: `/api/artifacts/${doc.id}/file?v=${doc.version}`, label: '编辑中（MED 画布）', kind: 'warn' }
         : (png ? { url: `/api/artifacts/${png.id}/file?v=${png.version}`, label: '已合成整页', kind: 'ok' } : null);
+      // 该页可审核的成品：优先整页成图(PNG)，否则「编辑中」画布(MED 存档，需有预览文件)
+      const result = png || (doc && doc.has_file ? doc : null);
       return `<div class="mini-card" style="padding:10px">
         <div class="row" style="gap:6px"><b>${pageLabel(ref)}</b>
           ${png ? '<span class="pill ok"><i class="dotm"></i>已合成</span>' : ''}
           ${doc ? '<span class="pill warn"><i class="dotm"></i>编辑中</span>' : ''}
-          ${png ? pill(png.status) : ''}</div>
+          ${result ? pill(result.status) : ''}</div>
         <div style="margin-top:8px;border:1px solid var(--line2);border-radius:8px;overflow:hidden;background:#f8fafc">
           ${main ? `<img src="${main.url}" style="width:100%;display:block">`
                  : `<div class="empty" style="font-size:12px;padding:24px 0">还没有结果</div>`}
         </div>
         <div class="mut" style="font-size:11px;margin-top:4px">预览：${main ? main.label : '—'}</div>
         <div class="row" style="margin-top:6px;gap:6px">
-          ${png && png.status !== 'approved' ? `<button class="sm primary" data-cps-approve="${png.id}">通过</button>
-          <button class="sm" data-cps-reject="${png.id}">驳回</button>` : ''}
+          ${result && result.status !== 'approved' ? `<button class="sm primary" data-cps-approve="${result.id}">通过</button>
+          <button class="sm" data-cps-reject="${result.id}">驳回</button>` : ''}
           <button class="sm primary" data-cps-edit="${esc(ref)}">${doc ? '继续编辑' : '去编辑'}</button>
           ${png ? `<a class="sm" href="/api/artifacts/${png.id}/file?v=${png.version}" target="_blank">看整页图</a>` : ''}
         </div>
@@ -2897,9 +2899,9 @@ function showComposePage(pageRef) {
     <div class="row" style="gap:8px"><b>${pageLabel(p.page_ref)}</b>
       <span class="pill tag">${p.template_id || '?'} · ${p.panels_count} 格</span>
       <span class="pill ${p.ready ? 'ok' : 'warn'}"><i class="dotm"></i>${p.ready ? '可合成' : '有格缺图'}</span>
-      ${p.composed ? pill(p.page_image_status) : ''}
+      ${p.result_id ? `${pill(p.result_status)}<span class="mut" style="font-size:11.5px">${p.result_kind === 'med_doc' ? '编辑中画布' : '整页成图'}</span>` : ''}
       <div class="spacer"></div>
-      ${p.composed && p.page_image_status !== 'approved'
+      ${p.result_id && p.result_status !== 'approved'
         ? `<button class="sm primary" id="cps-approve">通过</button>
            <button class="sm" id="cps-reject">驳回</button>` : ''}
       <button class="sm" id="cps-changetpl">更换模板</button>
@@ -2919,16 +2921,16 @@ function showComposePage(pageRef) {
   const apb = $('#cps-approve');
   if (apb) apb.addEventListener('click', async () => {
     try {
-      await api(`/api/artifacts/${p.page_image_id}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'approve' }) });
-      toast(`${pageLabel(p.page_ref)} 整页已通过`, 'ok'); loadCompose(); refreshGates();
+      await api(`/api/artifacts/${p.result_id}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'approve' }) });
+      toast(`${pageLabel(p.page_ref)} 已通过`, 'ok'); loadCompose(); refreshGates();
     } catch (e) { toast(e.message, 'err'); }
   });
   const rjb = $('#cps-reject');
   if (rjb) rjb.addEventListener('click', async () => {
     const comment = prompt('驳回批注（可留空）：') || '';
     try {
-      await api(`/api/artifacts/${p.page_image_id}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'reject', comment }) });
-      toast(`${pageLabel(p.page_ref)} 整页已驳回`, 'ok'); loadCompose(); refreshGates();
+      await api(`/api/artifacts/${p.result_id}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'reject', comment }) });
+      toast(`${pageLabel(p.page_ref)} 已驳回`, 'ok'); loadCompose(); refreshGates();
     } catch (e) { toast(e.message, 'err'); }
   });
   const rb = $('#cps-run');

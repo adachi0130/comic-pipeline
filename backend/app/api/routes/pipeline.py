@@ -353,6 +353,15 @@ def compose_board(project_id: int, session: Session = Depends(get_session)) -> d
                 "prompt": (prompt_art.payload.get("prompt_pos") if prompt_art else "") or "",
             })
         page_img = A.current(session, project_id, ArtifactKind.PAGE_IMAGE.value, a.ref)
+        # 「编辑中」画布：用户在 MED 里保存的整页状态（也是一种“该页的成品”）
+        med_doc = A.current(session, project_id, ArtifactKind.MED_DOC.value, a.ref)
+        # 该页可审核的成品：优先整页成图；否则用「编辑中」画布（有落盘预览时）
+        if page_img is not None:
+            result, result_kind = page_img, "page_image"
+        elif med_doc is not None and med_doc.path:
+            result, result_kind = med_doc, "med_doc"
+        else:
+            result, result_kind = None, ""
         pages.append({
             "page_ref": a.ref, "page_index": no,
             "template_id": payload.get("template_id"),
@@ -365,10 +374,17 @@ def compose_board(project_id: int, session: Session = Depends(get_session)) -> d
             "ready": ready,
             "composed": page_img is not None,
             "composed_url": f"/api/artifacts/{page_img.id}/file" if page_img else "",
-            # 整页成图（S5）的审核信息：供「分页合成」页做通过/驳回
+            # 整页成图（S5）的审核信息
             "page_image_id": page_img.id if page_img else None,
             "page_image_status": page_img.status if page_img else "",
-            "page_image_version": page_img.version if page_img else 0,
+            # 「编辑中」画布（MED 存档）的信息
+            "med_doc_id": med_doc.id if med_doc else None,
+            "med_doc_status": med_doc.status if med_doc else "",
+            "med_doc_has_file": bool(med_doc and med_doc.path),
+            # 该页统一的可审核成品（前端据此显示 通过/驳回；一键审核也按它判定）
+            "result_id": result.id if result else None,
+            "result_status": result.status if result else "",
+            "result_kind": result_kind,
         })
     pages.sort(key=lambda x: x["page_index"])
     return {"pages": pages}
@@ -541,9 +557,10 @@ def approve_all_panel_prompts(project_id: int, body: dict | None = None, session
 
 @router.post("/projects/{project_id}/page-images/approve-all")
 def approve_all_page_images(project_id: int, body: dict | None = None, session: Session = Depends(get_session)) -> dict:
-    """一键审核：把该项目所有“待审查”的整页成图（S5 分页合成产物）置为通过。
+    """一键审核：把该项目所有“待审查”的**该页成品**置为通过。
 
-    body 可带 ``page_ref`` 限定只审某一页。
+    成品包含两类：整页成图（S5 后台合成）与「编辑中」画布（MED 存档），
+    只要其中一种处于“待审”，就一并通过。body 可带 ``page_ref`` 限定只审某一页。
     """
     if session.get(Project, project_id) is None:
         raise HTTPException(404, "项目不存在")
@@ -551,7 +568,7 @@ def approve_all_page_images(project_id: int, body: dict | None = None, session: 
     reviews = session.scalars(
         select(Artifact).where(
             Artifact.project_id == project_id,
-            Artifact.kind == ArtifactKind.PAGE_IMAGE.value,
+            Artifact.kind.in_((ArtifactKind.PAGE_IMAGE.value, ArtifactKind.MED_DOC.value)),
             Artifact.is_current.is_(True),
             Artifact.status == ArtifactStatus.REVIEW.value,
         )
