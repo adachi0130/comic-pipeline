@@ -1,4 +1,8 @@
-/* Manga Editor Desu! 驱动桥（frame-side）。
+/* SPDX-License-Identifier: GPL-3.0
+ *
+ * Manga Editor Desu! 驱动桥（frame-side）。
+ * 本文件由同源包装页注入到 Manga Editor Desu!（GPL-3.0，作者 new-sankaku）的
+ * iframe 全局作用域内、直接调用其内部函数，故按 GPL-3.0 分发。
  *
  * 用法：由同源包装页把本文件**作为 <script> 注入到 MED 的 iframe 文档内**，
  * 让代码运行在 MED 的全局作用域里（MED 的顶层函数是 function/var 声明，

@@ -21,3 +21,10 @@ jinja2>=3.1
 
 # 导出（M3）
 img2pdf>=0.5
+
+# 浏览器自动化（MED 合成桥无头驱动 / 酒馆常驻桥）
+# 装完还需执行一次：playwright install chromium
+playwright>=1.44
+
+# 图像处理（贴图/合成/导出辅助）
+pillow>=10.0
