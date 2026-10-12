@@ -165,6 +165,16 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
 .tplthumb-sm{width:46px;height:62px;flex:0 0 auto;background:#f4f6f9;border:1px solid var(--line2);
   border-radius:6px;display:flex;align-items:center;justify-content:center;overflow:hidden}
 .tplthumb-sm img{max-width:90%;max-height:92%;display:block}
+
+/* 问号提示：小圆圈 + 悬停弹出说明 */
+.help-dot{position:relative;display:inline-flex;align-items:center;justify-content:center;
+  width:16px;height:16px;border-radius:50%;border:1px solid var(--line2);background:#f0f2f5;
+  color:var(--muted);font-size:11px;font-weight:700;cursor:help;user-select:none;flex:0 0 auto}
+.help-dot:hover{border-color:var(--accent);color:var(--accent)}
+.help-dot .tip{position:absolute;top:150%;right:0;z-index:50;width:300px;padding:8px 10px;
+  background:#232733;color:#e8eaee;border-radius:8px;font-size:12px;font-weight:400;line-height:1.55;
+  box-shadow:0 6px 20px rgba(0,0,0,.22);opacity:0;visibility:hidden;transition:.12s;text-align:left}
+.help-dot:hover .tip{opacity:1;visibility:visible}
 </style>
 </head>
 <body>
@@ -267,28 +277,28 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
       <!-- 方式一：用酒馆写 -->
       <div id="nv-pane-tavern" class="hidden">
         <div class="card">
-          <h2>用酒馆写 <span class="mut" style="font-size:12.5px;font-weight:400">走完整角色卡 / 世界书 / 预设</span></h2>
-          <div class="h2sub">配好角色卡 / 世界书后，在下方「酒馆对话」里<b>直接发一条</b>给酒馆（相当于你在酒馆聊天框里发话），
-            只把这次新返回的内容存为正文；历史消息不会写入产物。也可用对话列表切换当前会话。</div>
-          <div class="row" style="margin-top:6px">
-            <span class="mut" style="font-size:12.5px">需酒馆标签页打开且扩展已启用（或常驻桥在跑）。</span>
-          </div>
-        </div>
-
-        <div class="card">
           <h2 style="cursor:pointer" id="tv-chats-toggle">对话列表
             <span class="pill" id="tv-cur">—</span>
-            <span class="mut" style="font-size:12.5px;font-weight:400">酒馆的 Recent Chats，点标题收起/展开，点条目切换</span>
-            <span class="spacer"></span><span class="mut" id="tv-chats-arrow">▸</span>
+            <span class="spacer"></span>
+            <span class="help-dot" title="">?
+              <span class="tip">配好角色卡 / 世界书后，在下方「酒馆对话」里<b>直接发一条</b>给酒馆（相当于你在酒馆聊天框里发话），
+                只把这次新返回的内容存为正文；历史消息不会写入产物。<br><br>
+                需酒馆标签页打开且扩展已启用（或常驻桥在跑）。也可用本列表切换当前会话。</span>
+            </span>
+            <span class="mut" id="tv-chats-arrow">▸</span>
           </h2>
           <div id="tv-chats-body" class="hidden">
-            <div class="h2sub">与酒馆「Recent Chats」一致；切换会同步改变酒馆当前对话。</div>
+            <div class="h2sub">与酒馆「Recent Chats」一致；点条目切换会同步改变酒馆当前对话。</div>
             <div id="tv-chats"><div class="empty">等待酒馆扩展推送…</div></div>
           </div>
         </div>
 
         <div class="card">
-          <h2>酒馆对话 <span class="mut" style="font-size:12.5px;font-weight:400">历史消息仅供查看，不会写入产物</span></h2>
+          <h2 class="foldable" data-fold="tv-chat-wrap" style="cursor:pointer">酒馆对话
+            <span class="mut" style="font-size:12.5px;font-weight:400">历史消息仅供查看，不会写入产物</span>
+            <span class="fold-ic">▾</span>
+          </h2>
+          <div id="tv-chat-wrap">
           <div class="h2sub" id="tv-meta">正在读取酒馆状态…</div>
           <div class="row" style="margin-bottom:10px">
             <span class="pill" id="tv-receipt">生成依据：—</span>
@@ -317,6 +327,7 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
               </label>
               <textarea id="tv-input" style="min-height:64px" placeholder="例：写一段雨夜追车，节奏快一点。Ctrl+Enter 发送"></textarea></div>
             <button class="primary" id="tv-send">发送</button>
+          </div>
           </div>
         </div>
       </div>
@@ -611,6 +622,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=68"></script>
+<script type="module" src="/ui/app.js?v=70"></script>
 </body>
 </html>

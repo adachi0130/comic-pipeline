@@ -696,11 +696,14 @@ async function loadNovel() {
 }
 
 function bindSegments() {
-  $$('[data-fold]').forEach((h) => h.addEventListener('click', (e) => {
+  // 只绑「分段审核」里的分段头；不要用全局 [data-fold]（那会连静态折叠卡片一起绑，
+  // 导致找不到 seg-body-* 而报 null）。静态折叠由全局 h2.foldable 委托处理。
+  $$('#nv-segs [data-fold]').forEach((h) => h.addEventListener('click', (e) => {
     if (e.target.closest('button')) return;  // 点按钮不触发折叠
     const id = h.dataset.fold;
     const body = document.getElementById('seg-body-' + id);
     const arrow = document.getElementById('seg-arrow-' + id);
+    if (!body) return;
     const hidden = body.classList.toggle('hidden');
     if (arrow) arrow.textContent = hidden ? '▸' : '▾';
   }));
