@@ -268,18 +268,10 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
       <div id="nv-pane-tavern" class="hidden">
         <div class="card">
           <h2>用酒馆写 <span class="mut" style="font-size:12.5px;font-weight:400">走完整角色卡 / 世界书 / 预设</span></h2>
-          <div class="h2sub">配好角色卡 / 世界书后，把任务发给酒馆；正文回传后你逐段审核，通过后继续写。
-            起笔时会带上项目详情里的<b>标题与故事大纲</b>。</div>
-          <div class="grid2">
-            <div><label class="fld">写作/续写提示（可空）</label>
-              <input id="nv-instr" placeholder="如：突出机械少女的疏离感；或「接着写两人逃出封锁区」"></div>
-            <div style="display:flex;align-items:flex-end;gap:10px">
-              <button class="primary" id="nv-start">开始写作</button>
-              <button id="nv-continue">续写</button>
-            </div>
-          </div>
-          <div class="row" style="margin-top:10px">
-            <span class="mut" style="font-size:12.5px">需酒馆标签页打开且扩展已启用；生成会走完整角色卡/世界书管线。</span>
+          <div class="h2sub">配好角色卡 / 世界书后，在下方「酒馆对话」里<b>直接发一条</b>给酒馆（相当于你在酒馆聊天框里发话），
+            只把这次新返回的内容存为正文；历史消息不会写入产物。也可用对话列表切换当前会话。</div>
+          <div class="row" style="margin-top:6px">
+            <span class="mut" style="font-size:12.5px">需酒馆标签页打开且扩展已启用（或常驻桥在跑）。</span>
           </div>
         </div>
 
@@ -328,9 +320,12 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
       <!-- 方式二：调用 LLM 写 -->
       <div id="nv-pane-llm" class="hidden">
         <div class="card">
-          <h2>调用 LLM 写 <span class="mut" style="font-size:12.5px;font-weight:400">用项目标题 + 故事大纲</span></h2>
+          <h2>调用 LLM 写 <span class="mut" style="font-size:12.5px;font-weight:400">用项目标题 + 故事大纲</span>
+            <span class="spacer"></span>
+            <button class="sm" id="nv-llm-tpl" title="编辑「调用 LLM 写」的系统提示词与用户模板">提示词模板</button>
+          </h2>
           <div class="h2sub">用本项目「设置」里配置的 LLM 供应商写作；<b>会自动带上项目详情里的标题与故事大纲</b>。
-            需先在「设置」页配好 LLM 供应商（或从酒馆导入）。</div>
+            需先在「设置」页配好 LLM 供应商（或从酒馆导入）。措辞可在右上角「提示词模板」里改。</div>
           <div class="grid2">
             <div><label class="fld">写作/续写提示（可空）</label>
               <input id="nv-llm-instr" placeholder="如：第三段写追逐高潮；或「接着写两人逃出封锁区」"></div>
@@ -612,6 +607,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=66"></script>
+<script type="module" src="/ui/app.js?v=67"></script>
 </body>
 </html>

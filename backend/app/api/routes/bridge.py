@@ -113,10 +113,16 @@ def prose_llm(project_id: int, body: dict, session: Session = Depends(get_sessio
     except RuntimeError as e:
         raise HTTPException(400, str(e)) from e
 
-    messages = prose.llm_messages(
+    # 系统提示词与用户模板都可在前端「提示词模板」里编辑（存 prompt_overrides，优先于 s1_prose.md）
+    system, user_tpl = promptlib.get_prompt(session, "s1_prose")
+    mapping = prose.llm_user_mapping(
         title=p.title or "", outline=p.outline or "",
         instruction=instruction, mode=mode, context_tail=tail,
     )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": promptlib.render(user_tpl, mapping)},
+    ]
     client = LLMClient(cfg)
     log = LLMLogContext(session=session, stage="S1", project_id=project_id, provider_id=provider.id)
     try:

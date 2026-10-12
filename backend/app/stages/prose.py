@@ -31,39 +31,37 @@ LLM_SYSTEM = (
 )
 
 
-def llm_messages(
+def llm_user_mapping(
     *,
     title: str,
     outline: str,
     instruction: str = "",
     mode: str = "start",
     context_tail: str = "",
-) -> list[dict[str, str]]:
-    """构造「调用 LLM 写正文」的消息。
+) -> dict[str, str]:
+    """构造「调用 LLM 写正文」用户提示词模板的占位符映射。
 
     与酒馆路径的区别：这里**一定会带上项目的标题与故事大纲**（这是本项目自己的
     LLM 调用，没有酒馆的角色卡/世界书兜底，标题与大纲是它唯一的设定来源）。
+    实际措辞由 ``backend/prompts/s1_prose.md``（或前端覆盖）里的模板决定。
     """
-    ctx: list[str] = []
-    if (title or "").strip():
-        ctx.append(f"作品标题：{title.strip()}")
-    if (outline or "").strip():
-        ctx.append(f"故事大纲：\n{outline.strip()}")
-    if mode == "continue" and (context_tail or "").strip():
-        ctx.append("已写好的前文结尾（仅供衔接，不要重复）：\n……" + context_tail.strip())
-
     if (instruction or "").strip():
-        ctx.append("本次写作要求：" + instruction.strip())
+        instr = ("写作要求：" if mode != "continue" else "续写要求：") + instruction.strip()
     elif mode == "continue":
-        ctx.append("请接着上面的前文继续往下写，保持文风、人称与节奏一致。")
+        instr = "请接着上面的前文继续往下写，保持文风、人称与节奏一致。"
     else:
-        ctx.append("请根据标题与大纲，写出这个故事的开篇正文。")
+        instr = "请根据标题与大纲，写出这个故事的开篇正文。"
 
-    user = "\n\n".join(ctx)
-    return [
-        {"role": "system", "content": LLM_SYSTEM},
-        {"role": "user", "content": user},
-    ]
+    ctx = ""
+    if mode == "continue" and (context_tail or "").strip():
+        ctx = "以下是已写好的前文结尾（仅供衔接，不要重复）：\n……" + context_tail.strip() + "\n\n"
+
+    return {
+        "TITLE": (title or "").strip() or "（未填写）",
+        "OUTLINE": (outline or "").strip() or "（未填写）",
+        "INSTRUCTION": instr,
+        "CONTEXT_TAIL": ctx,
+    }
 
 
 

@@ -583,17 +583,7 @@ bindCollapse('nv-segs-toggle', 'nv-segs-body', 'nv-segs-arrow');
 bindCollapse('nv-full-toggle', 'nv-full-body', 'nv-full-arrow');
 
 // ---------- 正文（小说） ----------
-$('#nv-start').addEventListener('click', () => requestProse('start'));
-$('#nv-continue').addEventListener('click', () => requestProse('continue'));
-
-async function requestProse(mode) {
-  if (!state.projectId) return toast('先选择项目', 'err');
-  try {
-    const r = await api(`/api/projects/${state.projectId}/prose/request`, { method: 'POST',
-      body: JSON.stringify({ mode, instruction: $('#nv-instr').value }) });
-    toast(`已请求酒馆${mode === 'continue' ? '续写' : '开始写作'} #${r.job_id}（需酒馆标签页打开）`);
-  } catch (e) { toast(e.message, 'err'); }
-}
+// 酒馆 pane 不再有「开始写作/续写」——改为在「酒馆对话」里直接发一条（见 sendToTavern）。
 
 // ---------- S1 三种写作方式：先选，再显示对应操作区 ----------
 const NV_METHODS = ['tavern', 'llm', 'paste'];
@@ -607,6 +597,7 @@ function setNovelMethod(m) {
 $$('#nv-methods [data-method]').forEach((b) => b.addEventListener('click', () => setNovelMethod(b.dataset.method)));
 
 // 方式二：调用 LLM 写（带上项目标题 + 故事大纲）
+$('#nv-llm-tpl').addEventListener('click', () => openPromptEditor('s1_prose'));
 $('#nv-llm-start').addEventListener('click', () => requestProseLLM('start'));
 $('#nv-llm-continue').addEventListener('click', () => requestProseLLM('continue'));
 async function requestProseLLM(mode) {
@@ -649,7 +640,7 @@ async function loadNovel() {
     $('#nv-state').innerHTML = `<i class="dotm"></i>${n.approved_count}/${n.total_count} 段已通过`;
     const sc = $('#nv-segs-count'); if (sc) sc.textContent = `${n.approved_count}/${n.total_count} 已通过`;
     const fc = $('#nv-full-count'); if (fc) fc.textContent = `${n.chars} 字`;
-    $('#nv-continue').disabled = !(n.can_continue && n.total_count > 0);
+    const cb = $('#nv-continue'); if (cb) cb.disabled = !(n.can_continue && n.total_count > 0);
 
     // 分段
     const box = $('#nv-segs');
@@ -1701,6 +1692,7 @@ async function openPromptEditor(name) {
     <div class="row" style="margin-top:12px">
       <span class="mut" style="font-size:12px" id="pp-hint">可用占位：${
         name === 's2_script' ? 'NOVEL / START_PAGE / END_PAGE / TOTAL_PAGES / TEMPLATE_MENU / TECHNIQUES'
+        : name === 's1_prose' ? 'TITLE / OUTLINE / INSTRUCTION / CONTEXT_TAIL'
                              : 'PAGE_SCRIPT_JSON / CHARACTERS_JSON / TECHNIQUES_JSON / PANEL_GEOMETRY_JSON'}</span>
       <div class="spacer"></div>
       <button class="sm" data-close>取消</button>
