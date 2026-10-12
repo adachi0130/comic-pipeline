@@ -16,6 +16,7 @@ from ..config import (
     get_settings,
     load_workflow_params,
 )
+from ..storage import write_new
 from . import store
 from .client import ComfyClient, GeneratedImage
 from .workflow import apply
@@ -157,7 +158,7 @@ def save_images(images: list[GeneratedImage], out_dir: Path, *, stem: str = "can
     paths: list[Path] = []
     for i, img in enumerate(images, start=1):
         p = out_dir / f"{stem}_{i:02d}{_ext(img.filename)}"
-        p.write_bytes(img.data)
+        write_new(p, img.data)
         paths.append(p)
     return paths
 

@@ -12,8 +12,8 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from ..artifacts import all_current, create, set_status
-from ..config import get_settings
 from ..models import ArtifactKind, ArtifactStatus, Job, Project
+from ..storage import new_output_dir, resolve_project_path, safe_filename
 
 KIND = "book"
 
@@ -40,11 +40,15 @@ def handle(session: Session, job: Job) -> dict:
     if not use:
         raise ValueError("没有可导出的整页图（先跑 S5 分页合成）")
 
-    out_dir = get_settings().data_dir / "projects" / str(project_id) / "book"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    pngs = [Path(a.path) for a in use if Path(a.path).exists()]
+    pngs = []
+    for a in use:
+        try:
+            pngs.append(resolve_project_path(a.path, project_id))
+        except FileNotFoundError:
+            continue
     if not pngs:
         raise ValueError("页图文件缺失")
+    out_dir = new_output_dir(project_id, "book")
 
     produced: dict = {}
     if fmt in ("pdf", "both"):
@@ -76,15 +80,15 @@ def handle(session: Session, job: Job) -> dict:
 def _make_pdf(pngs: list[Path], out: Path) -> None:
     import img2pdf
 
-    with open(out, "wb") as f:
+    with open(out, "xb") as f:
         f.write(img2pdf.convert([str(p) for p in pngs]))
 
 
 def _make_cbz(pngs: list[Path], out: Path) -> None:
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    with zipfile.ZipFile(out, "x", zipfile.ZIP_DEFLATED) as z:
         for i, p in enumerate(pngs, start=1):
             z.write(p, arcname=f"{i:04d}_{p.name}")
 
 
 def _safe(name: str) -> str:
-    return "".join(c for c in name if c not in '\\/:*?"<>|').strip() or "comic"
+    return safe_filename(name)
