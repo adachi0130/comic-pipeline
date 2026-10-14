@@ -216,6 +216,10 @@ body.editor-expanded .editor-frame-wrap iframe{height:calc(100dvh - 180px)}
   border-radius:11px;padding:12px 16px;box-shadow:0 12px 30px -10px rgba(16,24,40,.3);max-width:360px;font-size:13.5px;z-index:80}
 .toast.err{border-left-color:var(--err)}
 .toast.ok{border-left-color:var(--ok)}
+.toast-stack{position:fixed;right:18px;bottom:18px;z-index:99999;display:flex;flex-direction:column;align-items:flex-end;gap:8px;max-width:calc(100vw - 36px);pointer-events:none}
+.toast-stack .toast{position:static;display:flex;align-items:flex-start;gap:8px;max-width:min(420px,calc(100vw - 36px));pointer-events:auto;overflow-wrap:anywhere}
+.toast-close{border:0;background:transparent;padding:0 2px;font-size:18px;line-height:1.15;color:var(--muted);flex-shrink:0}
+@media(max-width:700px){.toast-stack .toast:nth-last-child(n+2){display:none}}
 .switch{display:flex;align-items:center;gap:9px;background:#f8fafc;border:1px solid var(--line);border-radius:999px;padding:6px 14px}
 .switch input{width:auto}
 .divider{height:1px;background:var(--line);margin:16px 0}
@@ -775,6 +779,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=82"></script>
+<script type="module" src="/ui/app.js?v=83"></script>
 </body>
 </html>

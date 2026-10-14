@@ -12,7 +12,7 @@ export function createEditFeedback({ toast, confirmAction = (message) => window.
     return next;
   }
 
-  function track({ element, group, label, read, write, auto = false, saveButton, status, onSaved }) {
+  function track({ element, group, label, read, write, auto = false, saveButton, status, onSaved, onDispose, busyCheck }) {
     let saved = JSON.stringify(read());
     let timer = null, running = null, disposed = false, failure = '', locked = false;
     const baselineButton = saveButton?.textContent;
@@ -61,14 +61,16 @@ export function createEditFeedback({ toast, confirmAction = (message) => window.
     }
     const entry = {
       group, label, auto, dirty, flush, snapshot,
-      get saving() { return !!running; },
+      get saving() { return !!running || !!busyCheck?.(); },
       get failed() { return !!failure; },
       lock(value) { locked = value; render(); },
       accept() { if (!running) { saved = snapshot(); failure = ''; render(); } },
       changed,
       dispose() {
+        if (disposed) return;
         disposed = true; clearTimeout(timer); entries.delete(entry);
         element.removeEventListener('input', changed); element.removeEventListener('change', changed);
+        onDispose?.();
       },
     };
     element.addEventListener('input', changed); element.addEventListener('change', changed);
@@ -94,9 +96,55 @@ export function createEditFeedback({ toast, confirmAction = (message) => window.
   const clear = (groups) => selected(groups).forEach((entry) => entry.dispose());
   const unsettled = (groups) => selected(groups).some((entry) => entry.dirty() || entry.saving);
   const snapshot = (groups) => selected(groups).map((entry) => entry.snapshot()).join('\n');
+  function protectDialog({ box, label, read, write, saveButton, afterSave, closeOnSave = true, extraButtons = [] }) {
+    const status = document.createElement('div'); status.className = 'save-feedback';
+    box.querySelector('.box').appendChild(status);
+    let busy = false;
+    const draft = track({ element: box, group: 'project-dialog', label, read, write, status, busyCheck: () => busy,
+      onDispose: () => { window.removeEventListener('keydown', onEscape); box.remove(); } });
+    const buttonText = saveButton.textContent;
+    const close = (force = false) => {
+      if (!force && (busy || draft.saving)) { toast('正在保存，请稍候。'); return false; }
+      if (!force && draft.dirty() && !confirmAction(`${label}有未保存的修改。关闭会放弃这些修改，确定继续吗？`)) return false;
+      draft.dispose(); window.removeEventListener('keydown', onEscape); box.remove(); return true;
+    };
+    const onEscape = (event) => {
+      if (event.key === 'Escape' && [...document.querySelectorAll('.modal:not(.hidden)')].at(-1) === box) close();
+    };
+    window.addEventListener('keydown', onEscape);
+    box.querySelector('[data-close]')?.addEventListener('click', () => close());
+    box.addEventListener('click', (event) => { if (event.target === box) close(); });
+    async function save() {
+      if (busy || draft.saving) return false;
+      busy = true;
+      const controls = [saveButton, ...extraButtons];
+      const disabled = controls.map((control) => control.disabled);
+      controls.forEach((control) => { control.disabled = true; }); saveButton.textContent = '保存中…';
+      try {
+        if (!(await draft.flush())) return false;
+        toast(label + '已保存', 'ok');
+        if (closeOnSave) close(true);
+        try { await afterSave?.(); } catch (error) { toast('内容已保存，刷新失败：' + error.message, 'err'); }
+        return true;
+      } finally {
+        busy = false; controls.forEach((control, index) => { control.disabled = disabled[index]; }); saveButton.textContent = buttonText;
+      }
+    }
+    saveButton.addEventListener('click', save);
+    async function operation(action) {
+      if (busy || draft.saving) return false;
+      busy = true;
+      const controls = [...box.querySelectorAll('input, textarea, button')];
+      const disabled = controls.map((control) => control.disabled);
+      controls.forEach((control) => { control.disabled = true; });
+      try { await action(); return true; }
+      finally { busy = false; controls.forEach((control, index) => { control.disabled = disabled[index]; }); }
+    }
+    return { draft, close, save, operation };
+  }
   window.addEventListener('beforeunload', (event) => {
     if (![...entries].some((entry) => entry.dirty() || entry.saving)) return;
     event.preventDefault(); event.returnValue = '';
   });
-  return { track, flush, prepare, clear, unsettled, snapshot };
+  return { track, flush, prepare, clear, unsettled, snapshot, protectDialog };
 }

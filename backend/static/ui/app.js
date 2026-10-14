@@ -26,9 +26,19 @@ async function api(path, opts = {}) {
   return data;
 }
 function toast(msg, kind = '') {
+  let stack = $('#toast-stack');
+  if (!stack) {
+    stack = document.createElement('div'); stack.id = 'toast-stack'; stack.className = 'toast-stack';
+    stack.setAttribute('aria-live', 'polite'); stack.setAttribute('aria-relevant', 'additions'); document.body.appendChild(stack);
+  }
   const el = document.createElement('div');
-  el.className = 'toast ' + kind; el.textContent = msg;
-  document.body.appendChild(el); setTimeout(() => el.remove(), 4200);
+  el.className = 'toast ' + kind;
+  const text = document.createElement('span'); text.textContent = msg;
+  const close = document.createElement('button'); close.type = 'button'; close.className = 'toast-close';
+  close.textContent = '×'; close.setAttribute('aria-label', '关闭提示'); close.addEventListener('click', () => el.remove());
+  el.append(text, close); stack.appendChild(el);
+  while (stack.children.length > 3) stack.firstElementChild.remove();
+  setTimeout(() => el.remove(), 4200);
 }
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const STATUS = {
@@ -45,6 +55,8 @@ const configuration = createConfigurationCenter({ state, api, $, esc, toast, swi
 let projectPickRequest = 0;
 let assetCardsRequest = 0, styleRequest = 0, styleEditor = null;
 let assetMutationInFlight = false;
+let projectDetailRequest = 0, projectDetailId = null;
+let projectWriteEpoch = 0;
 const assetEditors = new WeakMap();
 
 // ---------- Tab ----------
@@ -109,7 +121,13 @@ function switchTab(tab, requestedSection) {
   if (tab === 'projects') {
     // 已选中项目时停在详情（二级），否则显示列表（一级）
     showProjectView(state.projectId ? 'detail' : 'list');
-    if (state.projectId) api('/api/projects/' + state.projectId).then((p) => { state.project = p; renderProjectDetail(); });
+    if (state.projectId) {
+      const projectId = state.projectId, epoch = projectWriteEpoch;
+      api('/api/projects/' + projectId).then((project) => {
+        if (projectId !== state.projectId || epoch !== projectWriteEpoch) return;
+        state.project = project; renderProjectDetail();
+      }).catch((error) => toast('项目读取失败：' + error.message, 'err'));
+    }
   }
 }
 
@@ -155,16 +173,21 @@ function showProjectView(which) {
 }
 
 async function pickProject(id) {
-  if (state.editor?.dirty && state.editor.projectId !== id && !confirm('当前漫画页有未保存的修改。切换项目会关闭它，确定继续吗？')) return;
+  if (id === state.projectId) { showProjectView('detail'); renderProjectDetail(); return; }
   const request = ++projectPickRequest;
   let project;
   try { project = await api('/api/projects/' + id); }
   catch (e) { toast('无法打开项目：' + e.message, 'err'); return; }
   if (request !== projectPickRequest) return;
   if (id !== state.projectId) {
-    if (!(await editFeedback.prepare(['asset-cards', 'asset-style'], '切换项目'))) return;
+    if (!(await editFeedback.prepare(['asset-cards', 'asset-style', 'project-form', 'project-dialog'], '切换项目'))) return;
     if (request !== projectPickRequest) return;
-    editFeedback.clear(['asset-cards', 'asset-style']); styleEditor = null;
+    if (state.editor?.dirty && state.editor.projectId !== id && !confirm('当前漫画页有未保存的修改。切换项目会关闭它，确定继续吗？')) return;
+    editFeedback.clear(['asset-cards', 'asset-style', 'project-form', 'project-dialog']); styleEditor = null;
+    projectDetailId = null; projectDetailRequest++;
+    $('#proj-detail').innerHTML = '<div class="empty">正在加载新项目详情…</div>';
+    $('#pr-chars').innerHTML = '<div class="empty">正在加载新项目资产…</div>';
+    $('#pr-style').innerHTML = '<div class="empty">正在加载新项目画风…</div>'; $('#pr-style-status').textContent = '';
   }
   if (state.editor && state.editor.projectId !== id) editorWorkbench.reset();
   state.projectId = id;
@@ -210,10 +233,14 @@ async function ensureMeta() {
 // 项目详情卡片
 async function renderProjectDetail() {
   const projectId = state.projectId;
+  const request = ++projectDetailRequest;
   const box = $('#proj-detail');
   if (!box) return;
   const p = state.project;
   if (!p || !state.projectId) { box.innerHTML = '<div class="empty">未选择项目</div>'; return; }
+  if (projectDetailId === projectId && (editFeedback.unsettled('project-form') || _userEditingDetail())) {
+    updateProjectStats(); return;
+  }
   const g = state._gates || {};
 
   // 小说状态（全文只看已通过）
@@ -223,7 +250,11 @@ async function renderProjectDetail() {
   // 各阶段产物明细
   let arts = {};
   try { arts = await api(`/api/projects/${projectId}/stage-artifacts`); } catch { /* 忽略 */ }
-  if (projectId !== state.projectId) return;
+  if (projectId !== state.projectId || request !== projectDetailRequest) return;
+  if (projectDetailId === projectId && (editFeedback.unsettled('project-form') || _userEditingDetail())) {
+    updateProjectStats(); return;
+  }
+  editFeedback.clear('project-form'); projectDetailId = projectId;
 
   const stageRows = (state.meta?.stages || []).map((s) => {
     const x = g[s.id] || {};
@@ -248,14 +279,14 @@ async function renderProjectDetail() {
 
   box.innerHTML = `
     <div class="grid2" style="margin-bottom:10px">
-      <div><label class="fld">标题</label>
+      <div data-project-field="title"><label class="fld">标题</label>
         <div class="row"><input id="pd2-title" value="${esc(p.title)}" style="flex:1">
           <button class="sm" data-save="title">保存</button></div></div>
-      <div><label class="fld">目标页数（可改）</label>
+      <div data-project-field="target_pages"><label class="fld">目标页数（可改）</label>
         <div class="row"><input id="pd2-pages" type="number" min="1" value="${p.target_pages}" style="flex:1">
           <button class="sm" data-save="target_pages">保存</button></div></div>
     </div>
-    <div style="margin-bottom:10px"><label class="fld">故事大纲</label>
+    <div data-project-field="outline" style="margin-bottom:10px"><label class="fld">故事大纲</label>
       <textarea id="pd2-outline" style="min-height:90px">${esc(p.outline || '')}</textarea>
       <div class="row" style="margin-top:6px"><button class="sm" data-save="outline">保存大纲</button>
         <span class="mut" style="font-size:12px">大纲会影响 S2 分格时对剧情的取舍</span></div></div>
@@ -277,26 +308,25 @@ async function renderProjectDetail() {
       <span class="mut" style="font-size:12px">点「查看/编辑」进入该阶段</span></div>
     <div class="plist" id="pd-stats">${stageRows}</div>`;
 
-  // 保存（标题 / 目标页数 / 大纲）
-  box.querySelectorAll('[data-save]').forEach((b) => b.addEventListener('click', async () => {
-    const field = b.dataset.save;
-    const map = { title: '#pd2-title', target_pages: '#pd2-pages', outline: '#pd2-outline' };
-    let v = box.querySelector(map[field]).value;
-    if (field === 'target_pages') v = +v || 1;
-    try {
-      await api('/api/projects/' + state.projectId, { method: 'PATCH', body: JSON.stringify({ [field]: v }) });
-      state.project = await api('/api/projects/' + state.projectId);
-      toast('已保存', 'ok');
-      // 同步侧栏当前项目信息
-      $('#cur-proj').innerHTML = `<b>${esc(state.project.title)}</b>
-        <span class="mut">${state.project.target_pages} 页 · ${state.project.review_mode === 'auto' ? '自动审核' : '人工审查'}</span>`;
-      navigation.update();
-      loadProjects();
-      refreshGates();
-      // 注意：这里**不能**整块重绘 renderProjectDetail()，
-      // 否则会把用户正在编辑的其它输入框清空（曾导致“编辑后跳回原样”）。
-    } catch (e) { toast(e.message, 'err'); }
-  }));
+  const fields = { title: '#pd2-title', target_pages: '#pd2-pages', outline: '#pd2-outline' };
+  const labels = { title: '标题', target_pages: '目标页数', outline: '故事大纲' };
+  for (const [field, selector] of Object.entries(fields)) {
+    editFeedback.track({
+      element: box.querySelector(`[data-project-field="${field}"]`), group: 'project-form', label: labels[field],
+      saveButton: box.querySelector(`[data-save="${field}"]`),
+      read: () => ({ [field]: field === 'target_pages' ? Number(box.querySelector(selector).value) : box.querySelector(selector).value }),
+      write: async (body) => {
+        if (field === 'target_pages' && (!Number.isInteger(body[field]) || body[field] < 1)) throw new Error('目标页数请填写大于 0 的整数');
+        if (field === 'title' && !body.title.trim()) throw new Error('标题不能为空');
+        projectWriteEpoch++;
+        const project = await api('/api/projects/' + projectId, { method: 'PATCH', body: JSON.stringify(body) });
+        if (projectId !== state.projectId) return;
+        state.project = project; navigation.update();
+        $('#pd-title-h').textContent = project.title || '项目详情'; $('#pv-crumb').textContent = '项目 / ' + (project.title || '');
+        loadProjects(); refreshGates();
+      },
+    });
+  }
   // 跳阶段
   box.querySelectorAll('[data-jump]').forEach((b) => b.addEventListener('click', () => openStageArtifacts(b.dataset.jump)));
   box.querySelectorAll('[data-goto]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.goto)));
@@ -786,7 +816,10 @@ function bindSegments() {
 }
 
 async function openSegEdit(id) {
-  const a = await api('/api/artifacts/' + id);
+  const projectId = state.projectId;
+  let a;
+  try { a = await api('/api/artifacts/' + id); } catch (error) { return toast(error.message, 'err'); }
+  if (projectId !== state.projectId) return;
   const box = document.createElement('div');
   box.className = 'modal';
   box.innerHTML = `<div class="box" style="width:720px">
@@ -797,13 +830,11 @@ async function openSegEdit(id) {
       <button class="sm" data-close>取消</button>
       <button class="primary sm" id="seg-save">保存</button></div></div>`;
   document.body.appendChild(box);
-  box.querySelector('[data-close]').addEventListener('click', () => box.remove());
-  box.addEventListener('click', (e) => { if (e.target === box) box.remove(); });
-  box.querySelector('#seg-save').addEventListener('click', async () => {
-    const text = box.querySelector('#seg-edit').value;
-    await api(`/api/artifacts/${id}/payload`, { method: 'PATCH', body: JSON.stringify({ text }) });
-    box.remove(); toast('已保存（下游标记需重跑）', 'ok'); loadNovel(); refreshGates();
-    if (!$('#tab-pages').classList.contains('hidden')) loadPages();   // 分格分页的正文预览同步刷新
+  editFeedback.protectDialog({
+    box, label: '正文', saveButton: box.querySelector('#seg-save'),
+    read: () => ({ text: box.querySelector('#seg-edit').value }),
+    write: (body) => api(`/api/artifacts/${id}/payload`, { method: 'PATCH', body: JSON.stringify(body) }),
+    afterSave: () => { loadNovel(); refreshGates(); if (!$('#tab-pages').classList.contains('hidden')) loadPages(); },
   });
 }
 
@@ -829,11 +860,14 @@ $('#nv-export').addEventListener('click', () => {
 
 // ---------- S2 页详情（分格 + 手动选模板 + 手改）----------
 async function openPageDetail(pageRef) {
-  if (!state.projectId) return;
-  const [d, tpls] = await Promise.all([
-    api(`/api/projects/${state.projectId}/pages/${encodeURIComponent(pageRef)}`),
+  const projectId = state.projectId;
+  if (!projectId) return;
+  let d, tpls;
+  try { [d, tpls] = await Promise.all([
+    api(`/api/projects/${projectId}/pages/${encodeURIComponent(pageRef)}`),
     api('/api/templates'),
-  ]);
+  ]); } catch (error) { return toast('分格读取失败：' + error.message, 'err'); }
+  if (projectId !== state.projectId) return;
   const box = document.createElement('div');
   box.className = 'modal';
   const tplOpts = tpls.map((x) => `<option value="${x.id}" ${x.id === d.template_id ? 'selected' : ''}>
@@ -871,41 +905,48 @@ async function openPageDetail(pageRef) {
       </div>
     </div>`).join('');
   document.body.appendChild(box);
-  box.querySelector('[data-close]').addEventListener('click', () => box.remove());
-  box.addEventListener('click', (e) => { if (e.target === box) box.remove(); });
-
-  box.querySelector('#pd-pick').addEventListener('click', () => {
-    openTemplatePicker(async (tplId) => {
+  const pickButton = box.querySelector('#pd-pick'), regenButton = box.querySelector('[data-regen]');
+  const form = editFeedback.protectDialog({
+    box, label: '分格', saveButton: box.querySelector('#pd-save'), closeOnSave: false, extraButtons: [pickButton, regenButton],
+    read: () => ({ panels: [...box.querySelectorAll('#pd-panels .card')].map((card, index) => ({
+      ...d.panels[index],
+      action: card.querySelector('.pd-action').value,
+      dialogue: card.querySelector('.pd-dialogue').value,
+      scene_desc: card.querySelector('.pd-scene').value,
+      characters: card.querySelector('.pd-chars').value.split(/[，,]/).map((value) => value.trim()).filter(Boolean),
+    })) }),
+    write: async (body) => {
+      const result = await api(`/api/projects/${projectId}/pages/${encodeURIComponent(pageRef)}/script`, { method: 'POST', body: JSON.stringify(body) });
+      box.querySelector('h3 .mut').textContent = 'v' + result.version;
+    },
+    afterSave: () => { refreshGates(); if (!$('#tab-pages').classList.contains('hidden')) loadPages(); },
+  });
+  pickButton.addEventListener('click', async () => {
+    if (form.draft.saving || pickButton.disabled) return;
+    if (form.draft.dirty() && !(await form.save())) return;
+    openTemplatePicker(async (templateId) => {
       if (!confirm('换版式会按新格数重排分格（内容尽力保留），继续？')) return;
+      // 选择版式期间也可能继续修改原窗口，先保存这些修改。
+      if (form.draft.dirty() && !(await form.save())) return;
       try {
-        const r = await api(`/api/projects/${state.projectId}/pages/${encodeURIComponent(pageRef)}/template`,
-          { method: 'POST', body: JSON.stringify({ template_id: tplId }) });
-        toast(r.note || '已换版式', 'ok'); box.remove(); openPageDetail(pageRef); refreshGates();
-      } catch (e) { toast(e.message, 'err'); }
+        await form.operation(async () => {
+          const result = await api(`/api/projects/${projectId}/pages/${encodeURIComponent(pageRef)}/template`,
+            { method: 'POST', body: JSON.stringify({ template_id: templateId }) });
+          toast(result.note || '已换版式', 'ok'); form.close(true); openPageDetail(pageRef); refreshGates();
+        });
+      } catch (error) { toast(error.message, 'err'); }
     }, (d.template || {}).id, '换成哪个版式？');
   });
-  box.querySelector('#pd-save').addEventListener('click', async () => {
-    const panels = [...box.querySelectorAll('#pd-panels .card')].map((c, i) => ({
-      panel_order: i + 1,
-      action: c.querySelector('.pd-action').value,
-      dialogue: c.querySelector('.pd-dialogue').value,
-      scene_desc: c.querySelector('.pd-scene').value,
-      characters: c.querySelector('.pd-chars').value.split(/[，,]/).map((s) => s.trim()).filter(Boolean),
-    }));
+  regenButton.addEventListener('click', async () => {
+    if (form.draft.saving || regenButton.disabled) return;
+    if (form.draft.dirty() && !(await form.save())) return;
+    regenButton.disabled = true;
     try {
-      await api(`/api/projects/${state.projectId}/pages/${encodeURIComponent(pageRef)}/script`,
-        { method: 'POST', body: JSON.stringify({ panels: mergePanels(panels) }) });
-      toast('已保存（下游标记需重跑）', 'ok'); refreshGates();
-    } catch (e) { toast(e.message, 'err'); }
+      const result = await api(`/api/projects/${projectId}/run/S3`, { method: 'POST', body: JSON.stringify({ page_ref: pageRef }) });
+      toast(`按此页重跑提示词已入队 #${result.job_id}`, 'ok');
+    } catch (error) { toast(error.message, 'err'); }
+    finally { regenButton.disabled = false; }
   });
-  box.querySelector('[data-regen]').addEventListener('click', async () => {
-    const r = await api(`/api/projects/${state.projectId}/run/S3`, { method: 'POST', body: JSON.stringify({ page_ref: pageRef }) });
-    toast(`按此页重跑提示词已入队 #${r.job_id}`, 'ok');
-  });
-}
-function mergePanels(edited) {
-  const m = new Map(edited.map((p) => [p.panel_order, p]));
-  return edited;   // 简化：直接以编辑后的面板数组覆盖
 }
 
 
@@ -1647,14 +1688,18 @@ async function openPanelPromptPreview(panelRefs, title) {
 
 
 async function openPanelPromptEdit(panelRef) {
+  const projectId = state.projectId;
+  if (!projectId) return;
   let art;
-  try { art = await api(`/api/projects/${state.projectId}/artifacts?kind=panel_prompt&ref_prefix=${encodeURIComponent(panelRef)}`); }
+  try { art = await api(`/api/projects/${projectId}/artifacts?kind=panel_prompt&ref_prefix=${encodeURIComponent(panelRef)}`); }
   catch (e) { return toast(e.message, 'err'); }
   if (!art.length) return toast('找不到该格提示词（先「准备」或生成）', 'err');
-  const full = await api('/api/artifacts/' + art[0].id);
+  let full;
+  try { full = await api('/api/artifacts/' + art[0].id); } catch (error) { return toast(error.message, 'err'); }
   const pl = full.payload || {};
   await ensureLoraDatalist();
 
+  if (projectId !== state.projectId) return;
   const loraRow = (l) => `
     <div class="row" style="gap:6px;margin-top:5px" data-lorarow>
       <input class="pp-loraname" list="lora-all" value="${esc((l && l.name) || '')}" placeholder="lora 文件名" style="flex:1;min-width:200px">
@@ -1696,48 +1741,39 @@ async function openPanelPromptEdit(panelRef) {
       <button class="sm" data-close>取消</button>
       <button class="primary sm" id="pp-savep">保存</button></div></div>`;
   document.body.appendChild(box);
-  box.querySelector('[data-close]').addEventListener('click', () => box.remove());
-  box.addEventListener('click', (e) => { if (e.target === box) box.remove(); });
-
-  const rebindDel = () => box.querySelectorAll('.pp-loradel').forEach((b) =>
-    b.onclick = () => { b.closest('[data-lorarow]').remove(); });
-  rebindDel();
-  attachLoraCombos(box, '.pp-loraname');
+  const num = (selector) => { const value = box.querySelector(selector).value.trim(); return value === '' ? null : Number(value); };
+  const txt = (selector) => box.querySelector(selector).value.trim() || null;
+  const form = editFeedback.protectDialog({
+    box, label: '逐格提示词', saveButton: box.querySelector('#pp-savep'),
+    read: () => {
+      const params = {};
+      for (const [name, selector] of [['steps', '#pp-steps'], ['cfg', '#pp-cfg'], ['denoise', '#pp-denoise']]) {
+        const value = num(selector); if (value != null) params[name] = value;
+      }
+      if (txt('#pp-sampler')) params.sampler = txt('#pp-sampler');
+      if (txt('#pp-sched')) params.scheduler = txt('#pp-sched');
+      return { prompt_pos: box.querySelector('#pp-pos').value, prompt_neg: box.querySelector('#pp-neg').value,
+        width: num('#pp-w'), height: num('#pp-h'), seed: num('#pp-seed'), params,
+        loras: [...box.querySelectorAll('[data-lorarow]')].map((row) => ({
+          name: row.querySelector('.pp-loraname').value.trim(),
+          weight: row.querySelector('.pp-loraw').value === '' ? 0.8 : Number(row.querySelector('.pp-loraw').value),
+        })).filter((lora) => lora.name),
+      };
+    },
+    write: (body) => api(`/api/projects/${projectId}/panel-prompt/${encodeURIComponent(panelRef)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    afterSave: () => {
+      const tab = document.querySelector('.nav button.active')?.dataset.tab;
+      if (tab === 'images') loadWorkbench(); else loadPrompts(); refreshGates();
+    },
+  });
+  const rebindDel = () => box.querySelectorAll('.pp-loradel').forEach((button) => button.onclick = () => {
+    button.closest('[data-lorarow]').remove(); form.draft.changed();
+  });
+  rebindDel(); attachLoraCombos(box, '.pp-loraname');
   box.querySelector('#pp-addlora').addEventListener('click', () => {
     const wrap = box.querySelector('#pp-loras');
     if (wrap.querySelector('.mut')) wrap.innerHTML = '';
-    wrap.insertAdjacentHTML('beforeend', loraRow({}));
-    rebindDel();
-    attachLoraCombos(wrap, '.pp-loraname');
-  });
-
-  box.querySelector('#pp-savep').addEventListener('click', async () => {
-    const loras = Array.from(box.querySelectorAll('[data-lorarow]')).map((row) => ({
-      name: row.querySelector('.pp-loraname').value.trim(),
-      weight: +row.querySelector('.pp-loraw').value || 0.8,
-    })).filter((l) => l.name);
-    const num = (sel) => { const v = box.querySelector(sel).value.trim(); return v === '' ? null : +v; };
-    const txt = (sel) => { const v = box.querySelector(sel).value.trim(); return v === '' ? null : v; };
-    const params = {};
-    const si = num('#pp-steps'), cf = num('#pp-cfg'), sa = txt('#pp-sampler'), sc = txt('#pp-sched'), dn = num('#pp-denoise');
-    if (si != null) params.steps = si;
-    if (cf != null) params.cfg = cf;
-    if (sa) params.sampler = sa;
-    if (sc) params.scheduler = sc;
-    if (dn != null) params.denoise = dn;
-    try {
-      await api(`/api/projects/${state.projectId}/panel-prompt/${encodeURIComponent(panelRef)}`, {
-        method: 'PATCH', body: JSON.stringify({
-          prompt_pos: box.querySelector('#pp-pos').value,
-          prompt_neg: box.querySelector('#pp-neg').value,
-          width: num('#pp-w'), height: num('#pp-h'), seed: num('#pp-seed'),
-          loras, params,
-        }) });
-      toast('已保存', 'ok'); box.remove();
-      const t = document.querySelector('.nav button.active')?.dataset.tab;
-      if (t === 'images') loadWorkbench(); else loadPrompts();
-      refreshGates();
-    } catch (e) { toast(e.message, 'err'); }
+    wrap.insertAdjacentHTML('beforeend', loraRow({})); rebindDel(); attachLoraCombos(wrap, '.pp-loraname'); form.draft.changed();
   });
 }
 
@@ -1839,12 +1875,13 @@ async function openPromptEditor(name) {
   document.body.appendChild(box);
   const status = document.createElement('div'); status.className = 'save-feedback';
   box.querySelector('.box').appendChild(status);
+  let resetting = false;
   const draft = editFeedback.track({
     element: box, group: 'template-dialog', label: '提示词模板', status,
+    busyCheck: () => resetting,
     read: () => ({ system_text: box.querySelector('#pp-sys').value, user_text: box.querySelector('#pp-user').value }),
     write: (body) => api(`/api/prompts/${name}`, { method: 'PUT', body: JSON.stringify(body) }),
   });
-  let resetting = false;
   const close = (force = false) => {
     if (!force && (draft.saving || resetting)) { toast('正在保存，请稍候。'); return; }
     if (!force && draft.dirty() && !confirm('提示词模板有未保存的修改，关闭会放弃这些修改，确定继续吗？')) return;
