@@ -187,7 +187,7 @@ def readiness(project_id: int, session: Session = Depends(get_session)) -> dict:
         "S5": block("S5", page_ok > 0 and img_ok > 0,
                     "需要：已通过的分格页 + 该页每格选定成图", "pages"),
         "S6": block("S6", pageimg_ok > 0,
-                    "还没有已审核通过的整页成图；请先完成 S5 分页合成并审核", "pipeline"),
+                    "还没有已审核通过的整页成图；请先完成 S5 分页合成并审核", "compose"),
         "counts": {
             "prose_total": prose_all, "prose_approved": prose_ok,
             "page_approved": page_ok, "prompt_approved": prompt_ok,
@@ -695,6 +695,55 @@ def delete_page(project_id: int, page_ref: str, session: Session = Depends(get_s
     return {"ok": True, "deleted": len(ids), "page_ref": page_ref}
 
 
+@router.get("/projects/{project_id}/export-board")
+def export_board(project_id: int, session: Session = Depends(get_session)) -> dict:
+    """导出页面清单与历史版本，预览顺序和实际成册顺序一致。"""
+    from ...storage import StorageError, resolve_project_path
+    from ...stages.book import _page_no
+
+    project = session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "项目不存在")
+    images = {a.ref: a for a in A.all_current(session, project_id, ArtifactKind.PAGE_IMAGE.value)}
+    refs = set(images) | {a.ref for a in A.all_current(session, project_id, ArtifactKind.PAGE_SCRIPT.value)}
+    pages = []
+    for ref in sorted(refs, key=_page_no):
+        image = images.get(ref)
+        available = False
+        file_state = "not_created"
+        if image and image.path:
+            try:
+                resolve_project_path(image.path, project_id)
+                available, file_state = True, "available"
+            except FileNotFoundError:
+                file_state = "missing"
+            except StorageError:
+                file_state = "blocked"
+        included = bool(available and image.status == ArtifactStatus.APPROVED.value) if image else False
+        pages.append({"ref": ref, "page_index": _page_no(ref), "artifact_id": image.id if image else None,
+                      "version": image.version if image else None, "status": image.status if image else "pending",
+                      "image_url": f"/api/artifacts/{image.id}/file" if available else "",
+                      "file_state": file_state, "included": included})
+    books = A.versions_of(session, project_id, ArtifactKind.BOOK.value, "book")
+    history = []
+    for artifact in books:
+        payload = artifact.payload or {}
+        files = payload.get("files") or {}
+        formats = [fmt for fmt in ("pdf", "cbz") if (isinstance(files, dict) and files.get(fmt))
+                   or artifact.path.lower().endswith(f".{fmt}")]
+        history.append({"id": artifact.id, "version": artifact.version, "status": artifact.status,
+                        "is_current": artifact.is_current, "pages": payload.get("pages", 0),
+                        "formats": formats, "created_at": artifact.created_at.isoformat() if artifact.created_at else None})
+    history.sort(key=lambda item: item["version"], reverse=True)
+    blocked = any(page["status"] == "approved" and page["file_state"] != "available" for page in pages)
+    included = [page["artifact_id"] for page in pages if page["included"]]
+    return {"project_id": project_id, "title": project.title, "target_pages": project.target_pages,
+            "pages": pages, "history": history, "ready": bool(included) and not blocked,
+            "page_artifact_ids": included,
+            "hint": "已通过页的图片文件缺失或不可访问，请重新保存/合成后导出" if blocked else
+                    ("" if included else "先在「分页合成」审核至少一页整页成图，再进行导出")}
+
+
 @router.post("/projects/{project_id}/run/{stage}")
 def run_stage(project_id: int, stage: str, body: dict | None = None, session: Session = Depends(get_session)) -> dict:
     """触发某个阶段。"""
@@ -705,6 +754,8 @@ def run_stage(project_id: int, stage: str, body: dict | None = None, session: Se
     kinds = {s: k for s, k in STAGE_ORDER}
     if stage not in kinds:
         raise HTTPException(400, f"未知阶段：{stage}（S1 正文请用 /prose/request）")
+    if stage == "S6" and (body or {}).get("format", "both") not in ("pdf", "cbz", "both"):
+        raise HTTPException(400, "导出格式仅支持 pdf、cbz 或 both")
 
     # 前置条件硬校验：前置阶段没完成就不许跑，并明确告诉缺什么
     rd = readiness(project_id, session)

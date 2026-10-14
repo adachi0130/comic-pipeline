@@ -145,6 +145,23 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
 .editor-frame-wrap iframe{display:block;width:100%;height:calc(100dvh - 240px);min-height:590px;border:0;background:#fff}
 .editor-empty{padding:48px 20px;text-align:center;color:var(--muted)}
 .editor-feedback{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--muted)}
+.export-summary{display:flex;gap:24px;flex-wrap:wrap;margin:12px 0}
+.export-stat b{display:block;font-size:26px;line-height:1.3;color:var(--ink)}
+.export-stat span{font-size:12px;color:var(--muted)}
+.export-hint{font-size:13px;color:var(--ink2);margin:12px 0}
+.export-hint.warn{color:var(--warn)}
+.export-page-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px}
+.export-page{border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.export-page.included{border-color:#b5dfca}
+.export-thumb{height:230px;background:#f5f6f8;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--muted)}
+.export-thumb img{max-width:100%;max-height:100%;object-fit:contain}
+.export-page-info{padding:10px;font-size:12px}
+.export-page-info button{margin-top:8px}
+.export-version{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:14px 0;border-bottom:1px solid var(--line)}
+.export-version .mut{font-size:12px;margin-top:3px}
+.download-button{display:inline-block;border:1px solid var(--line2);border-radius:8px;padding:5px 11px;font-size:13px;background:#fff}
+.download-button:hover{border-color:var(--accent);background:#f7f9ff}
+.export-task{padding:12px;background:#f7f9fc;border-radius:8px;margin-top:12px}
 body.editor-expanded .app{grid-template-columns:minmax(0,1fr)}
 body.editor-expanded .side{display:none}
 body.editor-expanded .main{padding:10px 14px}
@@ -209,6 +226,7 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
       <button data-tab="images"><span class="ic">▤</span>出图</button>
       <button data-tab="compose"><span class="ic">▦</span>分页合成</button>
       <button data-tab="editor"><span class="ic">✎</span>漫画编辑器</button>
+      <button data-tab="exports"><span class="ic">⇩</span>整册导出</button>
       <button data-tab="settings"><span class="ic">⚙</span>设置</button>
     </div>
     <div class="sidetitle">当前项目</div>
@@ -623,6 +641,23 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
       <div class="editor-feedback"><span id="ed-message" role="status" aria-live="polite">保存后仍停留在编辑器，随时返回查看整页预览。</span></div>
     </section>
 
+    <section id="tab-exports" class="hidden">
+      <div class="card">
+        <h2>生成成册文件 <span class="spacer"></span><button class="sm" id="export-refresh">刷新</button></h2>
+        <div id="export-summary" class="export-summary"></div>
+        <div class="export-hint" id="export-hint">选择项目后可预览整页、生成成册文件和下载历史版本。</div>
+        <div class="row"><label class="fld" for="export-format" style="margin:0">文件格式</label>
+          <select id="export-format" style="width:180px"><option value="both">PDF + CBZ</option><option value="pdf">PDF 文档</option><option value="cbz">CBZ 漫画包</option></select>
+          <button class="sm primary" id="export-run" disabled>生成成册文件</button>
+          <button class="sm" id="export-compose">去审核 / 编辑页面</button></div>
+        <div id="export-task" aria-live="polite"></div>
+      </div>
+      <div class="card"><h2>导出页序预览</h2><div class="h2sub">按漫画页码排列，带“纳入导出”的页使用当前已通过版本。</div>
+        <div class="export-page-grid" id="export-pages"><div class="empty">先选择一个项目。</div></div></div>
+      <div class="card"><h2>导出版本与下载</h2><div class="h2sub">每次导出保留独立版本，旧文件可以继续下载。</div>
+        <div id="export-history"></div></div>
+    </section>
+
     <!-- 设置 -->
     <section id="tab-settings" class="hidden">
       <div class="card">
@@ -660,6 +695,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=78"></script>
+<script type="module" src="/ui/app.js?v=79"></script>
 </body>
 </html>

@@ -48,6 +48,74 @@ def data_url(data):
 
 
 class DataSafetyTests(unittest.TestCase):
+    def test_export_downloads_both_formats_and_keeps_history(self):
+        self.artifact('page_image', 'page:1', path=self.file('pages/page_1.png', png('red')))
+        first = book.handle(self.session, Job(project_id=1, payload={'format': 'both'}))
+        old = A.current(self.session, 1, 'book', 'book')
+        old_id = old.id
+        for fmt in ('pdf', 'cbz'):
+            response = self.client.get(f'/api/artifacts/{old_id}/download/{fmt}')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.content, Path(first['files'][fmt]).read_bytes())
+            self.assertIn('attachment;', response.headers['content-disposition'])
+        self.artifact('page_image', 'page:1', path=self.file('pages/blue.png', png('blue')))
+        book.handle(self.session, Job(project_id=1, payload={'format': 'cbz'}))
+        self.assertEqual(self.client.get(f'/api/artifacts/{old_id}/download/pdf').status_code, 200)
+        history = self.client.get('/api/projects/1/export-board').json()['history']
+        self.assertEqual([item['version'] for item in history], [2, 1])
+        self.assertEqual(history[1]['formats'], ['pdf', 'cbz'])
+
+    def test_book_download_rejects_unrecorded_formats_and_outside_files(self):
+        art = self.artifact('book', 'book', path='', payload={'files': {'pdf': str(self.external)}})
+        self.assertEqual(self.client.get(f'/api/artifacts/{art.id}/download/pdf').status_code, 403)
+        self.assertEqual(self.client.get(f'/api/artifacts/{art.id}/download/cbz').status_code, 404)
+        self.assertEqual(self.client.get(f'/api/artifacts/{art.id}/download/txt').status_code, 400)
+        wrong = self.artifact('page_image', 'page:1', path=self.file('pages/page.png', png('red')))
+        self.assertEqual(self.client.get(f'/api/artifacts/{wrong.id}/download/pdf').status_code, 404)
+
+    def test_export_board_orders_pages_and_reports_missing_approved_files(self):
+        for ref, color in (('page:10', 'red'), ('page:2', 'blue')):
+            self.artifact('page_image', ref, path=self.file(f'pages/{ref.replace(":", "_")}.png', png(color)))
+        reviewed = self.artifact('page_image', 'page:3', path=self.file('pages/three.png', png('green')))
+        A.set_status(self.session, reviewed, 'review')
+        self.session.commit()
+        data = self.client.get('/api/projects/1/export-board').json()
+        self.assertEqual([item['ref'] for item in data['pages']], ['page:2', 'page:3', 'page:10'])
+        self.assertEqual([item['ref'] for item in data['pages'] if item['included']], ['page:2', 'page:10'])
+        self.assertTrue(data['ready'])
+        self.artifact('page_image', 'page:1', path=self.root / 'pages/missing.png')
+        data = self.client.get('/api/projects/1/export-board').json()
+        self.assertFalse(data['ready'])
+        self.assertEqual(data['pages'][0]['file_state'], 'missing')
+        with self.assertRaisesRegex(ValueError, '文件缺失'):
+            book.handle(self.session, Job(project_id=1, payload={'format': 'cbz'}))
+
+    def test_export_rejects_stale_or_foreign_selected_versions(self):
+        page = self.artifact('page_image', 'page:1', path=self.file('pages/page.png', png('red')))
+        old_id = page.id
+        self.artifact('page_image', 'page:1', path=self.file('pages/new.png', png('blue')))
+        for ids in ([old_id], [9999], [True], [], 'not-a-list'):
+            with self.subTest(ids=ids), self.assertRaises(ValueError):
+                book.handle(self.session, Job(project_id=1, payload={'format': 'cbz', 'page_artifact_ids': ids}))
+        with patch.object(pipeline.jobq, 'enqueue') as enqueue:
+            response = self.client.post('/api/projects/1/run/S6', json={'format': 'invalid'})
+            self.assertEqual(response.status_code, 400)
+            enqueue.assert_not_called()
+        with self.assertRaises(ValueError):
+            book.handle(self.session, Job(project_id=1, payload={'format': 'invalid'}))
+
+    def test_cancelled_book_does_not_publish_a_new_artifact(self):
+        self.artifact('page_image', 'page:1', path=self.file('pages/page.png', png('red')))
+        job = Job(project_id=1, payload={'format': 'both'}, cancel_requested=False)
+        def make_pdf(paths, output):
+            output.write_bytes(b'temporary pdf')
+            job.cancel_requested = True
+        with patch.object(book, '_make_pdf', side_effect=make_pdf), patch.object(book, '_make_cbz') as cbz:
+            result = book.handle(self.session, job)
+        self.assertTrue(result['cancelled'])
+        cbz.assert_not_called()
+        self.assertIsNone(A.current(self.session, 1, 'book', 'book'))
+
     def test_med_save_review_and_book_export_keep_versions(self):
         first = self.client.post('/api/projects/1/med-doc/page:1', json={'doc': '{}', 'png': data_url(png('red'))})
         self.assertEqual(first.status_code, 200, first.text)

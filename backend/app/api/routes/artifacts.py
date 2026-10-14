@@ -205,6 +205,27 @@ def artifact_file(artifact_id: int, session: Session = Depends(get_session)):
     return FileResponse(str(p))
 
 
+@router.get("/artifacts/{artifact_id}/download/{format}")
+def download_book(artifact_id: int, format: str, session: Session = Depends(get_session)):
+    """按产物记录下载成册文件；历史版本也可读取，不接收任意文件路径。"""
+    from fastapi.responses import FileResponse
+
+    if format not in ("pdf", "cbz"):
+        raise HTTPException(400, "下载格式仅支持 pdf 或 cbz")
+    artifact = session.get(Artifact, artifact_id)
+    if artifact is None or artifact.kind != ArtifactKind.BOOK.value:
+        raise HTTPException(404, "导出版本不存在")
+    files = (artifact.payload or {}).get("files") or {}
+    raw = files.get(format) if isinstance(files, dict) else None
+    if not raw and artifact.path.lower().endswith(f".{format}"):
+        raw = artifact.path
+    if not raw:
+        raise HTTPException(404, f"这个版本没有 {format.upper()} 文件")
+    path = _project_file(raw, artifact.project_id)
+    media_type = "application/pdf" if format == "pdf" else "application/vnd.comicbook+zip"
+    return FileResponse(str(path), filename=path.name, media_type=media_type)
+
+
 def _decode_data_url(data_url: str) -> tuple[bytes, str]:
     import base64
 

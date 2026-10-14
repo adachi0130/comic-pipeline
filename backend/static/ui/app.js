@@ -4,6 +4,7 @@
  */
 
 import { createEditorWorkbench } from './editor-workbench.js';
+import { createExportCenter } from './export-center.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
@@ -33,6 +34,7 @@ const STATUS = {
   done: ['ok', '完成'], failed: ['err', '失败'], queued: ['', '排队中'], cancelled: ['', '已取消'],
 };
 const pill = (s) => { const [c, l] = STATUS[s] || ['', s || '—']; return `<span class="pill ${c}"><i class="dotm"></i>${l}</span>`; };
+const exportCenter = createExportCenter({ state, api, $, esc, pill, toast, switchTab, pageLabel });
 
 // ---------- Tab ----------
 const TITLES = {
@@ -44,6 +46,7 @@ const TITLES = {
   images: ['出图', '连上后端 → 选工作流 → 出图挑图'],
   compose: ['分页合成', '选好的画面按漫画框拼成整页'],
   editor: ['漫画编辑器', '在当前工作台精修漫画页，保存后继续编辑'],
+  exports: ['整册导出', '预览页序，导出 PDF / CBZ，下载历史版本'],
   settings: ['设置', 'LLM 供应商 / ComfyUI / 阶段绑定'],
 };
 $$('.nav button[data-tab]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
@@ -85,6 +88,7 @@ function switchTab(tab) {
   if (tab === 'prompts') loadPrompts();
   if (tab === 'compose') loadCompose();
   if (tab === 'editor') editorWorkbench.loadPages();
+  if (tab === 'exports') exportCenter.load();
   if (tab === 'images' || tab === 'prompts') ensureLoraDatalist();
   if (tab === 'settings') { loadProviders(); loadStageBinding(); }
   if (tab === 'projects') {
@@ -154,6 +158,7 @@ async function pickProject(id) {
   if (active === 'compose') loadCompose();
   if (active === 'pages') loadPages();
   if (active === 'editor') editorWorkbench.loadPages();
+  if (active === 'exports') exportCenter.load();
 }
 
 // 元信息（阶段定义/模板/技法）懒加载 + 自愈：初次失败时下次重试
@@ -1680,6 +1685,7 @@ async function renderFlow() {
 
 async function runStage(stage) {
   if (!state.projectId) return toast('先选择项目', 'err');
+  if (stage === 'S6') { switchTab('exports'); return; }
   // 前端先查前置条件，缺什么就明确提示并给跳转
   try {
     const rd = await api(`/api/projects/${state.projectId}/readiness`);
@@ -1812,6 +1818,7 @@ function startJobsSSE() {
   _sse.onmessage = (ev) => { try { renderJobs(JSON.parse(ev.data)); } catch { /* keep-alive */ } };
 }
 function renderJobs(jobs) {
+  exportCenter.onJobs(jobs);
   const box = $('#jobs');
   if (!box) return;
   if (!jobs.length) { box.innerHTML = '<div class="empty">暂无作业</div>'; }

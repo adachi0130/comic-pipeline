@@ -80,11 +80,14 @@ def _brief(j: Job) -> dict:
     return {
         "id": j.id,
         "kind": j.kind,
+        "project_id": j.project_id,
         "stage": j.stage,
         "status": j.status,
         "progress": j.progress,
         "total": j.total,
         "message": j.message,
+        "error": j.error.splitlines()[0] if j.error else "",
+        "cancel_requested": j.cancel_requested,
     }
 
 

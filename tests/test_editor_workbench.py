@@ -11,14 +11,17 @@ import json
 import re
 import socketserver
 import threading
+import zipfile
+import io
 from pathlib import Path
 from unittest.mock import patch
 
 
 def main():
-    from test_data_safety import DataSafetyTests, A, Template, png, data_url
-    from app.api.routes import projects, meta, bridge, providers, assets, comfy
+    from test_data_safety import DataSafetyTests, A, Template, Job, book, png, data_url
+    from app.api.routes import projects, meta, bridge, providers, assets, comfy, jobs, pipeline
     from app.comfy import store
+    from sqlalchemy.orm import Session
     from playwright.sync_api import sync_playwright, expect
 
     root = Path(__file__).resolve().parents[1]
@@ -41,10 +44,20 @@ def main():
     case.artifact('page_script', 'page:1', payload={'template_id': 'vertical:test', 'panels': [{'panel_order': 1}]})
     case.artifact('image', 'panel:1.1', payload={'candidates': [case.candidate(case.file('candidates/panel.png', png('skyblue')))], 'selected_index': 0})
     app = case.client.app
-    for module in (projects, meta, bridge, providers, assets, comfy):
+    for module in (projects, meta, bridge, providers, assets, comfy, jobs):
         app.include_router(module.router, prefix='/api')
     captures = []
     api_lock = threading.Lock()
+
+    def simulate_enqueue(kind, *, project_id=None, stage='', payload=None):
+        assert kind == 'book', '冒烟检查不运行真实出图或模型作业'
+        with Session(case.engine) as session:
+            job = Job(project_id=project_id, kind=kind, stage=stage, payload=payload or {}, status='running')
+            session.add(job); session.commit()
+            job.result = book.handle(session, job)
+            job.status = 'done'
+            session.commit(); session.refresh(job)
+            return job
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         def log_message(self, *args):
@@ -62,6 +75,7 @@ def main():
             self.api()
 
         def api(self):
+            content_disposition = None
             if self.path.split('?')[0] == '/api/health':
                 body, status, content_type = b'{"ok":true}', 200, 'application/json'
             elif self.path.split('?')[0] in ('/api/jobs/events', '/api/tavern/events'):
@@ -76,14 +90,16 @@ def main():
                 return
             else:
                 content = self.rfile.read(int(self.headers.get('Content-Length', 0)))
-                with api_lock, patch.object(comfy.service, 'get_client', side_effect=RuntimeError('模拟环境不访问 ComfyUI')):
+                with api_lock, patch.object(comfy.service, 'get_client', side_effect=RuntimeError('模拟环境不访问 ComfyUI')), patch.object(pipeline.jobq, 'enqueue', side_effect=simulate_enqueue):
                     response = case.client.request(self.command, self.path, content=content,
                                                    headers={'Content-Type': 'application/json'})
                 body, status, content_type = response.content, response.status_code, response.headers.get('content-type', 'application/json')
+                content_disposition = response.headers.get('content-disposition')
                 if '/med-doc/' in self.path and self.command == 'POST': captures.append(json.loads(body))
             self.send_response(status)
             self.send_header('Content-Type', content_type)
             self.send_header('Content-Length', str(len(body)))
+            if content_disposition: self.send_header('Content-Disposition', content_disposition)
             self.end_headers()
             self.wfile.write(body)
 
@@ -140,12 +156,33 @@ def main():
             restored_size = actual.evaluate('() => [canvas.getWidth(), canvas.getHeight()]')
             # MED 会按当前视窗缩放显示，保存的页面比例与内容必须保留。
             assert abs(restored_size[0] / restored_size[1] - saved_size[0] / saved_size[1]) < 1e-6, (saved_size, restored_size)
+            # 实际整页快照审核后，从新导出中心生成并下载真实 PDF/CBZ。
+            page.locator('#ed-back').click()
+            page.locator('#cps-approve').click()
+            page.locator('.nav [data-tab="exports"]').click()
+            expect(page.locator('#export-run')).to_be_enabled()
+            expect(page.locator('#export-pages')).to_contain_text('纳入导出')
+            page.locator('#export-format').select_option('both')
+            page.locator('#export-run').click()
+            expect(page.locator('#export-history')).to_contain_text('版本 1')
+            for fmt in ('pdf', 'cbz'):
+                with page.expect_download() as event:
+                    page.locator(f'#export-history a[href$="/{fmt}"]').click()
+                data = Path(event.value.path()).read_bytes()
+                assert event.value.suggested_filename.endswith('.' + fmt)
+                if fmt == 'pdf': assert data.startswith(b'%PDF')
+                else:
+                    with zipfile.ZipFile(io.BytesIO(data)) as archive: assert len(archive.namelist()) == 1
+            page.screenshot(path=str(screenshots / 'export-center-desktop.png'))
             for width in (768, 390):
                 page.set_viewport_size({'width': width, 'height': 1000})
                 page.wait_for_timeout(150)
                 assert actual.evaluate('() => canvas.getObjects().some(o => o.text === "漫画测试")'), '适配窗口不能清空画布'
                 assert page.evaluate('() => document.documentElement.scrollWidth <= innerWidth + 1'), f'主工作台在 {width}px 溢出'
-                page.screenshot(path=str(screenshots / f'editor-{width}.png'))
+                page.screenshot(path=str(screenshots / f'export-center-{width}.png'))
+            page.set_viewport_size({'width': 1440, 'height': 1100})
+            page.locator('.nav [data-tab="editor"]').click()
+            page.screenshot(path=str(screenshots / 'editor-regular-desktop.png'))
             assert not errors, errors
             # 将本次截图复制到调用者指定的独立可写目录，仅用于视觉检查。
             import os
@@ -158,6 +195,7 @@ def main():
             browser.close()
         print(json.dumps({'embedded_med': 'ok', 'auto_place_image': 'ok', 'dirty_save': 'ok',
                           'save_preview': 'ok', 'resume_canvas': 'ok', 'viewport_widths': [1440, 768, 390],
+                          'export_pdf_cbz_download': 'ok',
                           'page_errors': errors}, ensure_ascii=False))
         return 0
     finally:
