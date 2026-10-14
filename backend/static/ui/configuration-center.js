@@ -1,6 +1,7 @@
 export function createConfigurationCenter({ state, api, $, esc, toast, switchTab,
-  loadProviders, loadStageBinding, loadCharacterPresetPanel, loadStyleLoras, ensureLoraDatalist }) {
+  loadProviders, loadStageBinding, loadCharacterPresetPanel, loadStyleLoras, ensureLoraDatalist, editFeedback }) {
   let assetsProject = undefined;
+  let displayedAssetsProject = undefined;
   let assetsRequest = 0;
   let templatesRequest = 0;
   const validSections = { settings: ['providers', 'comfy', 'models'], assets: ['characters', 'presets', 'style'] };
@@ -44,14 +45,18 @@ export function createConfigurationCenter({ state, api, $, esc, toast, switchTab
     const projectId = state.projectId;
     syncAssets();
     if (!force && assetsProject === projectId) return;
+    if (force && !(await editFeedback.prepare(['asset-cards', 'asset-style'], '刷新资产'))) return;
+    if (projectId !== state.projectId) return;
     const request = ++assetsRequest;
-    if (assetsProject !== projectId) {
+    if (displayedAssetsProject !== projectId) {
+      displayedAssetsProject = projectId;
       $('#pr-chars').innerHTML = '<div class="empty">正在加载资产…</div>';
       $('#pr-style').innerHTML = '<div class="empty">正在加载画风…</div>';
     }
-    await Promise.all([loadCharacterPresetPanel(), loadStyleLoras()]);
+    const loaded = await Promise.all([loadCharacterPresetPanel(), loadStyleLoras({ discard: force })]);
     if (request !== assetsRequest || projectId !== state.projectId) return;
-    assetsProject = projectId; syncAssets();
+    if (loaded.every(Boolean)) assetsProject = projectId;
+    syncAssets();
   }
 
   async function refreshTemplates() {
@@ -101,7 +106,12 @@ export function createConfigurationCenter({ state, api, $, esc, toast, switchTab
   $('#tab-settings').querySelectorAll('[data-settings-section]').forEach((button) => button.addEventListener('click', () => switchTab('settings', button.dataset.settingsSection)));
   $('#tab-assets').querySelectorAll('[data-assets-section]').forEach((button) => button.addEventListener('click', () => switchTab('assets', button.dataset.assetsSection)));
   $('#templates-refresh').addEventListener('click', refreshTemplates);
-  $('#assets-refresh').addEventListener('click', () => loadAssets(true));
+  $('#assets-refresh').addEventListener('click', async () => {
+    const button = $('#assets-refresh'); if (button.disabled) return;
+    button.disabled = true;
+    try { await loadAssets(true); } catch (e) { toast(e.message, 'err'); }
+    finally { button.disabled = false; }
+  });
   $('#pr-assets').addEventListener('click', () => switchTab('assets', 'characters'));
   document.addEventListener('comic-assets:rendered', syncAssets);
   return { sectionFor, enter, loadAssets, syncAssets, refreshTemplates, loadComfyOverview };

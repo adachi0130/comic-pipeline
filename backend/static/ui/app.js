@@ -7,6 +7,7 @@ import { createEditorWorkbench } from './editor-workbench.js';
 import { createExportCenter } from './export-center.js';
 import { createWorkbenchNavigation } from './workbench-navigation.js';
 import { createConfigurationCenter } from './configuration-center.js';
+import { createEditFeedback } from './edit-feedback.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
@@ -38,9 +39,13 @@ const STATUS = {
 const pill = (s) => { const [c, l] = STATUS[s] || ['', s || '—']; return `<span class="pill ${c}"><i class="dotm"></i>${l}</span>`; };
 const exportCenter = createExportCenter({ state, api, $, esc, pill, toast, switchTab, pageLabel });
 const navigation = createWorkbenchNavigation({ state, $, esc, switchTab, pickProject, toast });
+const editFeedback = createEditFeedback({ toast });
 const configuration = createConfigurationCenter({ state, api, $, esc, toast, switchTab,
-  loadProviders, loadStageBinding, loadCharacterPresetPanel, loadStyleLoras, ensureLoraDatalist });
+  loadProviders, loadStageBinding, loadCharacterPresetPanel, loadStyleLoras, ensureLoraDatalist, editFeedback });
 let projectPickRequest = 0;
+let assetCardsRequest = 0, styleRequest = 0, styleEditor = null;
+let assetMutationInFlight = false;
+const assetEditors = new WeakMap();
 
 // ---------- Tab ----------
 const TITLES = {
@@ -156,6 +161,11 @@ async function pickProject(id) {
   try { project = await api('/api/projects/' + id); }
   catch (e) { toast('无法打开项目：' + e.message, 'err'); return; }
   if (request !== projectPickRequest) return;
+  if (id !== state.projectId) {
+    if (!(await editFeedback.prepare(['asset-cards', 'asset-style'], '切换项目'))) return;
+    if (request !== projectPickRequest) return;
+    editFeedback.clear(['asset-cards', 'asset-style']); styleEditor = null;
+  }
   if (state.editor && state.editor.projectId !== id) editorWorkbench.reset();
   state.projectId = id;
   try { localStorage.setItem('comic.lastProjectId', String(id)); } catch { /* 隐私模式忽略 */ }
@@ -1217,15 +1227,25 @@ function attachLoraCombos(root, selector, opts) {
 async function loadCharacterPresetPanel() {
   const projectId = state.projectId;
   const box = $('#pr-chars');
+  const request = ++assetCardsRequest;
+  if (!(await editFeedback.flush('asset-cards')) || projectId !== state.projectId || request !== assetCardsRequest) return false;
   let chars = [], presets = { positive: [], negative: [] };
   try {
     [chars, presets] = await Promise.all([
       projectId ? api(`/api/projects/${projectId}/characters`) : Promise.resolve([]),
       api('/api/prompt-presets' + (projectId ? `?project_id=${projectId}` : '')),
     ]);
-  } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  } catch (e) {
+    if (request === assetCardsRequest && projectId === state.projectId) {
+      toast('资产加载失败：' + e.message, 'err');
+      if (!box.querySelector('[data-char], [data-preset]')) box.innerHTML = '<div class="empty">资产加载失败，点击「刷新资产」重试。</div>';
+    }
+    return false;
+  }
 
-  if (projectId !== state.projectId) return;
+  if (projectId !== state.projectId || request !== assetCardsRequest) return false;
+  if (editFeedback.unsettled('asset-cards')) { toast('资产有新修改，已保留当前内容；保存后再刷新。'); return false; }
+  editFeedback.clear('asset-cards');
   const presetCard = (kind, list) => `
     <div style="flex:1;min-width:280px">
       <div class="row" style="gap:6px"><b style="font-size:13px">${kind === 'positive' ? '正向预设' : '负向预设'}</b>
@@ -1279,87 +1299,85 @@ async function loadCharacterPresetPanel() {
           style="width:100%;min-height:88px;resize:vertical;font-size:12px">${esc(c.prompt_block || '')}</textarea>
       </div>`).join('') || '<div class="mut" style="font-size:12px;margin-top:8px">还没有角色。点右上「＋ 加角色」。</div>'}</div>`;
 
-  // 预设：保存 + 自动保存（边填边存，避免忘点保存 / 面板重绘冲掉）
-  // LoRA 输入框：即时搜索
   attachLoraCombos(box, '.ch-lora');
   attachLoraCombos(box, '.pres-loras', { multi: true });
 
   box.querySelectorAll('[data-preset]').forEach((el) => {
     const id = +el.dataset.preset;
-    const payload = () => ({
-      id, name: el.querySelector('.pres-name').value, text: el.querySelector('.pres-text').value,
-      is_default: el.querySelector('.pres-def').checked,
-      loras: parseLoraStr(el.querySelector('.pres-loras').value),
+    const editor = editFeedback.track({
+      element: el, group: 'asset-cards', label: '预设', auto: true,
+      saveButton: el.querySelector('.pres-save'),
+      read: () => ({ id, name: el.querySelector('.pres-name').value, text: el.querySelector('.pres-text').value,
+        is_default: el.querySelector('.pres-def').checked, loras: parseLoraStr(el.querySelector('.pres-loras').value) }),
+      write: (body) => api('/api/prompt-presets', { method: 'POST', body: JSON.stringify(body) }),
+      onSaved: (body) => {
+        if (!body.is_default || !el.isConnected) return;
+        box.querySelectorAll('[data-preset]').forEach((other) => {
+          const otherEditor = assetEditors.get(other);
+          if (other === el || otherEditor?.dirty() || otherEditor?.saving) return;
+          if (other.dataset.presetKind === el.dataset.presetKind && other.dataset.presetScope === el.dataset.presetScope
+            && other.dataset.presetProject === el.dataset.presetProject) {
+            other.querySelector('.pres-def').checked = false; otherEditor?.accept();
+          }
+        });
+      },
     });
-    const save = async (silent) => {
-      try {
-        const body = payload();
-        await api('/api/prompt-presets', { method: 'POST', body: JSON.stringify(body) });
-        if (body.is_default && el.isConnected) {
-          box.querySelectorAll('[data-preset]').forEach((other) => {
-            if (other !== el && other.dataset.presetKind === el.dataset.presetKind && other.dataset.presetScope === el.dataset.presetScope
-              && other.dataset.presetProject === el.dataset.presetProject) other.querySelector('.pres-def').checked = false;
-          });
-        }
-        if (!silent) toast('预设已保存', 'ok');
-        else flashSaved(el);
-      } catch (e) { toast(e.message, 'err'); }
-    };
-    el.querySelector('.pres-save').addEventListener('click', () => save(false));
-    el.querySelector('.pres-del').addEventListener('click', async () => {
-      if (!confirm('删除这条预设？')) return;
-      try {
-        await api(`/api/prompt-presets/${id}`, { method: 'DELETE' });
-        toast('已删除', 'ok');
-        loadCharacterPresetPanel();
-      } catch (e) { toast(e.message, 'err'); }
-    });
-    // 自动保存：输入停下 700ms 后落库（只存本卡，不重绘，避免光标丢失）
-    ['input', 'change'].forEach((ev) => {
-      el.querySelectorAll('.pres-name, .pres-text, .pres-def, .pres-loras').forEach((inp) =>
-        inp.addEventListener(ev, debounce(() => save(true), 700)));
-    });
+    assetEditors.set(el, editor);
+    el.querySelector('.pres-del').addEventListener('click', () => deleteAssetCard(el, editor, `/api/prompt-presets/${id}`, '预设'));
   });
-  box.querySelectorAll('[data-addpreset]').forEach((b) => b.addEventListener('click', async () => {
+  box.querySelectorAll('[data-addpreset]').forEach((button) => button.addEventListener('click', async () => {
+    if (button.disabled || assetMutationInFlight) return;
+    assetMutationInFlight = true;
+    button.disabled = true;
     try {
-      const p = await api('/api/prompt-presets', { method: 'POST', body: JSON.stringify({
-        kind: b.dataset.addpreset, name: '',
-        scope: $('#asset-preset-scope').value, project_id: $('#asset-preset-scope').value === 'project' ? projectId : null,
+      if (!(await editFeedback.flush('asset-cards')) || projectId !== state.projectId) return;
+      const scope = $('#asset-preset-scope').value;
+      const preset = await api('/api/prompt-presets', { method: 'POST', body: JSON.stringify({
+        kind: button.dataset.addpreset, name: '', scope, project_id: scope === 'project' ? projectId : null,
         text: '', is_default: false }) });
-      toast(`已新建${b.dataset.addpreset === 'positive' ? '正向' : '负向'}预设，填完自动保存`, 'ok');
-      // 局部插入，不整块重绘（避免已填内容被冲掉）
+      if (projectId !== state.projectId) return;
+      toast('预设已新建，停止输入后自动保存', 'ok');
       await loadCharacterPresetPanel();
-      const card = box.querySelector(`[data-preset="${p.id}"] .pres-name`);
-      if (card) card.focus();
+      box.querySelector(`[data-preset="${preset.id}"] .pres-name`)?.focus();
     } catch (e) { toast(e.message, 'err'); }
+    finally { assetMutationInFlight = false; button.disabled = false; }
   }));
 
-  // 角色：保存 + 自动保存
   box.querySelectorAll('[data-char]').forEach((el) => {
     const id = +el.dataset.char;
-    const payload = () => ({
-      id, name: el.querySelector('.ch-name').value, trigger_words: el.querySelector('.ch-trig').value,
-      lora_name: el.querySelector('.ch-lora').value, lora_weight: el.querySelector('.ch-w').value === '' ? 0.8 : Number(el.querySelector('.ch-w').value),
-      use_lora: el.querySelector('.ch-uselora').checked, prompt_block: el.querySelector('.ch-block').value,
+    const editor = editFeedback.track({
+      element: el, group: 'asset-cards', label: '角色', auto: true,
+      saveButton: el.querySelector('.ch-save'),
+      read: () => ({ id, name: el.querySelector('.ch-name').value, trigger_words: el.querySelector('.ch-trig').value,
+        lora_name: el.querySelector('.ch-lora').value, lora_weight: el.querySelector('.ch-w').value === '' ? 0.8 : Number(el.querySelector('.ch-w').value),
+        use_lora: el.querySelector('.ch-uselora').checked, prompt_block: el.querySelector('.ch-block').value }),
+      write: (body) => api(`/api/projects/${projectId}/characters`, { method: 'POST', body: JSON.stringify(body) }),
     });
-    const save = async (silent) => {
-      try {
-        await api(`/api/projects/${projectId}/characters`, { method: 'POST', body: JSON.stringify(payload()) });
-        if (!silent) toast('角色已保存', 'ok');
-        else flashSaved(el);
-      } catch (e) { toast(e.message, 'err'); }
-    };
-    el.querySelector('.ch-save').addEventListener('click', () => save(false));
-    ['input', 'change'].forEach((ev) => {
-      el.querySelectorAll('.ch-name, .ch-trig, .ch-lora, .ch-w, .ch-uselora, .ch-block').forEach((inp) =>
-        inp.addEventListener(ev, debounce(() => save(true), 700)));
-    });
-    el.querySelector('.ch-del').addEventListener('click', async () => {
-      try { await api(`/api/characters/${id}`, { method: 'DELETE' }); toast('已删除', 'ok'); loadCharacterPresetPanel(); }
-      catch (e) { toast(e.message, 'err'); }
-    });
+    assetEditors.set(el, editor);
+    el.querySelector('.ch-del').addEventListener('click', () => deleteAssetCard(el, editor, `/api/characters/${id}`, '角色'));
   });
   document.dispatchEvent(new Event('comic-assets:rendered'));
+  return true;
+}
+
+async function deleteAssetCard(element, editor, path, label) {
+  if (assetMutationInFlight) { toast('资产正在更新，请稍候。'); return; }
+  if (!confirm('删除这个' + label + '？')) return;
+  assetMutationInFlight = true;
+  const controls = Array.from(element.querySelectorAll('input, textarea, button'));
+  const disabled = controls.map((control) => control.disabled);
+  editor.lock(true);
+  controls.forEach((control) => { control.disabled = true; });
+  const projectId = state.projectId;
+  try {
+    if (!(await editFeedback.flush('asset-cards')) || projectId !== state.projectId) return;
+    await api(path, { method: 'DELETE' });
+    editor.dispose(); element.remove(); toast(label + '已删除', 'ok');
+  } catch (error) { toast('删除失败：' + error.message, 'err'); }
+  finally {
+    assetMutationInFlight = false;
+    controls.forEach((control, index) => { control.disabled = disabled[index]; }); editor.lock(false);
+  }
 }
 
 // 防抖：连续输入只在停下后触发一次
@@ -1410,10 +1428,18 @@ function presetLoraStr(loras) {
 
 async function upsertCharacter(data) {
   if (!state.projectId) return toast('先选择项目', 'err');
+  const projectId = state.projectId;
+  const button = $('#pr-addchar'); if (button.disabled || assetMutationInFlight) return;
+  assetMutationInFlight = true;
+  button.disabled = true;
   try {
-    await api(`/api/projects/${state.projectId}/characters`, { method: 'POST', body: JSON.stringify(data) });
-    loadCharacterPresetPanel();
+    if (!(await editFeedback.flush('asset-cards')) || projectId !== state.projectId) return;
+    const character = await api(`/api/projects/${projectId}/characters`, { method: 'POST', body: JSON.stringify(data) });
+    if (projectId !== state.projectId) return;
+    await loadCharacterPresetPanel();
+    $('#pr-chars').querySelector(`[data-char="${character.id}"] .ch-name`)?.focus();
   } catch (e) { toast(e.message, 'err'); }
+  finally { assetMutationInFlight = false; button.disabled = !state.projectId; }
 }
 
 // ---- 项目画风 LoRA（项目级，合入该项目每一格，生成提示词与出图都带上）----
@@ -1424,43 +1450,68 @@ function styleLoraRow(l) {
     <button class="sm danger st-del" type="button">删</button>
   </div>`;
 }
-async function loadStyleLoras() {
+async function loadStyleLoras({ discard = false } = {}) {
   const projectId = state.projectId;
   const box = $('#pr-style');
-  if (!box) return;
-  if (!state.projectId) { box.innerHTML = '<div class="empty">先选择项目</div>'; return; }
-  let rows = [];
+  if (!box) return false;
+  if (!projectId) {
+    editFeedback.clear('asset-style'); styleEditor = null; $('#pr-style-status').textContent = '';
+    box.innerHTML = '<div class="empty">先选择项目</div>'; return true;
+  }
+  if (!discard && editFeedback.unsettled('asset-style')) return false;
+  const request = ++styleRequest;
+  const previous = editFeedback.snapshot('asset-style');
+  let rows;
   try {
-    const d = await api(`/api/projects/${projectId}/loras`);
-    rows = (d.project || d.rows || []).filter((r) => (r.scope || 'project') === 'project');
-  } catch { /* ignore */ }
-  if (projectId !== state.projectId) return;
-  box.innerHTML = (rows.length ? rows.map(styleLoraRow).join('') : '<div class="mut" style="font-size:12px">还没配画风 LoRA</div>');
-  bindStyle();
-  document.dispatchEvent(new Event('comic-assets:rendered'));
+    const data = await api(`/api/projects/${projectId}/loras`);
+    rows = (data.project || data.rows || []).filter((row) => (row.scope || 'project') === 'project');
+  } catch (error) {
+    if (request === styleRequest && projectId === state.projectId) {
+      toast('画风加载失败：' + error.message, 'err');
+      if (!styleEditor) box.innerHTML = '<div class="empty">画风加载失败，点击「刷新资产」重试。</div>';
+    }
+    return false;
+  }
+  if (projectId !== state.projectId || request !== styleRequest) return false;
+  if (previous !== editFeedback.snapshot('asset-style') || styleEditor?.saving) {
+    toast('画风有新修改，已保留当前内容；保存后再刷新。'); return false;
+  }
+  editFeedback.clear('asset-style');
+  box.innerHTML = rows.length ? rows.map(styleLoraRow).join('') : '<div class="mut" style="font-size:12px">还没配画风 LoRA</div>';
+  // 保存按钮在列表外，绑定一次，后续载入只更新当前控制器。
+  styleEditor = editFeedback.track({
+    element: box, group: 'asset-style', label: '项目画风', status: $('#pr-style-status'),
+    read: () => ({ scope: 'project', loras: Array.from(box.querySelectorAll('[data-stylerow]')).map((row) => ({
+      name: row.querySelector('.st-name').value.trim(),
+      weight: row.querySelector('.st-w').value === '' ? 1 : Number(row.querySelector('.st-w').value),
+    })).filter((lora) => lora.name) }),
+    write: (body) => api(`/api/projects/${projectId}/loras`, { method: 'PUT', body: JSON.stringify(body) }),
+  });
+  bindStyle(); document.dispatchEvent(new Event('comic-assets:rendered')); return true;
 }
 function bindStyle() {
   const box = $('#pr-style');
-  box.querySelectorAll('.st-del').forEach((b) => b.onclick = () => { b.closest('[data-stylerow]').remove(); });
+  box.querySelectorAll('.st-del').forEach((button) => button.onclick = () => {
+    button.closest('[data-stylerow]').remove(); styleEditor?.changed();
+  });
   attachLoraCombos(box, '.st-name');
 }
 $('#pr-addstyle').addEventListener('click', () => {
   if (!state.projectId) return toast('先选择项目', 'err');
+  if (!styleEditor) return toast('画风还未加载，请先刷新资产。', 'err');
   const box = $('#pr-style');
   if (box.querySelector('.mut') && !box.querySelector('[data-stylerow]')) box.innerHTML = '';
   box.insertAdjacentHTML('beforeend', styleLoraRow({}));
-  bindStyle();
+  bindStyle(); styleEditor.changed(); box.querySelector('[data-stylerow]:last-child .st-name')?.focus();
 });
 $('#pr-style-save').addEventListener('click', async () => {
+  const editor = styleEditor;
   if (!state.projectId) return toast('先选择项目', 'err');
-  const loras = Array.from($('#pr-style').querySelectorAll('[data-stylerow]')).map((r) => ({
-    name: r.querySelector('.st-name').value.trim(),
-    weight: r.querySelector('.st-w').value === '' ? 1 : Number(r.querySelector('.st-w').value),
-  })).filter((l) => l.name);
-  try {
-    await api(`/api/projects/${state.projectId}/loras`, { method: 'PUT', body: JSON.stringify({ scope: 'project', loras }) });
-    toast(`已保存 ${loras.length} 个画风 LoRA（下次生成提示词时带上）`, 'ok');
-  } catch (e) { toast(e.message, 'err'); }
+  if (!editor) return toast('画风还未加载，请先刷新资产。', 'err');
+  const button = $('#pr-style-save'); if (button.disabled || editor.saving) return;
+  button.disabled = true; button.textContent = '保存中…';
+  try { if (await editor.flush()) toast('项目画风已保存（下次生成提示词时带上）', 'ok'); }
+  finally { button.disabled = !state.projectId; button.textContent = '保存'; }
 });
 
 async function loadPrompts() {
@@ -1786,35 +1837,52 @@ async function openPromptEditor(name) {
       <button class="primary sm" id="pp-save">保存</button>
     </div></div>`;
   document.body.appendChild(box);
-  box.querySelector('[data-close]').addEventListener('click', () => box.remove());
-  box.addEventListener('click', (e) => { if (e.target === box) box.remove(); });
-
-  box.querySelector('#pp-save').addEventListener('click', async () => {
-    try {
-      await api(`/api/prompts/${name}`, { method: 'PUT', body: JSON.stringify({
-        system_text: box.querySelector('#pp-sys').value,
-        user_text: box.querySelector('#pp-user').value }) });
-      toast('提示词已保存（后续调用立即生效）', 'ok');
-      configuration.refreshTemplates();
-      box.remove();
-    } catch (e) { toast(e.message, 'err'); }
+  const status = document.createElement('div'); status.className = 'save-feedback';
+  box.querySelector('.box').appendChild(status);
+  const draft = editFeedback.track({
+    element: box, group: 'template-dialog', label: '提示词模板', status,
+    read: () => ({ system_text: box.querySelector('#pp-sys').value, user_text: box.querySelector('#pp-user').value }),
+    write: (body) => api(`/api/prompts/${name}`, { method: 'PUT', body: JSON.stringify(body) }),
   });
-  box.querySelector('#pp-reset').addEventListener('click', async () => {
-    // 不用浏览器原生 confirm（部分环境会被拦截/阻断），改用二次点击确认
-    const btn = box.querySelector('#pp-reset');
-    if (btn.dataset.armed !== '1') {
-      btn.dataset.armed = '1';
-      btn.textContent = '再点一次确认还原';
-      toast('再点一次「再点一次确认还原」即恢复默认（你的自定义将被删除）');
-      setTimeout(() => { if (btn) { btn.dataset.armed = '0'; btn.textContent = '还原默认'; } }, 6000);
+  let resetting = false;
+  const close = (force = false) => {
+    if (!force && (draft.saving || resetting)) { toast('正在保存，请稍候。'); return; }
+    if (!force && draft.dirty() && !confirm('提示词模板有未保存的修改，关闭会放弃这些修改，确定继续吗？')) return;
+    draft.dispose(); box.remove();
+  };
+  box.querySelector('[data-close]').addEventListener('click', () => close());
+  box.addEventListener('click', (event) => { if (event.target === box) close(); });
+  const saveButton = box.querySelector('#pp-save'), resetButton = box.querySelector('#pp-reset');
+  saveButton.addEventListener('click', async () => {
+    if (draft.saving || resetting) return;
+    saveButton.disabled = true; resetButton.disabled = true; saveButton.textContent = '保存中…';
+    try {
+      if (!(await draft.flush())) return;
+      toast('提示词已保存（后续调用立即生效）', 'ok'); close(true); configuration.refreshTemplates();
+    } finally { saveButton.disabled = false; resetButton.disabled = false; saveButton.textContent = '保存'; }
+  });
+  resetButton.addEventListener('click', async () => {
+    if (draft.saving || resetting) return;
+    if (resetButton.dataset.armed !== '1') {
+      resetButton.dataset.armed = '1'; resetButton.textContent = '再点一次确认还原';
+      toast('再点一次将删除已保存的自定义模板和当前未保存内容。');
+      setTimeout(() => {
+        if (resetting || !box.isConnected) return;
+        resetButton.dataset.armed = '0'; resetButton.textContent = '还原默认';
+      }, 6000);
       return;
     }
+    resetting = true; saveButton.disabled = true; resetButton.disabled = true;
+    const fields = box.querySelectorAll('textarea'); fields.forEach((field) => { field.disabled = true; });
     try {
       await api(`/api/prompts/${name}`, { method: 'DELETE' });
-      toast('已还原默认', 'ok');
-      configuration.refreshTemplates();
-      box.remove(); openPromptEditor(name);
-    } catch (e) { toast(e.message, 'err'); }
+      toast('已还原默认', 'ok'); close(true); configuration.refreshTemplates(); openPromptEditor(name);
+    } catch (error) { toast('还原失败：' + error.message, 'err'); }
+    finally {
+      resetting = false; saveButton.disabled = false; resetButton.disabled = false;
+      resetButton.dataset.armed = '0'; resetButton.textContent = '还原默认';
+      fields.forEach((field) => { field.disabled = false; });
+    }
   });
 }
 
