@@ -13,12 +13,13 @@ import socketserver
 import threading
 import zipfile
 import io
+import time
 from pathlib import Path
 from unittest.mock import patch
 
 
 def main():
-    from test_data_safety import DataSafetyTests, A, Template, Job, book, png, data_url
+    from test_data_safety import DataSafetyTests, A, Template, Job, Project, book, png, data_url
     from app.api.routes import projects, meta, bridge, providers, assets, comfy, jobs, pipeline
     from app.comfy import store
     from sqlalchemy.orm import Session
@@ -28,6 +29,8 @@ def main():
     static = root / 'backend/static'
     case = DataSafetyTests('test_med_doc_without_preview_remains_editable')
     case.setUp()
+    case.session.get(Project, 2).title = '另一部漫画'
+    case.session.commit()
     for name, value in (('COMFY_CONFIG_PATH', case.base / 'comfy.yaml'), ('WORKFLOW_DIR', case.base / 'workflows')):
         boundary = patch.object(store, name, value)
         boundary.start()
@@ -48,6 +51,7 @@ def main():
         app.include_router(module.router, prefix='/api')
     captures = []
     api_lock = threading.Lock()
+    delay_project_one = threading.Event()
 
     def simulate_enqueue(kind, *, project_id=None, stage='', payload=None):
         assert kind == 'book', '冒烟检查不运行真实出图或模型作业'
@@ -89,6 +93,8 @@ def main():
                     pass
                 return
             else:
+                if delay_project_one.is_set() and self.path.startswith('/api/projects/1/compose-board'):
+                    time.sleep(0.6)
                 content = self.rfile.read(int(self.headers.get('Content-Length', 0)))
                 with api_lock, patch.object(comfy.service, 'get_client', side_effect=RuntimeError('模拟环境不访问 ComfyUI')), patch.object(pipeline.jobq, 'enqueue', side_effect=simulate_enqueue):
                     response = case.client.request(self.command, self.path, content=content,
@@ -121,6 +127,7 @@ def main():
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.goto(origin + '/ui/')
             page.locator('[data-pick="1"]').click()
+            expect(page.locator('#breadcrumb-project')).to_have_text('我的漫画')
             page.locator('.nav [data-tab="compose"]').click()
             page.locator('#cps-do').click()
             expect(page.locator('#tab-editor')).to_be_visible()
@@ -179,10 +186,33 @@ def main():
                 page.wait_for_timeout(150)
                 assert actual.evaluate('() => canvas.getObjects().some(o => o.text === "漫画测试")'), '适配窗口不能清空画布'
                 assert page.evaluate('() => document.documentElement.scrollWidth <= innerWidth + 1'), f'主工作台在 {width}px 溢出'
+                expect(page.locator('#mobile-menu')).to_be_visible()
+                expect(page.locator('.nav [data-tab="exports"]')).not_to_be_visible()
+                page.locator('#mobile-menu').click()
+                expect(page.locator('.nav [data-tab="exports"]')).to_be_visible()
+                page.locator('.nav [data-tab="exports"]').click()
+                expect(page.locator('#mobile-menu')).to_have_attribute('aria-expanded', 'false')
+                expect(page.locator('#export-pages')).to_contain_text('纳入导出')
                 page.screenshot(path=str(screenshots / f'export-center-{width}.png'))
             page.set_viewport_size({'width': 1440, 'height': 1100})
             page.locator('.nav [data-tab="editor"]').click()
             page.screenshot(path=str(screenshots / 'editor-regular-desktop.png'))
+            # 同一个工作区里切换项目，即便上一个项目的响应更晚，也不能显示其页。
+            delay_project_one.set()
+            page.locator('.nav [data-tab="compose"]').click()
+            page.locator('#project-switch').select_option('2')
+            expect(page.locator('#breadcrumb-project')).to_have_text('另一部漫画')
+            expect(page.locator('#cps-detail')).to_contain_text('当前项目还没有漫画页')
+            page.wait_for_timeout(850)
+            expect(page.locator('#cps-menu')).to_contain_text('还没有分格页')
+            expect(page.locator('#cps-detail')).not_to_contain_text('第一页')
+            delay_project_one.clear()
+            page.locator('.nav [data-tab="exports"]').click()
+            expect(page.locator('#export-history')).to_contain_text('还没有导出版本')
+            expect(page.locator('#export-run')).to_be_disabled()
+            page.locator('#project-switch').select_option('1')
+            expect(page.locator('#export-history')).to_contain_text('版本 1')
+            page.screenshot(path=str(screenshots / 'navigation-desktop.png'))
             assert not errors, errors
             # 将本次截图复制到调用者指定的独立可写目录，仅用于视觉检查。
             import os
@@ -196,6 +226,7 @@ def main():
         print(json.dumps({'embedded_med': 'ok', 'auto_place_image': 'ok', 'dirty_save': 'ok',
                           'save_preview': 'ok', 'resume_canvas': 'ok', 'viewport_widths': [1440, 768, 390],
                           'export_pdf_cbz_download': 'ok',
+                          'mobile_menu_and_project_switch': 'ok',
                           'page_errors': errors}, ensure_ascii=False))
         return 0
     finally:

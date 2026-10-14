@@ -30,7 +30,7 @@ input,select,textarea{font:inherit;background:#fff;color:var(--ink);border:1px s
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(47,107,255,.12)}
 textarea{resize:vertical;min-height:78px;line-height:1.7}
 
-.app{display:grid;grid-template-columns:236px 1fr;min-height:100vh}
+.app{display:grid;grid-template-columns:248px minmax(0,1fr);min-height:100vh}
 /* 侧栏 */
 .side{background:var(--bg2);border-right:1px solid var(--line);padding:18px 14px;position:sticky;top:0;height:100vh;overflow:auto}
 .brand{display:flex;align-items:center;gap:10px;margin-bottom:20px;padding:0 4px}
@@ -47,7 +47,7 @@ textarea{resize:vertical;min-height:78px;line-height:1.7}
 .side-project{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:12.5px}
 .side-project b{display:block;font-size:13.5px;margin-bottom:2px}
 /* 主区 */
-.main{padding:24px 30px 70px;max-width:1200px}
+.main{padding:24px 30px 70px;max-width:1400px;min-width:0;width:100%}
 .head{display:flex;align-items:flex-end;gap:14px;margin-bottom:22px;flex-wrap:wrap}
 .head h1{font-size:22px;margin:0;font-weight:700}
 .head .sub{color:var(--muted);font-size:13px;margin-top:3px}
@@ -162,6 +162,40 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
 .download-button{display:inline-block;border:1px solid var(--line2);border-radius:8px;padding:5px 11px;font-size:13px;background:#fff}
 .download-button:hover{border-color:var(--accent);background:#f7f9ff}
 .export-task{padding:12px;background:#f7f9fc;border-radius:8px;margin-top:12px}
+.brand-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.mobile-menu{display:none}
+.project-picker{margin:0 0 12px}
+.project-picker select{font-size:13px}
+.project-picker .side-project{margin-top:6px;padding:8px 10px}
+.nav-group{margin:10px 0;border-top:1px solid var(--line);padding-top:9px}
+.nav-group summary{list-style:none;display:flex;align-items:center;justify-content:space-between;cursor:pointer;font-size:12px;font-weight:600;color:var(--ink2);padding:5px 10px}
+.nav-group summary::-webkit-details-marker{display:none}
+.nav-group summary::after{content:'›';font-size:18px;line-height:1;color:var(--muted)}
+.nav-group[open] summary::after{content:'⌄'}
+.nav-group .nav{margin:5px 0 3px}
+.nav .stage-number{font-size:10px;font-weight:700;color:var(--muted);width:20px;flex:0 0 20px}
+.nav .nav-label{flex:1;min-width:0}
+.nav .nav-count{font-size:10px;padding:1px 5px;color:var(--muted);white-space:nowrap;background:#f0f2f5;border-radius:5px}
+.nav .nav-count.warn{color:var(--warn);background:var(--warnbg)}
+.nav .nav-count.stale{color:var(--stale);background:var(--staleb)}
+.nav button.subtool{margin-left:21px;padding-top:7px;padding-bottom:7px;font-size:12px}
+.workbench-breadcrumb{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-bottom:12px}
+.workbench-breadcrumb button{border:0;background:transparent;padding:0;color:var(--ink2);font-size:12px;max-width:100%;overflow-wrap:anywhere}
+.stage-context{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 15px;border:1px solid var(--line);background:#fff;border-radius:10px;margin:-5px 0 16px}
+.stage-context .context-status{font-size:12px;color:var(--muted);flex:1;min-width:160px}
+.stage-context .context-index{font-size:11px;color:var(--accent);font-weight:700}
+.main.editor-active .stage-context{padding:8px 12px;margin-bottom:10px}
+@media(max-width:820px){
+  .side{position:sticky;top:0;z-index:35;height:auto;padding:10px 16px;border-bottom:1px solid var(--line);overflow:visible}
+  .brand{margin-bottom:0}
+  .mobile-menu{display:block;padding:5px 10px;font-size:12px}
+  .project-picker{margin:7px 0 0}.project-picker .side-project{display:none}.project-picker label{display:none}
+  .side-navigation{display:none;max-height:65dvh;overflow:auto;padding-top:8px}
+  body.nav-open .side-navigation{display:block}
+  .main,.main.editor-active{padding:18px 16px 40px}
+  .head{margin-bottom:16px}.stage-context{gap:8px}.stage-context .context-status{min-width:150px}
+  .workbench-breadcrumb{margin-bottom:8px}
+}
 body.editor-expanded .app{grid-template-columns:minmax(0,1fr)}
 body.editor-expanded .side{display:none}
 body.editor-expanded .main{padding:10px 14px}
@@ -186,7 +220,7 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
 .lora-menu .it b{color:var(--accent)}
 .cps-grid{display:grid;grid-template-columns:280px 1fr;gap:14px;align-items:start}
 @media(max-width:820px){.cps-grid{grid-template-columns:1fr}}
-@media(max-width:820px){.app{grid-template-columns:1fr}.side{position:static;height:auto}.grid2,.grid3{grid-template-columns:1fr}}
+@media(max-width:820px){.app{grid-template-columns:1fr}.side{position:sticky;top:0;height:auto}.grid2,.grid3{grid-template-columns:1fr}}
 
 /* 模板缩略图选择器 */
 .tplcard{border:2px solid var(--line2);border-radius:10px;background:#fff;cursor:pointer;overflow:hidden;transition:.12s}
@@ -216,40 +250,52 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
 <body>
 <div class="app">
   <aside class="side">
-    <div class="brand"><div class="dot">漫</div><div><b>AI 漫画生产线</b><span>写小说 → 出漫画</span></div></div>
-    <div class="nav">
-      <button data-tab="projects" class="active"><span class="ic">▦</span>项目</button>
-      <button data-tab="novel"><span class="ic">✎</span>正文</button>
-      <button data-tab="pipeline"><span class="ic">≡</span>流水线</button>
-      <button data-tab="pages"><span class="ic">▥</span>分格分页</button>
-      <button data-tab="prompts"><span class="ic">✧</span>提示词</button>
-      <button data-tab="images"><span class="ic">▤</span>出图</button>
-      <button data-tab="compose"><span class="ic">▦</span>分页合成</button>
-      <button data-tab="editor"><span class="ic">✎</span>漫画编辑器</button>
-      <button data-tab="exports"><span class="ic">⇩</span>整册导出</button>
-      <button data-tab="settings"><span class="ic">⚙</span>设置</button>
+    <div class="brand-row"><div class="brand"><div class="dot">漫</div><div><b>AI 漫画生产线</b><span>写小说 → 出漫画</span></div></div>
+      <button class="mobile-menu" id="mobile-menu" aria-controls="workspace-navigation" aria-expanded="false">菜单</button></div>
+    <div class="project-picker"><label class="fld" for="project-switch">当前漫画项目</label>
+      <select id="project-switch"><option value="">选择漫画项目</option></select>
+      <div class="side-project" id="cur-proj"><span class="mut">未选择</span></div></div>
+    <div class="side-navigation" id="workspace-navigation">
+      <div class="nav" aria-label="工作区">
+        <button data-tab="projects" class="active"><span class="ic">▦</span><span class="nav-label">项目管理</span></button>
+        <button data-tab="pipeline"><span class="ic">≡</span><span class="nav-label">流水线总览</span></button>
+      </div>
+      <details class="nav-group" data-nav-group="writing" open><summary>写作与分镜</summary><div class="nav">
+        <button data-tab="novel"><span class="stage-number">S1</span><span class="nav-label">正文</span><span class="nav-count" data-stage-badge="S1">—</span></button>
+        <button data-tab="pages"><span class="stage-number">S2</span><span class="nav-label">分格分页</span><span class="nav-count" data-stage-badge="S2">—</span></button>
+        <button data-tab="prompts"><span class="stage-number">S3</span><span class="nav-label">提示词</span><span class="nav-count" data-stage-badge="S3">—</span></button>
+      </div></details>
+      <details class="nav-group" data-nav-group="drawing" open><summary>绘制与成册</summary><div class="nav">
+        <button data-tab="images"><span class="stage-number">S4</span><span class="nav-label">出图</span><span class="nav-count" data-stage-badge="S4">—</span></button>
+        <button data-tab="compose"><span class="stage-number">S5</span><span class="nav-label">分页合成</span><span class="nav-count" data-stage-badge="S5">—</span></button>
+        <button data-tab="editor" class="subtool"><span class="ic">✎</span><span class="nav-label">漫画编辑器</span></button>
+        <button data-tab="exports"><span class="stage-number">S6</span><span class="nav-label">整册导出</span><span class="nav-count" data-stage-badge="S6">—</span></button>
+      </div></details>
+      <details class="nav-group" data-nav-group="settings" open><summary>配置与资产</summary><div class="nav">
+        <button data-tab="settings"><span class="ic">⚙</span><span class="nav-label">设置中心</span></button>
+      </div></details>
+      <details class="nav-group" data-nav-group="tools"><summary>工具与诊断</summary><div class="nav">
+        <button id="open-editor-workbench"><span class="ic">✎</span>编辑漫画页</button>
+        <button onclick="window.open('/ui/editor_bridge/index.html','_blank','noopener')"><span class="ic">↗</span>MED 桥自检</button>
+        <button onclick="window.open('http://localhost:8000','_blank','noopener')"><span class="ic">↗</span>酒馆</button>
+      </div><div class="mut" id="ui-version" style="font-size:11px;padding:4px 10px">app.js ?</div></details>
     </div>
-    <div class="sidetitle">当前项目</div>
-    <div class="side-project" id="cur-proj"><span class="mut">未选择</span></div>
-    <div class="sidetitle">快捷入口</div>
-    <div class="nav">
-      <button id="open-editor-workbench"><span class="ic">✎</span>编辑漫画页</button>
-      <button onclick="window.open('/ui/editor_bridge/index.html','_blank')"><span class="ic">↗</span>MED 桥自检</button>
-      <button onclick="window.open('http://localhost:8000','_blank')"><span class="ic">↗</span>酒馆</button>
-    </div>
-  <div class="sidetitle">版本</div>
-    <div class="mut" id="ui-version" style="font-size:11.5px;padding:0 4px">app.js ?</div>
   </aside>
 
   <main class="main">
+    <div class="workbench-breadcrumb"><button id="breadcrumb-project" type="button">未选择项目</button><span>/</span><span id="breadcrumb-section">项目管理</span></div>
     <div class="head">
       <div><h1 id="view-title">项目</h1><div class="sub" id="view-sub">选择或新建一部漫画</div></div>
       <div class="spacer"></div>
       <div class="pill" id="health">后端：检测中</div>
       <div class="switch" title="开=所有审查门自动通过；关=到门停住等你人工审">
-        <span class="mut" style="font-size:12.5px">全自动</span>
+        <span class="mut" style="font-size:12.5px">自动审核</span>
         <input type="checkbox" id="automode">
       </div>
+    </div>
+    <div class="stage-context hidden" id="workflow-context">
+      <span class="context-index" id="context-stage"></span><span class="context-status" id="context-status"></span>
+      <button class="sm" id="context-next" type="button">下一步</button>
     </div>
 
     <!-- 项目（一级：列表 / 二级：详情） -->
@@ -695,6 +741,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=79"></script>
+<script type="module" src="/ui/app.js?v=80"></script>
 </body>
 </html>

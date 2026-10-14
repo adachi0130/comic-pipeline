@@ -5,6 +5,7 @@
 
 import { createEditorWorkbench } from './editor-workbench.js';
 import { createExportCenter } from './export-center.js';
+import { createWorkbenchNavigation } from './workbench-navigation.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
@@ -35,12 +36,14 @@ const STATUS = {
 };
 const pill = (s) => { const [c, l] = STATUS[s] || ['', s || '—']; return `<span class="pill ${c}"><i class="dotm"></i>${l}</span>`; };
 const exportCenter = createExportCenter({ state, api, $, esc, pill, toast, switchTab, pageLabel });
+const navigation = createWorkbenchNavigation({ state, $, esc, switchTab, pickProject, toast });
+let projectPickRequest = 0;
 
 // ---------- Tab ----------
 const TITLES = {
-  projects: ['项目', '选择或新建一部漫画'],
+  projects: ['项目管理', '选择或新建一部漫画'],
   novel: ['正文', '用酒馆写小说，逐段审核，然后进入分页'],
-  pipeline: ['流水线', '各阶段与中间产物'],
+  pipeline: ['流水线总览', '查看六阶段进度、审核状态与当前任务'],
   pages: ['分格分页', '每页选模板（或让 AI 选）+ 打分格，并预览正文产物'],
   prompts: ['提示词', 'S3 分镜提示词：每格一句出图词'],
   images: ['出图', '连上后端 → 选工作流 → 出图挑图'],
@@ -81,6 +84,7 @@ function switchTab(tab) {
   try { localStorage.setItem('comic.tab', tab); } catch { /* ignore */ }   // 记住当前菜单，刷新后回到这里
   $('#view-title').textContent = TITLES[tab][0];
   $('#view-sub').textContent = TITLES[tab][1];
+  navigation.onNavigate(tab);
   if (tab === 'novel') { loadNovel(); setNovelMethod(getNovelMethod()); }
   if (tab === 'pipeline') renderFlow().then(refreshGates);
   if (tab === 'images') loadWorkbench();
@@ -107,16 +111,22 @@ async function checkHealth() {
 // ---------- 项目 ----------
 async function loadProjects() {
   const rows = await api('/api/projects');
+  navigation.setProjects(rows);
   const box = $('#plist');
   if (!rows.length) { box.innerHTML = '<div class="empty">还没有项目，先在上面创建一个</div>'; return rows; }
   box.innerHTML = rows.map((p) => `
-    <div class="pitem ${p.id === state.projectId ? 'sel' : ''}" data-pick="${p.id}">
+    <div class="pitem ${p.id === state.projectId ? 'sel' : ''}" data-pick="${p.id}" role="button" tabindex="0" aria-label="打开项目 ${esc(p.title)}">
       <div class="av">${esc((p.title || '?').slice(0, 1))}</div>
-      <div><b>${esc(p.title)}</b><div class="meta">${p.target_pages} 页 · ${p.review_mode === 'auto' ? '全自动' : '人工审查'}</div></div>
+      <div><b>${esc(p.title)}</b><div class="meta">${p.target_pages} 页 · ${p.review_mode === 'auto' ? '自动审核' : '人工审查'}</div></div>
       <div class="spacer"></div>
       ${p.id === state.projectId ? '<span class="pill ok"><i class="dotm"></i>当前</span>' : '<span class="mut" style="font-size:12.5px">点击打开</span>'}
     </div>`).join('');
-  $$('[data-pick]').forEach((el) => el.addEventListener('click', () => pickProject(+el.dataset.pick)));
+  $$('[data-pick]').forEach((el) => {
+    el.addEventListener('click', () => pickProject(+el.dataset.pick));
+    el.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pickProject(+el.dataset.pick); }
+    });
+  });
   return rows;
 }
 
@@ -135,19 +145,27 @@ function showProjectView(which) {
 
 async function pickProject(id) {
   if (state.editor?.dirty && state.editor.projectId !== id && !confirm('当前漫画页有未保存的修改。切换项目会关闭它，确定继续吗？')) return;
+  const request = ++projectPickRequest;
+  let project;
+  try { project = await api('/api/projects/' + id); }
+  catch (e) { toast('无法打开项目：' + e.message, 'err'); return; }
+  if (request !== projectPickRequest) return;
   if (state.editor && state.editor.projectId !== id) editorWorkbench.reset();
   state.projectId = id;
   try { localStorage.setItem('comic.lastProjectId', String(id)); } catch { /* 隐私模式忽略 */ }
-  state.project = await api('/api/projects/' + id);
+  state.project = project;
+  state._gates = null; state._composePages = null; state._composeSelected = null;
+  state._doneJobs = {}; navigation.update();
   showProjectView('detail');                       // 进入二级页面
   const h = $('#pd-title-h'); if (h) h.textContent = state.project.title || '项目详情';
   const c = $('#pv-crumb'); if (c) c.textContent = `项目 / ${state.project.title || ''}`;
   $('#cur-proj').innerHTML = `<b>${esc(state.project.title)}</b>
-    <span class="mut">${state.project.target_pages} 页 · ${state.project.review_mode === 'auto' ? '全自动' : '人工审查'}</span>`;
+    <span class="mut">${state.project.target_pages} 页 · ${state.project.review_mode === 'auto' ? '自动审核' : '人工审查'}</span>`;
   $('#automode').checked = state.project.review_mode === 'auto';
   // 项目隔离：切项目时全量刷新所有视图
   await loadProjects();
   await ensureMeta();
+  if (request !== projectPickRequest || state.projectId !== id) return;
   renderProjectDetail();
   await renderFlow();
   refreshGates();
@@ -159,6 +177,7 @@ async function pickProject(id) {
   if (active === 'pages') loadPages();
   if (active === 'editor') editorWorkbench.loadPages();
   if (active === 'exports') exportCenter.load();
+  navigation.update();
 }
 
 // 元信息（阶段定义/模板/技法）懒加载 + 自愈：初次失败时下次重试
@@ -173,6 +192,7 @@ async function ensureMeta() {
 
 // 项目详情卡片
 async function renderProjectDetail() {
+  const projectId = state.projectId;
   const box = $('#proj-detail');
   if (!box) return;
   const p = state.project;
@@ -181,11 +201,12 @@ async function renderProjectDetail() {
 
   // 小说状态（全文只看已通过）
   let novel = { chars: 0, total_count: 0, approved_count: 0, text: '' };
-  try { novel = await api(`/api/projects/${state.projectId}/novel`); } catch { /* 忽略 */ }
+  try { novel = await api(`/api/projects/${projectId}/novel`); } catch { /* 忽略 */ }
 
   // 各阶段产物明细
   let arts = {};
-  try { arts = await api(`/api/projects/${state.projectId}/stage-artifacts`); } catch { /* 忽略 */ }
+  try { arts = await api(`/api/projects/${projectId}/stage-artifacts`); } catch { /* 忽略 */ }
+  if (projectId !== state.projectId) return;
 
   const stageRows = (state.meta?.stages || []).map((s) => {
     const x = g[s.id] || {};
@@ -251,7 +272,8 @@ async function renderProjectDetail() {
       toast('已保存', 'ok');
       // 同步侧栏当前项目信息
       $('#cur-proj').innerHTML = `<b>${esc(state.project.title)}</b>
-        <span class="mut">${state.project.target_pages} 页 · ${state.project.review_mode === 'auto' ? '全自动' : '人工审查'}</span>`;
+        <span class="mut">${state.project.target_pages} 页 · ${state.project.review_mode === 'auto' ? '自动审核' : '人工审查'}</span>`;
+      navigation.update();
       loadProjects();
       refreshGates();
       // 注意：这里**不能**整块重绘 renderProjectDetail()，
@@ -277,6 +299,7 @@ function _userEditingDetail() {
  * 定时刷新/作业事件走这里，避免把用户正在输入的内容冲掉。
  */
 async function updateProjectStats() {
+  const projectId = state.projectId;
   if (!state.projectId) return;
   if (_userEditingDetail()) return;          // 正在输入 -> 跳过
   const novelBox = document.getElementById('pd-novel');
@@ -285,9 +308,10 @@ async function updateProjectStats() {
   const g = state._gates || {};
   try {
     const [novel, arts] = await Promise.all([
-      api(`/api/projects/${state.projectId}/novel`).catch(() => null),
-      api(`/api/projects/${state.projectId}/stage-artifacts`).catch(() => ({})),
+      api(`/api/projects/${projectId}/novel`).catch(() => null),
+      api(`/api/projects/${projectId}/stage-artifacts`).catch(() => ({})),
     ]);
+    if (projectId !== state.projectId) return;
     if (novelBox && novel && !_userEditingDetail()) {
       novelBox.innerHTML = novel.text
         ? novel.text.split(/\n{2,}/).map((t) => `<p>${esc(t)}</p>`).join('')
@@ -346,7 +370,8 @@ $('#automode').addEventListener('change', async () => {
   try {
     await api(`/api/projects/${state.projectId}/review-mode`, { method: 'PATCH', body: JSON.stringify({ mode: $('#automode').checked ? 'auto' : 'manual' }) });
     state.project.review_mode = $('#automode').checked ? 'auto' : 'manual';
-    toast($('#automode').checked ? '已切到全自动' : '已切到人工审查', 'ok');
+    toast($('#automode').checked ? '已开启自动审核' : '已切到人工审查', 'ok');
+    navigation.update();
     renderFlow();
   } catch (e) { toast(e.message, 'err'); }
 });
@@ -663,10 +688,12 @@ $('#nv-paste-add').addEventListener('click', async () => {
 });
 
 async function loadNovel() {
+  const projectId = state.projectId;
   if (!state.projectId) { $('#nv-segs').innerHTML = '<div class="empty">请先选择项目</div>'; return; }
   loadTavern();
   try {
-    const n = await api(`/api/projects/${state.projectId}/novel`);
+    const n = await api(`/api/projects/${projectId}/novel`);
+    if (projectId !== state.projectId) return;
     $('#nv-state').className = 'pill ' + (n.total_count === 0 ? '' : n.can_continue ? 'ok' : 'warn');
     $('#nv-state').innerHTML = `<i class="dotm"></i>${n.approved_count}/${n.total_count} 段已通过`;
     const sc = $('#nv-segs-count'); if (sc) sc.textContent = `${n.approved_count}/${n.total_count} 已通过`;
@@ -937,16 +964,19 @@ $('#pg-add').addEventListener('click', async () => {
 });
 
 async function loadPages() {
+  const projectId = state.projectId;
   if (!state.projectId) { $('#pg-list').innerHTML = '<div class="empty">请先选择项目</div>'; return; }
   try {
-    const d = await api(`/api/projects/${state.projectId}/pages`);
+    const d = await api(`/api/projects/${projectId}/pages`);
+    if (projectId !== state.projectId) return;
     state._tpls = d.templates || [];
     $('#pg-count').textContent = `${d.pages.length} 页`;
     $('#pg-meta').textContent = `已审核正文 ${d.novel_chars} 字 · 目标 ${d.target_pages} 页 · 提示词 ${d.panel_prompt_count} 条`;
 
     // 正文产物预览（可编辑）：复用 /novel 拿分段，改动走产物编辑接口
     try {
-      const nv = await api(`/api/projects/${state.projectId}/novel`);
+      const nv = await api(`/api/projects/${projectId}/novel`);
+      if (projectId !== state.projectId) return;
       renderPagesNovel(nv);
     } catch { /* 预览失败不影响分格主流程 */ }
 
@@ -993,7 +1023,7 @@ async function loadPages() {
     }
     box.querySelectorAll('[data-aigen]').forEach((b) => b.addEventListener('click', () => aiFillPage(b.dataset.aigen, b)));
     box.querySelectorAll('[data-ok]').forEach((b) => b.addEventListener('click', async () => {
-      const art = await api(`/api/projects/${state.projectId}/pages`).then((d) =>
+      const art = await api(`/api/projects/${projectId}/pages`).then((d) =>
         (d.pages.find((x) => x.page_ref === b.dataset.ok) || {}).artifact_id);
       if (!art) return toast('找不到该页产物', 'err');
       await api(`/api/artifacts/${art}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'approve' }) });
@@ -1001,7 +1031,7 @@ async function loadPages() {
     }));
     box.querySelectorAll('[data-no]').forEach((b) => b.addEventListener('click', async () => {
       const comment = prompt('驳回批注（可留空）：') || '';
-      const art = await api(`/api/projects/${state.projectId}/pages`).then((d) =>
+      const art = await api(`/api/projects/${projectId}/pages`).then((d) =>
         (d.pages.find((x) => x.page_ref === b.dataset.no) || {}).artifact_id);
       if (!art) return toast('找不到该页产物', 'err');
       await api(`/api/artifacts/${art}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'reject', comment }) });
@@ -1010,7 +1040,7 @@ async function loadPages() {
     box.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => openPageDetail(b.dataset.edit)));
     box.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', async () => {
       if (!confirm(`删除 ${b.dataset.del}？`)) return;
-      await api(`/api/projects/${state.projectId}/pages/${encodeURIComponent(b.dataset.del)}`, { method: 'DELETE' });
+      await api(`/api/projects/${projectId}/pages/${encodeURIComponent(b.dataset.del)}`, { method: 'DELETE' });
       toast('已删除该页', 'ok'); loadPages(); refreshGates();
     }));
   } catch (e) { toast(e.message, 'err'); }
@@ -1178,16 +1208,18 @@ function attachLoraCombos(root, selector, opts) {
 
 // ---- 角色卡 + 提示词预设渲染 ----
 async function loadCharacterPresetPanel() {
+  const projectId = state.projectId;
   const box = $('#pr-chars');
   if (!state.projectId) { box.innerHTML = '<div class="empty">先选择项目</div>'; return; }
   let chars = [], presets = { positive: [], negative: [] };
   try {
     [chars, presets] = await Promise.all([
-      api(`/api/projects/${state.projectId}/characters`),
-      api(`/api/prompt-presets?project_id=${state.projectId}`),
+      api(`/api/projects/${projectId}/characters`),
+      api(`/api/prompt-presets?project_id=${projectId}`),
     ]);
   } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
 
+  if (projectId !== state.projectId) return;
   const presetCard = (kind, list) => `
     <div style="flex:1;min-width:280px">
       <div class="row" style="gap:6px"><b style="font-size:13px">${kind === 'positive' ? '正向预设' : '负向预设'}</b>
@@ -1277,7 +1309,7 @@ async function loadCharacterPresetPanel() {
     try {
       const p = await api('/api/prompt-presets', { method: 'POST', body: JSON.stringify({
         kind: b.dataset.addpreset, name: '',
-        scope: 'project', project_id: state.projectId, text: '', is_default: false }) });
+        scope: 'project', project_id: projectId, text: '', is_default: false }) });
       toast(`已新建${b.dataset.addpreset === 'positive' ? '正向' : '负向'}预设，填完自动保存`, 'ok');
       // 局部插入，不整块重绘（避免已填内容被冲掉）
       await loadCharacterPresetPanel();
@@ -1296,7 +1328,7 @@ async function loadCharacterPresetPanel() {
     });
     const save = async (silent) => {
       try {
-        await api(`/api/projects/${state.projectId}/characters`, { method: 'POST', body: JSON.stringify(payload()) });
+        await api(`/api/projects/${projectId}/characters`, { method: 'POST', body: JSON.stringify(payload()) });
         if (!silent) toast('角色已保存', 'ok');
         else flashSaved(el);
       } catch (e) { toast(e.message, 'err'); }
@@ -1376,14 +1408,16 @@ function styleLoraRow(l) {
   </div>`;
 }
 async function loadStyleLoras() {
+  const projectId = state.projectId;
   const box = $('#pr-style');
   if (!box) return;
   if (!state.projectId) { box.innerHTML = '<div class="empty">先选择项目</div>'; return; }
   let rows = [];
   try {
-    const d = await api(`/api/projects/${state.projectId}/loras`);
+    const d = await api(`/api/projects/${projectId}/loras`);
     rows = (d.project || d.rows || []).filter((r) => (r.scope || 'project') === 'project');
   } catch { /* ignore */ }
+  if (projectId !== state.projectId) return;
   box.innerHTML = (rows.length ? rows.map(styleLoraRow).join('') : '<div class="mut" style="font-size:12px">还没配画风 LoRA</div>');
   bindStyle();
 }
@@ -1412,6 +1446,7 @@ $('#pr-style-save').addEventListener('click', async () => {
 });
 
 async function loadPrompts() {
+  const projectId = state.projectId;
   loadCharacterPresetPanel();
   loadStyleLoras();
   ensureLoraDatalist();
@@ -1423,7 +1458,8 @@ async function loadPrompts() {
     return;
   }
   try {
-    const d = await api(`/api/projects/${state.projectId}/prompt-board`);
+    const d = await api(`/api/projects/${projectId}/prompt-board`);
+    if (projectId !== state.projectId) return;
     $('#pr-count').textContent = `${d.pages.length} 页`;
     $('#pr-meta').textContent = `提示词 ${d.panel_done}/${d.panel_total} 格${d.has_llm_provider ? '' : ' · ⚠ 还没配 LLM 供应商'}`;
     const box = $('#pr-list');
@@ -1471,7 +1507,7 @@ async function loadPrompts() {
     box.querySelectorAll('[data-prrun]').forEach((b) => b.addEventListener('click', async () => {
       b.disabled = true; b.textContent = '生成中…';
       try {
-        await api(`/api/projects/${state.projectId}/prompt-board/run-page/${encodeURIComponent(b.dataset.prrun)}`, { method: 'POST', body: '{}' });
+        await api(`/api/projects/${projectId}/prompt-board/run-page/${encodeURIComponent(b.dataset.prrun)}`, { method: 'POST', body: '{}' });
         toast(`${b.dataset.prrun} 已入队生成`, 'ok');
         setTimeout(loadPrompts, 2500);
       } catch (e) { toast(e.message, 'err'); }
@@ -1801,9 +1837,12 @@ async function openStageArtifacts(stage) {
 
 async function refreshGates() {
   if (!state.projectId) return;
+  const projectId = state.projectId;
   try {
-    const g = await api(`/api/projects/${state.projectId}/gates`);
+    const g = await api(`/api/projects/${projectId}/gates`);
+    if (projectId !== state.projectId) return;
     state._gates = g.stages;
+    navigation.update();
     // 只更新统计块；绝不整块重绘（否则会清空用户正在编辑的输入框）
     updateProjectStats();
     if (document.querySelector('.nav button.active')?.dataset.tab === 'pipeline') renderFlow();
@@ -1865,6 +1904,7 @@ $('#wb-reload').addEventListener('click', loadWorkbench);
 $('#wb-comfy').addEventListener('click', openComfySettings);
 
 async function loadWorkbench() {
+  const projectId = state.projectId;
   if (!state.projectId) {
     $('#wb-list').innerHTML = '<div class="card"><div class="empty">请先选择项目</div></div>';
     $('#wb-pages').innerHTML = '<div class="empty">请先选择项目</div>';
@@ -1878,10 +1918,12 @@ async function loadWorkbench() {
 
     // 1) 顶部：分格产物（每页卡 + 「详情」看该页所有镜头）
     await renderWorkbenchPages();
+    if (projectId !== state.projectId) return;
 
     // 2) 逐格出图：列出**所有格**（含还没生成提示词的），未生成的给「自动填写」
     let board = { pages: [] };
-    try { board = await api(`/api/projects/${state.projectId}/prompt-board`); } catch { /* ignore */ }
+    try { board = await api(`/api/projects/${projectId}/prompt-board`); } catch { /* ignore */ }
+    if (projectId !== state.projectId) return;
     const panels = [];
     for (const pg of (board.pages || [])) for (const pn of pg.panels) panels.push({ ...pn, page_ref: pg.page_ref });
     if (!panels.length) {
@@ -1894,11 +1936,12 @@ async function loadWorkbench() {
     // 项目画风 LoRA：自动填写时额外带上
     let styleLoras = [];
     try {
-      const d = await api(`/api/projects/${state.projectId}/loras`);
+      const d = await api(`/api/projects/${projectId}/loras`);
       styleLoras = (d.project || d.rows || []).filter((r) => (r.scope || 'project') === 'project')
         .map((r) => ({ name: r.lora_name || r.name, weight: r.weight ?? 1 }));
     } catch { /* ignore */ }
     const filled = panels.filter((p) => p.prompt).length;
+    if (projectId !== state.projectId) return;
     $('#wb-info').textContent = `${filled}/${panels.length} 格已生成提示词`;
 
     // 按“页”分组，每页一张卡（默认收起，点标题展开）
@@ -2008,14 +2051,17 @@ async function loadWorkbench() {
 
 /** 候选图库：把该项目所有已生成的候选图攒成列表（按格分组），点击挑选。 */
 async function loadCandidateGallery() {
+  const projectId = state.projectId;
   const box = $('#wb-gallery');
   if (!box) return;
   if (!state.projectId) { box.innerHTML = '<div class="empty">先选择项目</div>'; return; }
   let rows = [];
-  try { rows = await api(`/api/projects/${state.projectId}/artifacts?kind=image`); } catch { /* ignore */ }
+  try { rows = await api(`/api/projects/${projectId}/artifacts?kind=image`); } catch { /* ignore */ }
+  if (projectId !== state.projectId) return;
   if (!rows.length) { $('#wb-gallery-info').textContent = '0 张'; box.innerHTML = '<div class="empty">还没有候选图，去下面逐格点「出图」</div>'; return; }
   const full = [];
   for (const r of rows) { try { full.push(await api('/api/artifacts/' + r.id)); } catch { /* skip */ } }
+  if (projectId !== state.projectId) return;
   const total = full.reduce((s, a) => s + (((a.payload && a.payload.candidates) || []).length), 0);
   $('#wb-gallery-info').textContent = `${full.length} 格 · ${total} 张`;
   box.innerHTML = full.map((a) => {
@@ -2071,7 +2117,7 @@ async function loadCandidateGallery() {
     if (!f) return;
     const dataUrl = await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(f); });
     try {
-      await api(`/api/projects/${state.projectId}/panels/${encodeURIComponent(fi.dataset.gRef)}/candidates`, { method: 'POST', body: JSON.stringify({ data_url: dataUrl }) });
+      await api(`/api/projects/${projectId}/panels/${encodeURIComponent(fi.dataset.gRef)}/candidates`, { method: 'POST', body: JSON.stringify({ data_url: dataUrl }) });
       toast('已上传为该格候选图', 'ok'); loadCandidateGallery(); refreshGates();
     } catch (e) { toast('上传失败：' + e.message, 'err'); }
     fi.value = '';
@@ -2080,10 +2126,12 @@ async function loadCandidateGallery() {
 
 /** 渲染 S2 分格产物：每页一张卡（真版式缩略图 + 每格摘要 + 出图进度）。 */
 async function renderWorkbenchPages() {
+  const projectId = state.projectId;
   const box = $('#wb-pages');
   // 预览来源 = S3 提示词产物（每格的正/负向提示词），不是 S2 分格
   let board = { pages: [], panel_done: 0, panel_total: 0 };
-  try { board = await api(`/api/projects/${state.projectId}/prompt-board`); } catch { /* ignore */ }
+  try { board = await api(`/api/projects/${projectId}/prompt-board`); } catch { /* ignore */ }
+  if (projectId !== state.projectId) return;
   const pages = board.pages || [];
   $('#wb-pages-info').textContent = `${pages.length} 页 · 提示词 ${board.panel_done}/${board.panel_total} 格`;
   if (!pages.length) {
@@ -2150,7 +2198,7 @@ async function renderWorkbenchPages() {
   box.querySelectorAll('[data-wbprep]').forEach((b) => b.addEventListener('click', async () => {
     b.disabled = true; b.textContent = '准备中…';
     try {
-      await api(`/api/projects/${state.projectId}/panels/${encodeURIComponent(b.dataset.wbprep)}/prepare`, { method: 'POST', body: '{}' });
+      await api(`/api/projects/${projectId}/panels/${encodeURIComponent(b.dataset.wbprep)}/prepare`, { method: 'POST', body: '{}' });
       toast('已按预设+角色生成该格提示词', 'ok'); loadWorkbench(); refreshGates();
     } catch (e) { toast(e.message, 'err'); }
     finally { b.disabled = false; b.textContent = '准备'; }
@@ -2412,9 +2460,11 @@ async function renderWbCands(pa) {
 // ---------- 通用产物列表 ----------
 $('#reload-art').addEventListener('click', loadArtifacts);
 async function loadArtifacts() {
+  const projectId = state.projectId;
   if (!state.projectId) return toast('先选择项目', 'err');
   const kind = $('#art-kind').value;
-  const rows = await api(`/api/projects/${state.projectId}/artifacts?kind=${kind}`);
+  const rows = await api(`/api/projects/${projectId}/artifacts?kind=${kind}`);
+  if (projectId !== state.projectId) return;
   const box = $('#artbox');
   if (!rows.length) { box.innerHTML = '<div class="empty">暂无产物</div>'; return; }
   if (kind === 'image') {
@@ -2959,14 +3009,25 @@ $('#cps-approve-all').addEventListener('click', async () => {
 });
 
 async function loadCompose() {
+  const projectId = state.projectId;
   const menu = $('#cps-menu');
+  if (!state._composePages) {
+    $('#cps-detail').innerHTML = '<div class="empty">正在加载当前项目的漫画页…</div>';
+    $('#cps-finished').innerHTML = '<div class="empty">正在加载当前项目的合成结果…</div>';
+  }
   if (!state.projectId) { menu.innerHTML = '<div class="empty">请先选择项目</div>'; return; }
   try {
-    const d = await api(`/api/projects/${state.projectId}/compose-board`);
+    const d = await api(`/api/projects/${projectId}/compose-board`);
+    if (projectId !== state.projectId) return;
     state._composePages = d.pages || [];
     const ready = d.pages.filter((p) => p.ready).length;
     $('#cps-info').textContent = `${d.pages.length} 页 · ${ready} 页可合成`;
-    if (!d.pages.length) { menu.innerHTML = '<div class="empty">还没有分格页（先跑 S2）</div>'; return; }
+    if (!d.pages.length) {
+      menu.innerHTML = '<div class="empty">还没有分格页（先跑 S2）</div>';
+      $('#cps-detail').innerHTML = '<div class="empty">当前项目还没有漫画页，请先到「分格分页」添加一页。</div>';
+      $('#cps-finished').innerHTML = '<div class="empty">当前项目还没有合成结果。</div>';
+      return;
+    }
     menu.innerHTML = d.pages.map((p) => {
       const done = p.panels.filter((x) => x.has_image).length;
       const statusPill = p.result_id ? ` ${pill(p.result_status)}` : '';
@@ -2991,15 +3052,17 @@ async function loadCompose() {
 
 /** 分页合成下方：已完成整页 PNG + 可继续编辑的画布存档。 */
 async function renderComposeFinished() {
+  const projectId = state.projectId;
   const box = $('#cps-finished');
   if (!box) return;
   let pages = [], pageImgs = [], docs = [];
   try {
-    pages = state._composePages || (await api(`/api/projects/${state.projectId}/compose-board`)).pages || [];
-    pageImgs = await api(`/api/projects/${state.projectId}/artifacts?kind=page_image`);
-    docs = await api(`/api/projects/${state.projectId}/artifacts?kind=med_doc`);
+    pages = state._composePages || (await api(`/api/projects/${projectId}/compose-board`)).pages || [];
+    pageImgs = await api(`/api/projects/${projectId}/artifacts?kind=page_image`);
+    docs = await api(`/api/projects/${projectId}/artifacts?kind=med_doc`);
   } catch { /* ignore */ }
   const docByRef = {}; docs.forEach((d) => { docByRef[d.ref] = d; });
+  if (projectId !== state.projectId) return;
   const imgByRef = {}; pageImgs.forEach((d) => { imgByRef[d.ref] = d; });
   const allRefs = Array.from(new Set([...pages.map((p) => p.page_ref), ...pageImgs.map((d) => d.ref), ...docs.map((d) => d.ref)]));
   if (!allRefs.length) { box.innerHTML = '<div class="empty">还没有合成结果</div>'; return; }
@@ -3158,6 +3221,7 @@ function medCompose(page, openOnly) {
   }
   await checkHealth();
   await ensureMeta();
+  navigation.onNavigate('projects');
   const rows = await loadProjects();
   // 恢复上次选中的项目（刷新后不用再点一下）；没有/已删除则显示列表
   let lastId = 0;

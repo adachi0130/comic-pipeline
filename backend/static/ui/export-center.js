@@ -65,6 +65,9 @@ export function createExportCenter({ state, api, $, esc, pill, toast, switchTab,
   async function load() {
     const projectId = state.projectId;
     const version = ++request;
+    if (board?.project_id !== projectId) {
+      $('#export-summary').innerHTML = ''; $('#export-history').innerHTML = ''; $('#export-task').innerHTML = '';
+    }
     board = null; jobs = []; updateRunButton();
     if (!projectId) {
       $('#export-summary').innerHTML = '';
