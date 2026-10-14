@@ -189,6 +189,54 @@ def _resolve_sampler_prompts(api: dict, desc: dict) -> dict:
     return out
 
 
+@router.get("/comfy/server-workflow-download")
+def server_workflow_download(
+    name: str,
+    backend: str = "cloud",
+    fmt: str = Query("raw", alias="format"),
+):
+    """把出图后端上的某个工作流导出成本地文件下载。
+
+    ``format=raw`` → 后端上的原始文件（原样）；
+    ``format=api`` → 转成 API 格式后的版本（子图等无法转换的部分会被列出警告）。
+    """
+    import json as _json
+    from urllib.parse import quote
+
+    from fastapi.responses import Response
+
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(400, "缺少工作流名")
+    client = _client(_resolve_backend({"backend": backend})[0])
+    try:
+        raw = client.get_workflow(name)
+    except ComfyError as e:
+        raise HTTPException(502, str(e)) from e
+
+    if fmt == "api":
+        if is_ui_format(raw):
+            try:
+                info = client.object_info()
+            except ComfyError:
+                info = {}
+            api, _w = ui_to_api(raw, info)
+            data = api
+        else:
+            data = raw
+    else:
+        data = raw
+
+    text = _json.dumps(data, ensure_ascii=False, indent=2)
+    stem = name[:-5] if name.lower().endswith(".json") else name
+    fname = f"{stem}.api.json" if fmt == "api" else f"{stem}.json"
+    return Response(
+        content=text,
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}"},
+    )
+
+
 @router.post("/comfy/import-from-server")
 def import_from_server(body: dict) -> dict:
     """把后端上的某个工作流导入生产线并设为当前（顺带自动映射参数）。"""

@@ -2630,6 +2630,9 @@ async function openComfySettings() {
     const prompts = (d.text_params || []).slice(0, 8);
     const lora = d.lora || { slots: [] };
     const rp = resolved.prompt_pos, rn = resolved.prompt_neg;
+    // 下载工作流 JSON 到本地（raw=原样 / api=转换后的扁平版本）
+    const dlUrl = (fmt) => `/api/comfy/server-workflow-download?backend=${encodeURIComponent(backendNow())}`
+      + `&format=${fmt}&name=${encodeURIComponent(name)}`;
     const condCard = (label, kind, obj, cls) => obj ? `
       <div class="mini-card" style="padding:8px 10px;margin-top:6px;border-color:${cls}">
         <div class="row" style="gap:6px"><b style="font-size:13px">${label}</b>
@@ -2644,6 +2647,8 @@ async function openComfySettings() {
         <span class="pill tag">${r.ui_format ? 'UI 格式（已转 API）' : 'API 格式'}</span>
         <span class="pill tag">LoRA：${esc(lora.mode || '无')}</span>
         <div class="spacer"></div>
+        <a class="sm" href="${dlUrl('raw')}" download style="text-decoration:none">下载原始 JSON</a>
+        <a class="sm" href="${dlUrl('api')}" download style="text-decoration:none" title="转成 API 格式后的扁平节点版本">下载 API 格式</a>
         <button class="sm primary" id="cs-use">就用它出图</button>
       </div>
       ${(r.warnings || []).length ? `<div class="empty" style="color:var(--warn);text-align:left;font-size:12px;margin-top:6px">⚠ ${r.warnings.map(esc).join('<br>⚠ ')}</div>` : ''}
