@@ -2626,8 +2626,40 @@ async function openComfySettings() {
       return;
     }
     const d = r.describe || {};
-    const prompts = (d.text_params || []).slice(0, 8);
+    const resolved = r.resolved || {};
     const lora = d.lora || { slots: [] };
+    const rp = resolved.prompt_pos, rn = resolved.prompt_neg;
+    // 下载工作流 JSON 到本地（raw=原样 / api=转换后的扁平版本）
+    const dlUrl = (fmt) => `/api/comfy/server-workflow-download?backend=${encodeURIComponent(backendNow())}`
+      + `&format=${fmt}&name=${encodeURIComponent(name)}`;
+    // 试跑提示词预填：静态取文本；动态拼装取各文本块拼接；都没有则留默认
+    const joinChunks = (o) => (o && o.chunks || []).map((c) => c.value || '').join('\n\n').trim();
+    const testPos = (rp && !rp.dynamic && rp.value) ? rp.value : (joinChunks(rp) || '1girl, solo, masterpiece, best quality');
+    const testNeg = (rn && !rn.dynamic && rn.value) ? rn.value : (joinChunks(rn) || 'worst quality, low quality');
+    const condCard = (label, kind, obj, cls) => {
+      if (!obj) return `<div class="mini-card" style="padding:8px 10px;margin-top:6px">
+        <div class="row" style="gap:6px"><b style="font-size:13px">${label}</b>
+          <span class="pill tag">未解析到</span></div></div>`;
+      const head = `<div class="row" style="gap:6px"><b style="font-size:13px">${label}</b>
+          <span class="pill ${kind}"><i class="dotm"></i>来自 KSampler</span>
+          <span class="pill tag">${esc(obj.class_type)}#${esc(obj.node_id)}</span></div>`;
+      if (obj.dynamic) {
+        const chunks = obj.chunks || [];
+        return `<div class="mini-card" style="padding:8px 10px;margin-top:6px;border-color:${cls}">
+          ${head}
+          <div class="mut" style="font-size:11.5px;margin-top:5px;color:var(--warn)">
+            这格提示词由「${esc(obj.class_type)}」在运行时<b>动态拼装</b>，没有单一静态文本；下面是参与拼装的各文本块（共 ${chunks.length} 个）：</div>
+          ${chunks.map((c) => `<div style="margin-top:6px">
+            <span class="pill tag">${esc(c.class_type)}#${esc(c.node_id)}.${esc(c.input)}</span>
+            <div class="mut" style="font-size:11px;margin-top:3px;word-break:break-all;white-space:pre-wrap;max-height:70px;overflow:auto">${esc(c.value || '（空）')}</div>
+          </div>`).join('') || '<div class="mut" style="font-size:11px;margin-top:4px">（未定位到文本块）</div>'}
+        </div>`;
+      }
+      return `<div class="mini-card" style="padding:8px 10px;margin-top:6px;border-color:${cls}">
+        ${head}
+        <div class="mut" style="font-size:11.5px;margin-top:5px;word-break:break-all;white-space:pre-wrap;max-height:140px;overflow:auto">${esc(obj.value || '（空）')}</div>
+      </div>`;
+    };
     el.innerHTML = `
       <div class="row" style="gap:8px">
         <b>${esc(name)}</b>
@@ -2635,23 +2667,17 @@ async function openComfySettings() {
         <span class="pill tag">${r.ui_format ? 'UI 格式（已转 API）' : 'API 格式'}</span>
         <span class="pill tag">LoRA：${esc(lora.mode || '无')}</span>
         <div class="spacer"></div>
+        <a class="sm" href="${dlUrl('raw')}" download style="text-decoration:none">下载原始 JSON</a>
+        <a class="sm" href="${dlUrl('api')}" download style="text-decoration:none" title="转成 API 格式后的扁平节点版本">下载 API 格式</a>
         <button class="sm primary" id="cs-use">就用它出图</button>
       </div>
       ${(r.warnings || []).length ? `<div class="empty" style="color:var(--warn);text-align:left;font-size:12px;margin-top:6px">⚠ ${r.warnings.map(esc).join('<br>⚠ ')}</div>` : ''}
       ${(d.missing_nodes || []).length ? `<div class="empty" style="color:var(--err);text-align:left;font-size:12px;margin-top:6px">缺节点：${d.missing_nodes.map(esc).join('、')}（这台 ComfyUI 上没装/没加载，可能跑不了）</div>` : ''}
 
-      <div style="margin-top:10px"><b style="font-size:13px">参数</b>
-        <span class="mut" style="font-size:12px">　带「疑似提示词」标记的通常就是正/负提示词</span></div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px;margin-top:6px">
-        ${prompts.map((t, i) => `
-          <label class="mini-card" style="padding:8px 10px;display:block;cursor:pointer">
-            <input type="checkbox" class="cs-param" data-node="${esc(t.node_id)}" data-input="${esc(t.input)}"
-                   ${t.looks_prompt && i < 2 ? 'checked' : ''} style="width:auto">
-            <span class="pill tag" style="margin-left:6px">${esc(t.class_type)}#${esc(t.node_id)}</span>
-            ${t.looks_prompt ? '<span class="pill warn" style="margin-left:4px">疑似提示词</span>' : ''}
-            <div class="mut" style="font-size:11px;margin-top:4px;word-break:break-all">${esc((t.value || '').slice(0, 90))}</div>
-          </label>`).join('') || '<div class="mut" style="font-size:12px">没找到文本参数</div>'}
-      </div>
+      <div style="margin-top:12px"><b style="font-size:13px">正 / 负提示词（自动从 KSampler 解析）</b></div>
+      ${condCard('正向提示词', 'ok', rp, 'var(--ok)')}
+      ${condCard('负向提示词', 'err', rn, 'var(--line2)')}
+      ${(!rp && !rn) ? `<div class="empty" style="text-align:left;font-size:12px;margin-top:6px;color:var(--warn)">⚠ 没能解析出提示词：${esc(resolved.reason || '未知原因')}</div>` : ''}
 
       <div style="margin-top:10px"><b style="font-size:13px">LoRA 槽（${(lora.slots || []).length} 个）</b>
         <span class="mut" style="font-size:12px">　勾选启用；名字可下拉联想后端已有的 LoRA</span></div>
@@ -2675,10 +2701,10 @@ async function openComfySettings() {
       </div>
 
       <div style="margin-top:12px"><b style="font-size:13px">试跑</b>
-        <span class="mut" style="font-size:12px">　用上面勾选的提示词与 LoRA 真出一张</span></div>
+        <span class="mut" style="font-size:12px">　用下面这两个提示词真出一张（已按解析结果预填）</span></div>
       <div class="grid2" style="margin-top:6px">
-        <div><label class="fld">正向提示词</label><textarea id="cs-t-pos" style="min-height:54px">1girl, solo, masterpiece, best quality</textarea></div>
-        <div><label class="fld">负向提示词</label><textarea id="cs-t-neg" style="min-height:54px">worst quality, low quality</textarea></div>
+        <div><label class="fld">正向提示词</label><textarea id="cs-t-pos" style="min-height:54px">${esc(testPos)}</textarea></div>
+        <div><label class="fld">负向提示词</label><textarea id="cs-t-neg" style="min-height:54px">${esc(testNeg)}</textarea></div>
       </div>
       <div class="row" style="margin-top:8px">
         <button class="sm primary" id="cs-test">试跑一张</button>
@@ -2754,6 +2780,15 @@ $('#cps-compose-all').addEventListener('click', async () => {
     toast(`已入队合成 ${pages.length} 页`, 'ok');
   } catch (e) { toast(e.message, 'err'); }
 });
+// 一键审核：把所有「待审查」的整页成图（S5 产物）置为通过
+$('#cps-approve-all').addEventListener('click', async () => {
+  if (!state.projectId) return toast('先选择项目', 'err');
+  try {
+    const r = await api(`/api/projects/${state.projectId}/page-images/approve-all`, { method: 'POST', body: '{}' });
+    toast(r.approved ? `已通过 ${r.approved} 页` : '没有待审查的整页成图', r.approved ? 'ok' : '');
+    loadCompose(); refreshGates();
+  } catch (e) { toast(e.message, 'err'); }
+});
 
 async function loadCompose() {
   const menu = $('#cps-menu');
@@ -2766,10 +2801,11 @@ async function loadCompose() {
     if (!d.pages.length) { menu.innerHTML = '<div class="empty">还没有分格页（先跑 S2）</div>'; return; }
     menu.innerHTML = d.pages.map((p) => {
       const done = p.panels.filter((x) => x.has_image).length;
+      const statusPill = p.result_id ? ` ${pill(p.result_status)}` : '';
       return `<div class="pitem" data-cpspage="${esc(p.page_ref)}" style="cursor:pointer">
         <div class="av" style="width:26px;height:26px">${p.page_index}</div>
-        <div><b>${pageLabel(p.page_ref)}</b>
-          <div class="meta">${done}/${p.panels.length} 格有图${p.composed ? ' · 已合成' : ''}</div></div>
+        <div><b>${pageLabel(p.page_ref)}</b>${statusPill}
+          <div class="meta">${done}/${p.panels.length} 格有图${p.composed ? ' · 已合成' : (p.med_doc_id ? ' · 编辑中' : '')}</div></div>
         <div class="spacer"></div>
         <span class="pill ${p.ready ? 'ok' : 'warn'}"><i class="dotm"></i>${p.ready ? '可合成' : '缺图'}</span>
       </div>`;
@@ -2807,16 +2843,21 @@ async function renderComposeFinished() {
       const main = doc && doc.has_file
         ? { url: `/api/artifacts/${doc.id}/file?v=${doc.version}`, label: '编辑中（MED 画布）', kind: 'warn' }
         : (png ? { url: `/api/artifacts/${png.id}/file?v=${png.version}`, label: '已合成整页', kind: 'ok' } : null);
+      // 该页可审核的成品：优先整页成图(PNG)，否则「编辑中」画布(MED 存档，需有预览文件)
+      const result = png || (doc && doc.has_file ? doc : null);
       return `<div class="mini-card" style="padding:10px">
         <div class="row" style="gap:6px"><b>${pageLabel(ref)}</b>
           ${png ? '<span class="pill ok"><i class="dotm"></i>已合成</span>' : ''}
-          ${doc ? '<span class="pill warn"><i class="dotm"></i>编辑中</span>' : ''}</div>
+          ${doc ? '<span class="pill warn"><i class="dotm"></i>编辑中</span>' : ''}
+          ${result ? pill(result.status) : ''}</div>
         <div style="margin-top:8px;border:1px solid var(--line2);border-radius:8px;overflow:hidden;background:#f8fafc">
           ${main ? `<img src="${main.url}" style="width:100%;display:block">`
                  : `<div class="empty" style="font-size:12px;padding:24px 0">还没有结果</div>`}
         </div>
         <div class="mut" style="font-size:11px;margin-top:4px">预览：${main ? main.label : '—'}</div>
         <div class="row" style="margin-top:6px;gap:6px">
+          ${result && result.status !== 'approved' ? `<button class="sm primary" data-cps-approve="${result.id}">通过</button>
+          <button class="sm" data-cps-reject="${result.id}">驳回</button>` : ''}
           <button class="sm primary" data-cps-edit="${esc(ref)}">${doc ? '继续编辑' : '去编辑'}</button>
           ${png ? `<a class="sm" href="/api/artifacts/${png.id}/file?v=${png.version}" target="_blank">看整页图</a>` : ''}
         </div>
@@ -2826,6 +2867,17 @@ async function renderComposeFinished() {
   box.querySelectorAll('[data-cps-edit]').forEach((b) => b.addEventListener('click', () => {
     const ref = b.dataset.cpsEdit;
     openMedPage(ref, 'edit=1');
+  }));
+  box.querySelectorAll('[data-cps-approve]').forEach((b) => b.addEventListener('click', async () => {
+    try { await api(`/api/artifacts/${b.dataset.cpsApprove}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'approve' }) });
+      toast('整页已通过', 'ok'); loadCompose(); refreshGates();
+    } catch (e) { toast(e.message, 'err'); }
+  }));
+  box.querySelectorAll('[data-cps-reject]').forEach((b) => b.addEventListener('click', async () => {
+    const comment = prompt('驳回批注（可留空）：') || '';
+    try { await api(`/api/artifacts/${b.dataset.cpsReject}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'reject', comment }) });
+      toast('整页已驳回', 'ok'); loadCompose(); refreshGates();
+    } catch (e) { toast(e.message, 'err'); }
   }));
 }
 
@@ -2873,7 +2925,11 @@ function showComposePage(pageRef) {
     <div class="row" style="gap:8px"><b>${pageLabel(p.page_ref)}</b>
       <span class="pill tag">${p.template_id || '?'} · ${p.panels_count} 格</span>
       <span class="pill ${p.ready ? 'ok' : 'warn'}"><i class="dotm"></i>${p.ready ? '可合成' : '有格缺图'}</span>
+      ${p.result_id ? `${pill(p.result_status)}<span class="mut" style="font-size:11.5px">${p.result_kind === 'med_doc' ? '编辑中画布' : '整页成图'}</span>` : ''}
       <div class="spacer"></div>
+      ${p.result_id && p.result_status !== 'approved'
+        ? `<button class="sm primary" id="cps-approve">通过</button>
+           <button class="sm" id="cps-reject">驳回</button>` : ''}
       <button class="sm" id="cps-changetpl">更换模板</button>
       <button class="sm primary" id="cps-do">去 MED 合成</button>
       <button class="sm" id="cps-open">在 MED 打开</button>
@@ -2888,6 +2944,21 @@ function showComposePage(pageRef) {
   const doBtn = $('#cps-do');
   if (doBtn) doBtn.addEventListener('click', () => medCompose(p, false));
   const ob = $('#cps-open'); if (ob) ob.addEventListener('click', () => medCompose(p, true));
+  const apb = $('#cps-approve');
+  if (apb) apb.addEventListener('click', async () => {
+    try {
+      await api(`/api/artifacts/${p.result_id}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'approve' }) });
+      toast(`${pageLabel(p.page_ref)} 已通过`, 'ok'); loadCompose(); refreshGates();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+  const rjb = $('#cps-reject');
+  if (rjb) rjb.addEventListener('click', async () => {
+    const comment = prompt('驳回批注（可留空）：') || '';
+    try {
+      await api(`/api/artifacts/${p.result_id}/review`, { method: 'POST', body: JSON.stringify({ verdict: 'reject', comment }) });
+      toast(`${pageLabel(p.page_ref)} 已驳回`, 'ok'); loadCompose(); refreshGates();
+    } catch (e) { toast(e.message, 'err'); }
+  });
   const rb = $('#cps-run');
   if (rb) rb.addEventListener('click', async () => {
     try {

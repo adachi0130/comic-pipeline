@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from ... import jobs as jobq
 from ...comfy import service, store
 from ...comfy.client import ComfyClient, ComfyError
+from ...comfy.subgraph import expand_subgraphs_ui
 from ...comfy.ui_convert import ConvertError, is_ui_format, ui_to_api
 from ...comfy.workflow import WorkflowError, describe_workflow, is_api_format
 from ...config import WorkflowParams, get_settings
@@ -57,13 +58,97 @@ def _resolve_backend(body: dict) -> tuple[str, str, str]:
 
 
 def _fetch_and_convert(client: ComfyClient, name: str) -> tuple[dict, list[str], bool]:
-    """取一个工作流并按需转 API 格式，返回 (api, warnings, was_ui)。"""
+    """取一个工作流并按需转 API 格式，返回 (api, warnings, was_ui)。
+
+    UI 格式若含「子图」，会先展开子图再转 API——否则顶层看不到 KSampler 等节点。
+    """
     raw = client.get_workflow(name)
     if is_ui_format(raw):
         info = client.object_info()
-        api, warnings = ui_to_api(raw, info)
-        return api, warnings, True
+        flat, sw = expand_subgraphs_ui(raw)
+        api, warnings = ui_to_api(flat, info)
+        return api, (sw + warnings), True
     return raw, [], False
+
+
+def _source_text_chunks(api: dict, start: Any, depth: int = 0, seen: set | None = None) -> list[dict]:
+    """顺着一条 text 输入，收集其背后所有「静态文本块」。
+
+    正向提示词常由 StringFunction / PromptCleaningMaid / WildcardProcessor 动态拼装，
+    无法还原成一个字符串；这里把参与拼装的各个文本块列出来，供用户了解与手动指定。
+    """
+    seen = seen if seen is not None else set()
+    if depth > 5 or not isinstance(start, list) or len(start) < 2:
+        return []
+    nid = str(start[0])
+    if nid in seen:
+        return []
+    seen.add(nid)
+    node = api.get(nid)
+    if not isinstance(node, dict):
+        return []
+    out: list[dict] = []
+    ins = node.get("inputs") or {}
+    for key, val in ins.items():
+        if isinstance(val, str) and key.lower() in ("text", "value", "string", "prompt", "text_b", "text_c", "wildcard", "populated"):
+            out.append({"node_id": nid, "class_type": node.get("class_type") or "", "input": key, "value": val})
+        elif isinstance(val, list):
+            out.extend(_source_text_chunks(api, val, depth + 1, seen))
+    return out
+
+
+def _resolve_cond(api: dict, link: Any, _depth: int = 0) -> tuple[dict | None, bool]:
+    """把一条条件链接解析成 ``(信息, 是否动态拼装)``；解析不到返回 (None, False)。"""
+    from ...comfy.workflow import _link_target
+
+    resolved = _link_target(api, link)
+    if not resolved or _depth > 5:
+        return None, False
+    nid, node = resolved
+    cls = node.get("class_type") or ""
+    text = (node.get("inputs") or {}).get("text")
+    if isinstance(text, str):
+        return {"node_id": str(nid), "class_type": cls, "value": text}, False
+    # 动态拼装：收集参与的文本块
+    chunks = _source_text_chunks(api, text if isinstance(text, list) else [str(nid), 0])
+    return {"node_id": str(nid), "class_type": cls, "value": "", "dynamic": True, "chunks": chunks}, True
+
+
+def _resolve_sampler_prompts(api: dict, desc: dict) -> dict:
+    """从 KSampler 的 positive/negative 解析正/负提示词。
+
+    复杂工作流里常有多个采样器（有的只做高修/重绘、条件走 GetCond 取不到文本），
+    这里对**每个采样器**都试一遍，按「能取到多少文本」打分，取最好的那个。
+    """
+    from ...comfy.workflow import SAMPLER_CLASSES
+
+    def score(res: tuple, dyn: bool) -> int:
+        if not res:
+            return 0
+        if not dyn:
+            return 2 if (res.get("value") or "").strip() else 1     # 静态文本
+        return 1 if res.get("chunks") else 0                          # 动态但有文本块
+
+    best = None
+    for nid, n in api.items():
+        if not (isinstance(n, dict) and n.get("class_type") in SAMPLER_CLASSES):
+            continue
+        ins = n.get("inputs") or {}
+        if not (isinstance(ins.get("positive"), list) or isinstance(ins.get("negative"), list)):
+            continue
+        p, pdyn = _resolve_cond(api, ins.get("positive"))
+        q, qdyn = _resolve_cond(api, ins.get("negative"))
+        total = score(p, pdyn) + score(q, qdyn)
+        if best is None or total > best[0]:
+            best = (total, str(nid), p, q)
+    if best is None:
+        return {"prompt_pos": None, "prompt_neg": None, "chunks": [],
+                "reason": "工作流里没有带条件输入的采样器（KSampler）"}
+    total, sid, p, q = best
+    out: dict = {"prompt_pos": p, "prompt_neg": q, "chunks": [], "reason": "", "sampler_id": sid}
+    if total == 0:
+        out["reason"] = f"采样器 {sid} 的正/负条件无法解析出文本（可能经过 Get/Set 间接引用）"
+    return out
 
 
 # ==========================================================================
@@ -144,13 +229,65 @@ def server_workflow(body: dict) -> dict:
     except ComfyError:
         info = {}
     desc = describe_workflow(api, info)
+    # 直接从 KSampler 的 positive/negative 链接解析「正/负条件」的实际文本节点，
+    # 让前端不必在一堆文本块里猜。解析不到时给出原因（如工作流用了子图）。
+    resolved = _resolve_sampler_prompts(api, desc)
     return {
         "name": name,
         "ui_format": was_ui,
         "warnings": warnings,
         "describe": desc,
+        "resolved": resolved,
         "node_ids": list(api.keys()),
     }
+
+
+@router.get("/comfy/server-workflow-download")
+def server_workflow_download(
+    name: str,
+    backend: str = "cloud",
+    fmt: str = Query("raw", alias="format"),
+):
+    """把出图后端上的某个工作流导出成本地文件下载。
+
+    ``format=raw`` → 后端上的原始文件（原样）；
+    ``format=api`` → 转成 API 格式后的版本（子图等无法转换的部分会被列出警告）。
+    """
+    import json as _json
+    from urllib.parse import quote
+
+    from fastapi.responses import Response
+
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(400, "缺少工作流名")
+    client = _client(_resolve_backend({"backend": backend})[0])
+    try:
+        raw = client.get_workflow(name)
+    except ComfyError as e:
+        raise HTTPException(502, str(e)) from e
+
+    if fmt == "api":
+        if is_ui_format(raw):
+            try:
+                info = client.object_info()
+            except ComfyError:
+                info = {}
+            api, _w = ui_to_api(raw, info)
+            data = api
+        else:
+            data = raw
+    else:
+        data = raw
+
+    text = _json.dumps(data, ensure_ascii=False, indent=2)
+    stem = name[:-5] if name.lower().endswith(".json") else name
+    fname = f"{stem}.api.json" if fmt == "api" else f"{stem}.json"
+    return Response(
+        content=text,
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}"},
+    )
 
 
 @router.post("/comfy/import-from-server")
