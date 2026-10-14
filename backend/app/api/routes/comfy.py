@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from ... import jobs as jobq
 from ...comfy import service, store
 from ...comfy.client import ComfyClient, ComfyError
+from ...comfy.subgraph import expand_subgraphs_ui
 from ...comfy.ui_convert import ConvertError, is_ui_format, ui_to_api
 from ...comfy.workflow import WorkflowError, describe_workflow, is_api_format
 from ...config import WorkflowParams, get_settings
@@ -57,13 +58,97 @@ def _resolve_backend(body: dict) -> tuple[str, str, str]:
 
 
 def _fetch_and_convert(client: ComfyClient, name: str) -> tuple[dict, list[str], bool]:
-    """取一个工作流并按需转 API 格式，返回 (api, warnings, was_ui)。"""
+    """取一个工作流并按需转 API 格式，返回 (api, warnings, was_ui)。
+
+    UI 格式若含「子图」，会先展开子图再转 API——否则顶层看不到 KSampler 等节点。
+    """
     raw = client.get_workflow(name)
     if is_ui_format(raw):
         info = client.object_info()
-        api, warnings = ui_to_api(raw, info)
-        return api, warnings, True
+        flat, sw = expand_subgraphs_ui(raw)
+        api, warnings = ui_to_api(flat, info)
+        return api, (sw + warnings), True
     return raw, [], False
+
+
+def _source_text_chunks(api: dict, start: Any, depth: int = 0, seen: set | None = None) -> list[dict]:
+    """顺着一条 text 输入，收集其背后所有「静态文本块」。
+
+    正向提示词常由 StringFunction / PromptCleaningMaid / WildcardProcessor 动态拼装，
+    无法还原成一个字符串；这里把参与拼装的各个文本块列出来，供用户了解与手动指定。
+    """
+    seen = seen if seen is not None else set()
+    if depth > 5 or not isinstance(start, list) or len(start) < 2:
+        return []
+    nid = str(start[0])
+    if nid in seen:
+        return []
+    seen.add(nid)
+    node = api.get(nid)
+    if not isinstance(node, dict):
+        return []
+    out: list[dict] = []
+    ins = node.get("inputs") or {}
+    for key, val in ins.items():
+        if isinstance(val, str) and key.lower() in ("text", "value", "string", "prompt", "text_b", "text_c", "wildcard", "populated"):
+            out.append({"node_id": nid, "class_type": node.get("class_type") or "", "input": key, "value": val})
+        elif isinstance(val, list):
+            out.extend(_source_text_chunks(api, val, depth + 1, seen))
+    return out
+
+
+def _resolve_cond(api: dict, link: Any, _depth: int = 0) -> tuple[dict | None, bool]:
+    """把一条条件链接解析成 ``(信息, 是否动态拼装)``；解析不到返回 (None, False)。"""
+    from ...comfy.workflow import _link_target
+
+    resolved = _link_target(api, link)
+    if not resolved or _depth > 5:
+        return None, False
+    nid, node = resolved
+    cls = node.get("class_type") or ""
+    text = (node.get("inputs") or {}).get("text")
+    if isinstance(text, str):
+        return {"node_id": str(nid), "class_type": cls, "value": text}, False
+    # 动态拼装：收集参与的文本块
+    chunks = _source_text_chunks(api, text if isinstance(text, list) else [str(nid), 0])
+    return {"node_id": str(nid), "class_type": cls, "value": "", "dynamic": True, "chunks": chunks}, True
+
+
+def _resolve_sampler_prompts(api: dict, desc: dict) -> dict:
+    """从 KSampler 的 positive/negative 解析正/负提示词。
+
+    复杂工作流里常有多个采样器（有的只做高修/重绘、条件走 GetCond 取不到文本），
+    这里对**每个采样器**都试一遍，按「能取到多少文本」打分，取最好的那个。
+    """
+    from ...comfy.workflow import SAMPLER_CLASSES
+
+    def score(res: tuple, dyn: bool) -> int:
+        if not res:
+            return 0
+        if not dyn:
+            return 2 if (res.get("value") or "").strip() else 1     # 静态文本
+        return 1 if res.get("chunks") else 0                          # 动态但有文本块
+
+    best = None
+    for nid, n in api.items():
+        if not (isinstance(n, dict) and n.get("class_type") in SAMPLER_CLASSES):
+            continue
+        ins = n.get("inputs") or {}
+        if not (isinstance(ins.get("positive"), list) or isinstance(ins.get("negative"), list)):
+            continue
+        p, pdyn = _resolve_cond(api, ins.get("positive"))
+        q, qdyn = _resolve_cond(api, ins.get("negative"))
+        total = score(p, pdyn) + score(q, qdyn)
+        if best is None or total > best[0]:
+            best = (total, str(nid), p, q)
+    if best is None:
+        return {"prompt_pos": None, "prompt_neg": None, "chunks": [],
+                "reason": "工作流里没有带条件输入的采样器（KSampler）"}
+    total, sid, p, q = best
+    out: dict = {"prompt_pos": p, "prompt_neg": q, "chunks": [], "reason": "", "sampler_id": sid}
+    if total == 0:
+        out["reason"] = f"采样器 {sid} 的正/负条件无法解析出文本（可能经过 Get/Set 间接引用）"
+    return out
 
 
 # ==========================================================================
@@ -155,38 +240,6 @@ def server_workflow(body: dict) -> dict:
         "resolved": resolved,
         "node_ids": list(api.keys()),
     }
-
-
-def _resolve_sampler_prompts(api: dict, desc: dict) -> dict:
-    """顺 KSampler 的 positive/negative 找 CLIPTextEncode.text，返回正/负条件。
-
-    返回 ``{prompt_pos:{node_id,value,class_type}, prompt_neg:{...}, reason:""}``；
-    解析不到时 ``reason`` 说明原因（无采样器 / 条件不在顶层 / 文本为空）。
-    """
-    from ...comfy.workflow import SAMPLER_CLASSES, _link_target
-
-    samplers = [(nid, n) for nid, n in api.items()
-                if isinstance(n, dict) and n.get("class_type") in SAMPLER_CLASSES]
-    if not samplers:
-        return {"prompt_pos": None, "prompt_neg": None,
-                "reason": "转换后的工作流里没有顶层采样器（很可能采样器在「子图」内，子图无法自动展开）"}
-    sid, snode = samplers[0]
-    sinp = snode.get("inputs") or {}
-    out: dict = {"prompt_pos": None, "prompt_neg": None, "reason": ""}
-    for cond_key, target in (("positive", "prompt_pos"), ("negative", "prompt_neg")):
-        resolved = _link_target(api, sinp.get(cond_key))
-        if not resolved:
-            out["reason"] = out.get("reason") or f"采样器 {sid} 的 {cond_key} 没有连接到文本节点"
-            continue
-        nid, node = resolved
-        text = (node.get("inputs") or {}).get("text")
-        if isinstance(text, str):
-            out[target] = {"node_id": str(nid), "class_type": node.get("class_type") or "", "value": text}
-        else:
-            out["reason"] = out.get("reason") or (
-                f"采样器的 {cond_key} 连到 {node.get('class_type')}（不是直接的 CLIPTextEncode，"
-                "文本可能是动态拼装的），无法直接取出文本")
-    return out
 
 
 @router.get("/comfy/server-workflow-download")
