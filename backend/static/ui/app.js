@@ -2626,8 +2626,17 @@ async function openComfySettings() {
       return;
     }
     const d = r.describe || {};
+    const resolved = r.resolved || {};
     const prompts = (d.text_params || []).slice(0, 8);
     const lora = d.lora || { slots: [] };
+    const rp = resolved.prompt_pos, rn = resolved.prompt_neg;
+    const condCard = (label, kind, obj, cls) => obj ? `
+      <div class="mini-card" style="padding:8px 10px;margin-top:6px;border-color:${cls}">
+        <div class="row" style="gap:6px"><b style="font-size:13px">${label}</b>
+          <span class="pill ${kind}"><i class="dotm"></i>来自 KSampler</span>
+          <span class="pill tag">${esc(obj.class_type)}#${esc(obj.node_id)}</span></div>
+        <div class="mut" style="font-size:11.5px;margin-top:5px;word-break:break-all;white-space:pre-wrap;max-height:120px;overflow:auto">${esc(obj.value || '（空）')}</div>
+      </div>` : '';
     el.innerHTML = `
       <div class="row" style="gap:8px">
         <b>${esc(name)}</b>
@@ -2640,13 +2649,20 @@ async function openComfySettings() {
       ${(r.warnings || []).length ? `<div class="empty" style="color:var(--warn);text-align:left;font-size:12px;margin-top:6px">⚠ ${r.warnings.map(esc).join('<br>⚠ ')}</div>` : ''}
       ${(d.missing_nodes || []).length ? `<div class="empty" style="color:var(--err);text-align:left;font-size:12px;margin-top:6px">缺节点：${d.missing_nodes.map(esc).join('、')}（这台 ComfyUI 上没装/没加载，可能跑不了）</div>` : ''}
 
-      <div style="margin-top:10px"><b style="font-size:13px">参数</b>
-        <span class="mut" style="font-size:12px">　带「疑似提示词」标记的通常就是正/负提示词</span></div>
+      <div style="margin-top:12px"><b style="font-size:13px">正 / 负条件（自动从 KSampler 解析）</b></div>
+      ${(rp || rn)
+        ? condCard('正向条件', 'ok', rp, 'var(--ok)') + condCard('负向条件', 'err', rn, 'var(--line2)')
+        : `<div class="empty" style="text-align:left;font-size:12px;margin-top:6px;color:var(--warn)">
+             ⚠ 没能自动解析出采样器的正/负条件：${esc(resolved.reason || '未知原因')}<br>
+             请在下方的文本块里手动勾选正/负提示词。</div>`}
+
+      <div style="margin-top:12px"><b style="font-size:13px">其他文本块（可选，供手动指定兜底）</b>
+        <span class="mut" style="font-size:12px">　上面已自动解析时可忽略这里</span></div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px;margin-top:6px">
         ${prompts.map((t, i) => `
           <label class="mini-card" style="padding:8px 10px;display:block;cursor:pointer">
             <input type="checkbox" class="cs-param" data-node="${esc(t.node_id)}" data-input="${esc(t.input)}"
-                   ${t.looks_prompt && i < 2 ? 'checked' : ''} style="width:auto">
+                   ${((rp && rp.node_id === t.node_id) || (rn && rn.node_id === t.node_id)) ? 'checked' : (t.looks_prompt && !rp && !rn && i < 2 ? 'checked' : '')} style="width:auto">
             <span class="pill tag" style="margin-left:6px">${esc(t.class_type)}#${esc(t.node_id)}</span>
             ${t.looks_prompt ? '<span class="pill warn" style="margin-left:4px">疑似提示词</span>' : ''}
             <div class="mut" style="font-size:11px;margin-top:4px;word-break:break-all">${esc((t.value || '').slice(0, 90))}</div>
