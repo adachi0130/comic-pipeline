@@ -48,6 +48,40 @@ def data_url(data):
 
 
 class DataSafetyTests(unittest.TestCase):
+    def test_med_save_review_and_book_export_keep_versions(self):
+        first = self.client.post('/api/projects/1/med-doc/page:1', json={'doc': '{}', 'png': data_url(png('red'))})
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertTrue(first.json()['has_preview'])
+        first_page = self.session.get(Artifact, first.json()['page_image_id'])
+        old_path = Path(first_page.path)
+        old_bytes = old_path.read_bytes()
+        self.assertEqual(first_page.status, 'review')
+        reviewed = self.client.post('/api/projects/1/page-images/approve-all', json={'page_ref': 'page:1'})
+        self.assertEqual(reviewed.json()['approved'], 2)
+        self.assertTrue(self.client.get('/api/projects/1/readiness').json()['S6']['ready'])
+        exported = book.handle(self.session, Job(project_id=1, payload={'format': 'cbz'}))
+        old_book = A.current(self.session, 1, 'book', 'book')
+        with zipfile.ZipFile(exported['files']['cbz']) as archive:
+            self.assertEqual(len(archive.namelist()), 1)
+            self.assertEqual(archive.read(archive.namelist()[0]), old_bytes)
+        second = self.client.post('/api/projects/1/med-doc/page:1', json={'doc': '{"changed":true}', 'png': data_url(png('blue'))})
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()['version'], 2)
+        self.assertNotEqual(second.json()['page_image_id'], first.json()['page_image_id'])
+        self.session.expire_all()
+        self.assertEqual(self.session.get(Artifact, old_book.id).status, 'stale')
+        self.assertEqual(old_path.read_bytes(), old_bytes)
+        self.assertFalse(self.client.get('/api/projects/1/readiness').json()['S6']['ready'])
+
+    def test_med_doc_without_preview_remains_editable(self):
+        response = self.client.post('/api/projects/1/med-doc/page:1', json={'doc': '{"objects":[]}'})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()['has_preview'])
+        self.assertIsNone(response.json()['page_image_id'])
+        reopened = self.client.get('/api/projects/1/med-doc/page:1')
+        self.assertEqual(reopened.status_code, 200)
+        self.assertEqual(reopened.json()['doc'], '{"objects":[]}')
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix="api-safety-", dir=Path(__file__).parent)
         self.addCleanup(tmp.cleanup)

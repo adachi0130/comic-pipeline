@@ -425,12 +425,28 @@ def save_med_doc(project_id: int, page_ref: str, body: dict, session: Session = 
             raise HTTPException(403, str(exc)) from exc
         except Exception:  # noqa: BLE001 - 预览存不了不影响主流程
             png_path = ""
+    upstream = []
+    script = A.current(session, project_id, ArtifactKind.PAGE_SCRIPT.value, page_ref)
+    if script is not None:
+        upstream.append(script)
+    panel_prefix = f"panel:{page_ref.split(':', 1)[1]}."
+    upstream.extend(a for a in A.all_current(session, project_id, ArtifactKind.IMAGE.value)
+                    if a.ref.startswith(panel_prefix))
     art = A.create(
         session, project_id=project_id, kind=ArtifactKind.MED_DOC.value, ref=page_ref,
-        payload={"doc": doc_text}, path=png_path, status=ArtifactStatus.REVIEW.value,
+        payload={"doc": doc_text}, path=png_path, status=ArtifactStatus.REVIEW.value, inputs=upstream,
     )
+    page_image = None
+    if png_path:
+        # 画布存档和用于成册的整页快照同时生成新版本，供审核/导出继续使用。
+        page_image = A.create(
+            session, project_id=project_id, kind=ArtifactKind.PAGE_IMAGE.value, ref=page_ref,
+            payload={"source": "med_editor", "med_doc_id": art.id}, path=png_path,
+            status=ArtifactStatus.REVIEW.value, inputs=[art],
+        )
     session.commit()
-    return {"ok": True, "artifact_id": art.id, "version": art.version}
+    return {"ok": True, "artifact_id": art.id, "version": art.version,
+            "has_preview": bool(png_path), "page_image_id": page_image.id if page_image else None}
 
 
 @router.get("/projects/{project_id}/med-doc/{page_ref}")

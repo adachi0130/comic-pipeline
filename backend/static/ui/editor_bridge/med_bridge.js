@@ -71,7 +71,45 @@
     return sortPanelsInReadingOrder(panels, rightToLeft !== false);
   }
 
+  let startupLoadBookSize;
   const api = {
+    /** 嵌入模式由生产线恢复画布，避免 MED 自带恢复/首次教程遮住或覆盖项目页。 */
+    prepareWorkbench() {
+      if (typeof resizeTimer !== "undefined") clearTimeout(resizeTimer);
+      if (typeof initResizeCanvas === "function") {
+        // MED 的 onload 回调会延迟创建空页；嵌入后的窗口变化只应适配现有画布。
+        initResizeCanvas = function () {
+          if (typeof resizeTimer !== "undefined") clearTimeout(resizeTimer);
+          if (typeof forcedAdjustCanvasSize === "function") forcedAdjustCanvasSize();
+        };
+      }
+      if (typeof loadBookSize === "function") {
+        startupLoadBookSize = loadBookSize;
+        loadBookSize = function (...args) {
+          // 启动时创建空页会异步恢复 MED 自己的页面库，生产线直接载入项目页。
+          if (!args[2] && !args[3]) return Promise.resolve();
+          return startupLoadBookSize.apply(this, args);
+        };
+      }
+      if (typeof AutoSaveManager !== "undefined") {
+        AutoSaveManager.init = async () => {};
+        AutoSaveManager.checkRecovery = async () => false;
+      }
+      if (typeof TutorialManager !== "undefined") {
+        TutorialManager.startupLanguageStep = async () => {};
+        TutorialManager.startupTutorialStep = async () => {};
+      }
+      try {
+        if (!localStorage.getItem("language") && typeof changeLanguage === "function") changeLanguage("zh");
+      } catch (e) { /* 隐私模式下仍允许编辑，不阻塞工作台 */ }
+    },
+
+    /** 启动后恢复手动新建页能力，给空白编辑提供默认画布。 */
+    async waitForWorkbench() {
+      if (startupLoadBookSize) loadBookSize = startupLoadBookSize;
+      if (typeof resizeCanvasByNum === "function") resizeCanvasByNum(704, 996);
+    },
+
     /** 探测桥是否可用。 */
     ready() {
       const miss = missing();
@@ -208,17 +246,31 @@
     /** 导出当前画布 JSON（含已贴图/已加对话气泡等编辑状态），可日后 loadDoc 继续编辑。 */
     exportDoc() {
       // eslint-disable-next-line no-undef
-      return JSON.stringify(canvas.toJSON(["text2img_prompt", "name", "relatedPoly", "isPanel"]));
+      return JSON.stringify({
+        ...canvas.toJSON(["text2img_prompt", "name", "relatedPoly", "isPanel"]),
+        width: canvas.getWidth(), height: canvas.getHeight(),
+      });
     },
 
     /** 载入画布 JSON，继续编辑。 */
     async loadDoc(docJson) {
       const obj = typeof docJson === "string" ? JSON.parse(docJson) : docJson;
+      if (Number.isFinite(obj.width) && Number.isFinite(obj.height) && obj.width > 0 && obj.height > 0) {
+        if (typeof resizeCanvasByNum === "function") resizeCanvasByNum(obj.width, obj.height);
+        else canvas.setDimensions({ width: obj.width, height: obj.height });
+      }
       await new Promise((resolve) => {
         // eslint-disable-next-line no-undef
         canvas.loadFromJSON(obj, () => { canvas.renderAll(); resolve(); });
       });
       return { ok: true, objects: (canvas.getObjects && canvas.getObjects().length) || 0 };
+    },
+
+    /** Fabric 事件只在桥中订阅，主工作台通过包装页接收未保存状态。 */
+    subscribeChanges(callback) {
+      const events = ["object:added", "object:modified", "object:removed", "path:created", "text:changed"];
+      for (const event of events) canvas.on(event, callback);
+      return () => { for (const event of events) canvas.off(event, callback); };
     },
 
     /** 快照：每格的现有提示词与是否有图，便于后端核对。 */

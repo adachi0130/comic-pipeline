@@ -138,6 +138,17 @@ pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:1
 .cs-lora-table th{white-space:nowrap}
 .cs-lora-table td:nth-child(2){width:100%;min-width:220px}
 .cs-lora-name{width:100%;min-width:180px}
+.main.editor-active{max-width:none;min-width:0;padding:18px 22px 28px}
+.editor-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.editor-toolbar select{width:auto;min-width:170px;max-width:100%}
+.editor-frame-wrap{position:relative;border:1px solid var(--line2);border-radius:12px;overflow:hidden;background:#f8fafc;min-width:0}
+.editor-frame-wrap iframe{display:block;width:100%;height:calc(100dvh - 240px);min-height:590px;border:0;background:#fff}
+.editor-empty{padding:48px 20px;text-align:center;color:var(--muted)}
+.editor-feedback{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--muted)}
+body.editor-expanded .app{grid-template-columns:minmax(0,1fr)}
+body.editor-expanded .side{display:none}
+body.editor-expanded .main{padding:10px 14px}
+body.editor-expanded .editor-frame-wrap iframe{height:calc(100dvh - 180px)}
 .toast{position:fixed;right:20px;bottom:20px;background:#fff;border:1px solid var(--line2);border-left:4px solid var(--accent);
   border-radius:11px;padding:12px 16px;box-shadow:0 12px 30px -10px rgba(16,24,40,.3);max-width:360px;font-size:13.5px;z-index:80}
 .toast.err{border-left-color:var(--err)}
@@ -197,13 +208,14 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
       <button data-tab="prompts"><span class="ic">✧</span>提示词</button>
       <button data-tab="images"><span class="ic">▤</span>出图</button>
       <button data-tab="compose"><span class="ic">▦</span>分页合成</button>
+      <button data-tab="editor"><span class="ic">✎</span>漫画编辑器</button>
       <button data-tab="settings"><span class="ic">⚙</span>设置</button>
     </div>
     <div class="sidetitle">当前项目</div>
     <div class="side-project" id="cur-proj"><span class="mut">未选择</span></div>
     <div class="sidetitle">快捷入口</div>
     <div class="nav">
-      <button onclick="window.open('/editor/','_blank')"><span class="ic">↗</span>MED 编辑器</button>
+      <button id="open-editor-workbench"><span class="ic">✎</span>编辑漫画页</button>
       <button onclick="window.open('/ui/editor_bridge/index.html','_blank')"><span class="ic">↗</span>MED 桥自检</button>
       <button onclick="window.open('http://localhost:8000','_blank')"><span class="ic">↗</span>酒馆</button>
     </div>
@@ -567,8 +579,7 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
         <h2>分页合成 <span class="pill" id="cps-info">—</span>
           <span class="mut" style="font-size:12px;font-weight:400">把选好的画面按漫画框拼成整页</span>
         </h2>
-        <div class="h2sub">左边选择要合成的页，右边预览该页的漫画框与已选画面；点「去 MED 合成」会自动装框、贴图，
-          然后你在 MED 里继续编辑，或直接「导出整页」。</div>
+        <div class="h2sub">左边选页，右边预览画框和已选图片；点「编辑漫画页」在当前工作台装框、贴图、精修并保存。</div>
         <div class="row">
           <button class="sm" id="cps-reload">刷新</button>
           <button class="sm" id="cps-compose-all">合成全部就绪页</button>
@@ -592,6 +603,24 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
           <span class="fold-ic">▾</span></h2>
         <div id="cps-finished" style="margin-top:12px"><div class="empty">还没有合成结果</div></div>
       </div>
+    </section>
+
+    <section id="tab-editor" class="hidden" aria-label="漫画页编辑工作台">
+      <div class="editor-toolbar">
+        <button class="sm" id="ed-back">← 返回分页合成</button>
+        <label class="fld" for="ed-page" style="margin:0">漫画页</label>
+        <select id="ed-page"><option value="">先选择项目与漫画页</option></select>
+        <span class="pill" id="ed-state" role="status" aria-live="polite">未打开</span>
+        <div class="spacer"></div>
+        <button class="sm" id="ed-expand" aria-pressed="false">扩大画布</button>
+        <button class="sm" id="ed-window" disabled>独立窗口</button>
+        <button class="sm primary" id="ed-save" disabled>保存漫画页</button>
+      </div>
+      <div class="editor-frame-wrap">
+        <div class="editor-empty" id="ed-empty">选择漫画页后，可在这里编辑图层、气泡、文字和构图。</div>
+        <iframe id="ed-frame" title="漫画页编辑器" class="hidden"></iframe>
+      </div>
+      <div class="editor-feedback"><span id="ed-message" role="status" aria-live="polite">保存后仍停留在编辑器，随时返回查看整页预览。</span></div>
     </section>
 
     <!-- 设置 -->
@@ -631,6 +660,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=77"></script>
+<script type="module" src="/ui/app.js?v=78"></script>
 </body>
 </html>

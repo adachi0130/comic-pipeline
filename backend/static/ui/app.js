@@ -3,11 +3,14 @@
  * 所有数据按当前项目隔离，切换项目会全量刷新。
  */
 
+import { createEditorWorkbench } from './editor-workbench.js';
+
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
 const API = '';
 
 const state = { projectId: null, project: null, meta: null, templates: [], techniques: [] };
+const editorWorkbench = createEditorWorkbench({ state, api, $, toast, switchTab, loadCompose, refreshGates, pageLabel });
 
 // ---------- 工具 ----------
 async function api(path, opts = {}) {
@@ -40,6 +43,7 @@ const TITLES = {
   prompts: ['提示词', 'S3 分镜提示词：每格一句出图词'],
   images: ['出图', '连上后端 → 选工作流 → 出图挑图'],
   compose: ['分页合成', '选好的画面按漫画框拼成整页'],
+  editor: ['漫画编辑器', '在当前工作台精修漫画页，保存后继续编辑'],
   settings: ['设置', 'LLM 供应商 / ComfyUI / 阶段绑定'],
 };
 $$('.nav button[data-tab]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
@@ -68,7 +72,9 @@ document.addEventListener('click', (e) => {
 });
 function switchTab(tab) {
   $$('.nav button[data-tab]').forEach((x) => x.classList.toggle('active', x.dataset.tab === tab));
-  ['projects', 'novel', 'pipeline', 'pages', 'prompts', 'images', 'compose', 'settings'].forEach((t) => $('#tab-' + t).classList.toggle('hidden', t !== tab));
+  Object.keys(TITLES).forEach((t) => $('#tab-' + t).classList.toggle('hidden', t !== tab));
+  $('.main').classList.toggle('editor-active', tab === 'editor');
+  if (tab !== 'editor') editorWorkbench.collapse();
   try { localStorage.setItem('comic.tab', tab); } catch { /* ignore */ }   // 记住当前菜单，刷新后回到这里
   $('#view-title').textContent = TITLES[tab][0];
   $('#view-sub').textContent = TITLES[tab][1];
@@ -78,6 +84,7 @@ function switchTab(tab) {
   if (tab === 'pages') loadPages();
   if (tab === 'prompts') loadPrompts();
   if (tab === 'compose') loadCompose();
+  if (tab === 'editor') editorWorkbench.loadPages();
   if (tab === 'images' || tab === 'prompts') ensureLoraDatalist();
   if (tab === 'settings') { loadProviders(); loadStageBinding(); }
   if (tab === 'projects') {
@@ -123,6 +130,8 @@ function showProjectView(which) {
 }
 
 async function pickProject(id) {
+  if (state.editor?.dirty && state.editor.projectId !== id && !confirm('当前漫画页有未保存的修改。切换项目会关闭它，确定继续吗？')) return;
+  if (state.editor && state.editor.projectId !== id) editorWorkbench.reset();
   state.projectId = id;
   try { localStorage.setItem('comic.lastProjectId', String(id)); } catch { /* 隐私模式忽略 */ }
   state.project = await api('/api/projects/' + id);
@@ -142,6 +151,9 @@ async function pickProject(id) {
   if (active === 'novel') loadNovel();
   if (active === 'images') loadWorkbench();
   if (active === 'prompts') loadPrompts();
+  if (active === 'compose') loadCompose();
+  if (active === 'pages') loadPages();
+  if (active === 'editor') editorWorkbench.loadPages();
 }
 
 // 元信息（阶段定义/模板/技法）懒加载 + 自愈：初次失败时下次重试
@@ -3032,9 +3044,7 @@ async function renderComposeFinished() {
 
 // 打开 MED 工作台（每次都带防缓存时间戳，避免旧页面缓存了旧按钮）；back= 保存后跳回前端分页合成
 function openMedPage(pageRef, mode) {
-  const back = encodeURIComponent('/ui/?tab=compose');
-  const url = `/ui/editor_bridge/index.html?page=${encodeURIComponent(pageRef)}&p=${state.projectId}&${mode}&back=${back}&_=${Date.now()}`;
-  window.open(url, '_blank');
+  return editorWorkbench.open(pageRef, mode);
 }
 
 // 画框按漫画阅读顺序（右→左、上→下）排序，用于分页合成预览
@@ -3080,8 +3090,8 @@ function showComposePage(pageRef) {
         ? `<button class="sm primary" id="cps-approve">通过</button>
            <button class="sm" id="cps-reject">驳回</button>` : ''}
       <button class="sm" id="cps-changetpl">更换模板</button>
-      <button class="sm primary" id="cps-do">去 MED 合成</button>
-      <button class="sm" id="cps-open">在 MED 打开</button>
+      <button class="sm primary" id="cps-do">${p.med_doc_id ? '继续编辑漫画页' : '编辑漫画页'}</button>
+      <button class="sm" id="cps-open" title="打开关联这页的空白画布">空白编辑</button>
       <button class="sm" id="cps-run">后台合成</button>
     </div>
     <div class="mut" style="font-size:12px;margin-top:6px">漫画框 ${Math.round(cw)}×${Math.round(ch)} · ${esc(p.layout_desc || '')}</div>
@@ -3129,8 +3139,7 @@ function showComposePage(pageRef) {
 /** 打开 MED 并自动装模板 + 贴好已选画面；openOnly=true 时只打开不合成。 */
 function medCompose(page, openOnly) {
   if (openOnly) { openMedPage(page.page_ref, 'plain=1'); return; }
-  openMedPage(page.page_ref, 'auto=1');
-  toast('已在新标签打开 MED，正在自动装框贴图…', 'ok');
+  openMedPage(page.page_ref, page.med_doc_id ? 'edit=1' : 'auto=1');
 }
 
 // ---------- 启动 ----------

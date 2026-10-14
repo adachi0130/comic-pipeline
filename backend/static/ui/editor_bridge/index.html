@@ -26,6 +26,9 @@
   .side h3{font-size:13px;margin:14px 0 6px;color:var(--muted);font-weight:600}
   pre{background:#0f1115;border:1px solid var(--line);border-radius:6px;padding:8px;font-size:11.5px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow:auto}
   .hint{color:var(--muted);font-size:12px}
+  body.embedded .top,body.embedded>.row,body.embedded .side{display:none}
+  body.embedded .layout{height:100dvh;grid-template-columns:minmax(0,1fr)}
+  @media(max-width:760px){body:not(.embedded) .layout{grid-template-columns:minmax(0,1fr)}body:not(.embedded) .side{display:none}}
 </style>
 </head>
 <body>
@@ -51,7 +54,7 @@
 
 <div class="layout">
   <div class="frame-wrap">
-    <iframe id="med" src="/editor/" title="Manga Editor Desu"></iframe>
+    <iframe id="med" title="Manga Editor Desu"></iframe>
   </div>
   <div class="side">
     <h3>桥状态</h3>
@@ -68,6 +71,22 @@
 const frame = document.getElementById('med');
 const $ = (id) => document.getElementById(id);
 let bridgeSrc = null;
+const context = new URLSearchParams(location.search);
+const embedded = context.get('embedded') === '1' && window.parent !== window;
+document.body.classList.toggle('embedded', embedded);
+let revision = 0;
+let savedRevision = 0;
+let unsubscribeChanges;
+
+function notify(event, extra = {}) {
+  if (!embedded) return;
+  window.parent.postMessage({ type: 'comic-editor:state', event,
+    projectId: context.get('p'), pageRef: context.get('page'), session: context.get('session'), ...extra }, location.origin);
+}
+window.addEventListener('message', (event) => {
+  if (!embedded || event.origin !== location.origin || event.source !== window.parent || event.data?.type !== 'comic-editor:command') return;
+  if (event.data.command === 'save') $('btn-save').click();
+});
 
 const setMsg = (t, cls) => { const e = $('msg'); e.textContent = t || ''; e.style.color = cls === 'err' ? '#ff6b6b' : cls === 'ok' ? '#3ecf8e' : '#8b93a1'; };
 const setBadge = (id, text, cls) => { const e = $(id); e.textContent = text; e.className = 'badge' + (cls ? ' ' + cls : ''); };
@@ -122,10 +141,22 @@ async function loadTemplates() {
 }
 
 frame.addEventListener('load', async () => {
-  setBadge('med-state', 'MED：已加载', 'ok');
-  await ensure();
-  showEditContext();
-  autoCompose();
+  if (!frame.hasAttribute('src') && !frame.hasAttribute('srcdoc')) return;
+  try {
+    setBadge('med-state', 'MED：已加载', 'ok');
+    const bridge = await ensure();
+    if (!bridge || !bridge.ready().ok) throw new Error('漫画编辑器尚未就绪，请检查 MED 安装和桥版本');
+    if (embedded) await bridge.waitForWorkbench();
+    showEditContext();
+    const result = await autoCompose();
+    if (result === false) return;
+    unsubscribeChanges?.();
+    unsubscribeChanges = bridge.subscribeChanges(() => {
+      revision++;
+      notify('dirty', { message: '当前漫画页有未保存的修改。' });
+    });
+    notify('ready', { message: $('msg').textContent || '漫画页已就绪，可以编辑并保存。' });
+  } catch (e) { setMsg(e.message, 'err'); notify('error', { message: e.message }); }
 });
 
 // 顶部显示「正在编辑：第X页第Y格 · 项目 n」，无 page 参数时禁用保存并给提示
@@ -180,9 +211,9 @@ async function autoCompose() {
   try {
     const board = await (await fetch(`/api/projects/${pid}/compose-board`)).json();
     const pg = (board.pages || []).find((x) => x.page_ref === page);
-    if (!pg) { setMsg('找不到该页：' + page, 'err'); return; }
+    if (!pg) { setMsg('找不到该页：' + page, 'err'); notify('error', { message: '找不到当前漫画页，请返回分页合成刷新列表。' }); return false; }
     const t = await (await fetch('/api/templates/' + encodeURIComponent(pg.template_id))).json();
-    if (!t.svg) { setMsg('模板 SVG 缺失：' + pg.template_id, 'err'); return; }
+    if (!t.svg) { setMsg('模板 SVG 缺失：' + pg.template_id, 'err'); notify('error', { message: '当前页的模板 SVG 缺失，请重新生成模板菜单。' }); return false; }
     const r = await api.installTemplate(t.svg, t.dir === 'landscape');
     setMsg(`已装 ${r.panels} 格，贴图中…`);
     let placed = 0, want = 0;
@@ -199,7 +230,7 @@ async function autoCompose() {
     try { api.applyPrompts(pg.panels.map((p) => p.prompt || ''), { rightToLeft: true, append: false }); } catch (e) { /* ignore */ }
     setMsg(`已装框并贴入 ${placed}/${want} 张，可在 MED 里继续编辑（改完点「保存到编辑中的页」）`, 'ok');
     try { const url = api.exportPNG(1); $('preview').src = url; $('preview').style.display = 'block'; } catch (e) { /* ignore */ }
-  } catch (e) { setMsg('自动合成失败：' + e.message, 'err'); }
+  } catch (e) { setMsg('自动合成失败：' + e.message, 'err'); notify('error', { message: '打开漫画页失败：' + e.message }); return false; }
 }
 
 // 保存当前画布（含编辑）到项目，供以后继续编辑
@@ -208,6 +239,10 @@ $('btn-save').addEventListener('click', async () => {
   const page = q.get('page'), pid = q.get('p');
   if (!page || !pid) { setMsg('没有关联的项目/页，无法保存', 'err'); return; }
   const api = await ensure(); if (!api) return;
+  const button = $('btn-save');
+  if (button.disabled) return;
+  button.disabled = true;
+  const capturedRevision = revision;
   setMsg('保存中…');
   try {
     const doc = api.exportDoc();
@@ -218,12 +253,18 @@ $('btn-save').addEventListener('click', async () => {
       body: JSON.stringify({ doc, png }),
     });
     const j = await r.json();
-    if (!r.ok) { setMsg('保存失败：' + (j.detail || ''), 'err'); return; }
-    setMsg(`已保存到「编辑中的页」（v${j.version}），正在返回前端…`, 'ok');
+    if (!r.ok) throw new Error(j.detail || '后端保存失败');
+    savedRevision = capturedRevision;
+    const dirty = revision !== savedRevision;
+    const message = j.has_preview === false ? `画布已保存 v${j.version}，但整页快照未生成，请重试保存以便整册导出。`
+      : `漫画页已保存 v${j.version}${dirty ? '，保存期间的新修改仍需再次保存。' : '，可继续编辑或返回预览。'}`;
+    setMsg(message, 'ok');
+    notify('saved', { version: j.version, artifactId: j.artifact_id, dirty, message });
     // 自动跳回前端「分页合成」页（tab=compose 让前端停在分页合成菜单）
     const back = q.get('back');
-    if (back) setTimeout(() => { location.href = back; }, 700);
-  } catch (e) { setMsg('保存失败：' + e.message, 'err'); }
+    if (!embedded && back && !dirty) setTimeout(() => { location.href = back; }, 700);
+  } catch (e) { setMsg('保存失败：' + e.message, 'err'); notify('error', { message: '保存失败：' + e.message }); }
+  finally { button.disabled = false; }
 });
 
 $('btn-install').addEventListener('click', async () => {
@@ -259,6 +300,21 @@ $('btn-export').addEventListener('click', async () => {
 });
 
 loadTemplates();
+if (embedded) {
+  try {
+    await loadBridge();
+    const response = await fetch('/editor/');
+    if (!response.ok) throw new Error('无法加载漫画编辑器，请检查 MED 安装');
+    const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
+    const base = doc.createElement('base'); base.href = new URL('/editor/', location.origin).href;
+    const script = doc.createElement('script');
+    script.textContent = bridgeSrc + '\ndocument.addEventListener("DOMContentLoaded", () => window.__MED.prepareWorkbench(), true);';
+    doc.head.prepend(base, script);
+    frame.srcdoc = '<!doctype html>' + doc.documentElement.outerHTML;
+  } catch (e) { setMsg(e.message, 'err'); notify('error', { message: e.message }); }
+} else {
+  frame.src = '/editor/';
+}
 </script>
 </body>
 </html>
