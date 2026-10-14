@@ -58,6 +58,8 @@ def resolve_provider(session: Session, stage: str) -> tuple[LLMProvider, Provide
     provider: LLMProvider | None = None
     if sm is not None:
         provider = session.get(LLMProvider, sm.provider_id)
+        if provider is not None and not provider.enabled:
+            provider = None
     if provider is None:
         provider = session.scalars(
             select(LLMProvider).where(LLMProvider.enabled.is_(True)).order_by(LLMProvider.id)

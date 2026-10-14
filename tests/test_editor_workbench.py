@@ -15,12 +15,12 @@ import zipfile
 import io
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 
 def main():
     from test_data_safety import DataSafetyTests, A, Template, Job, Project, book, png, data_url
-    from app.api.routes import projects, meta, bridge, providers, assets, comfy, jobs, pipeline
+    from app.api.routes import projects, meta, bridge, providers, assets, comfy, jobs, pipeline, prompts
     from app.comfy import store
     from sqlalchemy.orm import Session
     from playwright.sync_api import sync_playwright, expect
@@ -47,11 +47,16 @@ def main():
     case.artifact('page_script', 'page:1', payload={'template_id': 'vertical:test', 'panels': [{'panel_order': 1}]})
     case.artifact('image', 'panel:1.1', payload={'candidates': [case.candidate(case.file('candidates/panel.png', png('skyblue')))], 'selected_index': 0})
     app = case.client.app
-    for module in (projects, meta, bridge, providers, assets, comfy, jobs):
+    for module in (projects, meta, bridge, providers, assets, comfy, jobs, prompts):
         app.include_router(module.router, prefix='/api')
     captures = []
     api_lock = threading.Lock()
     delay_project_one = threading.Event()
+    fake_comfy = Mock(base_url='http://mock.invalid', ping=Mock(return_value=True),
+                      object_info=Mock(return_value={}), list_models=Mock(return_value=[]),
+                      list_workflows=Mock(return_value=[]), list_loras=Mock(return_value=[]),
+                      list_checkpoints=Mock(return_value=[]), list_samplers=Mock(return_value=[]),
+                      list_schedulers=Mock(return_value=[]))
 
     def simulate_enqueue(kind, *, project_id=None, stage='', payload=None):
         assert kind == 'book', '冒烟检查不运行真实出图或模型作业'
@@ -78,6 +83,12 @@ def main():
         def do_PATCH(self):
             self.api()
 
+        def do_PUT(self):
+            self.api()
+
+        def do_DELETE(self):
+            self.api()
+
         def api(self):
             content_disposition = None
             if self.path.split('?')[0] == '/api/health':
@@ -96,7 +107,7 @@ def main():
                 if delay_project_one.is_set() and self.path.startswith('/api/projects/1/compose-board'):
                     time.sleep(0.6)
                 content = self.rfile.read(int(self.headers.get('Content-Length', 0)))
-                with api_lock, patch.object(comfy.service, 'get_client', side_effect=RuntimeError('模拟环境不访问 ComfyUI')), patch.object(pipeline.jobq, 'enqueue', side_effect=simulate_enqueue):
+                with api_lock, patch.object(comfy.service, 'get_client', side_effect=RuntimeError('模拟环境不访问 ComfyUI')), patch.object(pipeline.jobq, 'enqueue', side_effect=simulate_enqueue), patch.object(comfy, '_client', return_value=fake_comfy), patch.object(comfy, '_client_from', return_value=fake_comfy):
                     response = case.client.request(self.command, self.path, content=content,
                                                    headers={'Content-Type': 'application/json'})
                 body, status, content_type = response.content, response.status_code, response.headers.get('content-type', 'application/json')
@@ -213,6 +224,75 @@ def main():
             page.locator('#project-switch').select_option('1')
             expect(page.locator('#export-history')).to_contain_text('版本 1')
             page.screenshot(path=str(screenshots / 'navigation-desktop.png'))
+            # 从直接入口编辑全局供应商和三个阶段模型，重开后仍显示实际绑定。
+            page.locator('.nav [data-tab="settings"][data-section="providers"]').click()
+            page.locator('#pv-name').fill('测试供应商')
+            page.locator('#pv-url').fill('http://mock.invalid/v1')
+            page.locator('#pv-model').fill('model-a')
+            page.locator('#pv-key').fill('not-a-real-key')
+            page.locator('#btn-addpv').click()
+            expect(page.locator('#pvlist')).to_contain_text('测试供应商')
+            provider_id = page.locator('[data-pv-edit]').first.get_attribute('data-pv-edit')
+            page.locator('[data-pv-edit]').first.click()
+            expect(page.locator('#pv-key')).to_have_value('')
+            page.locator('#pv-model').fill('model-b')
+            page.locator('#btn-addpv').click()
+            expect(page.locator('#pvlist')).to_contain_text('model-b')
+            expect(page.locator('#pvlist')).to_contain_text('已设 Key')
+            page.locator('.nav [data-tab="settings"][data-section="models"]').click()
+            expect(page.locator('.stage-bind')).to_have_count(3)
+            page.locator('.stage-bind[data-stage="S1"]').select_option(provider_id)
+            expect(page.locator('[data-model-state="S1"]')).to_contain_text('已保存')
+            page.locator('.nav [data-tab="settings"][data-section="comfy"]').click()
+            expect(page.locator('#settings-comfy-overview')).to_contain_text('还没有选定工作流')
+            page.locator('.nav [data-tab="settings"][data-section="models"]').click()
+            expect(page.locator('.stage-bind[data-stage="S1"]')).to_have_value(provider_id)
+            page.screenshot(path=str(screenshots / 'configuration-models-desktop.png'))
+            # 系统提示词入口可保存实际覆盖值，页面状态同步显示自定义。
+            page.locator('.nav [data-tab="templates"]').click()
+            page.locator('#templates-list [data-prompt="s1_prose"]').click()
+            page.locator('#pp-sys').fill('测试系统提示词')
+            page.locator('#pp-user').fill('{{TITLE}}\n{{OUTLINE}}')
+            page.locator('#pp-save').click()
+            expect(page.locator('#templates-list')).to_contain_text('已自定义')
+            page.locator('#templates-list [data-prompt="s1_prose"]').click()
+            expect(page.locator('#pp-sys')).to_have_value('测试系统提示词')
+            page.locator('.modal:not(.hidden) [data-close]').click()
+            # 项目角色、全局预设、画风分别可保存，并保留零权重。
+            page.locator('.nav [data-tab="assets"][data-section="characters"]').click()
+            page.locator('#pr-addchar').click()
+            page.locator('.ch-name').first.fill('岛岛')
+            page.locator('.ch-trig').first.fill('test character')
+            page.locator('.ch-w').first.fill('0')
+            page.locator('.ch-save').first.click()
+            page.locator('#assets-refresh').click()
+            expect(page.locator('.ch-name').first).to_have_value('岛岛')
+            expect(page.locator('.ch-w').first).to_have_value('0')
+            page.locator('.nav [data-tab="assets"][data-section="presets"]').click()
+            page.locator('#asset-preset-scope').select_option('global')
+            page.locator('[data-addpreset="positive"]').click()
+            page.locator('.pres-name').first.fill('全局画面预设')
+            page.locator('.pres-text').first.fill('masterpiece, clean lineart')
+            page.locator('.pres-save').first.click()
+            page.locator('.nav [data-tab="assets"][data-section="style"]').click()
+            page.locator('#pr-addstyle').click()
+            page.locator('.st-name').first.fill('style.safetensors')
+            page.locator('.st-w').first.fill('0')
+            page.locator('#pr-style-save').click()
+            page.locator('#assets-refresh').click()
+            expect(page.locator('.st-name').first).to_have_value('style.safetensors')
+            expect(page.locator('.st-w').first).to_have_value('0')
+            page.locator('.nav [data-tab="assets"][data-section="characters"]').click()
+            page.screenshot(path=str(screenshots / 'assets-desktop.png'))
+            for width in (768, 390):
+                page.set_viewport_size({'width': width, 'height': 1000})
+                assert page.evaluate('() => document.documentElement.scrollWidth <= innerWidth + 1'), f'资产页面在 {width}px 溢出'
+                page.screenshot(path=str(screenshots / f'assets-{width}.png'))
+            page.set_viewport_size({'width': 1440, 'height': 1100})
+            page.locator('#project-switch').select_option('2')
+            expect(page.locator('[data-asset-part="characters"]')).not_to_contain_text('test character')
+            page.locator('.nav [data-tab="assets"][data-section="presets"]').click()
+            expect(page.locator('.pres-name').first).to_have_value('全局画面预设')
             assert not errors, errors
             # 将本次截图复制到调用者指定的独立可写目录，仅用于视觉检查。
             import os
@@ -227,6 +307,7 @@ def main():
                           'save_preview': 'ok', 'resume_canvas': 'ok', 'viewport_widths': [1440, 768, 390],
                           'export_pdf_cbz_download': 'ok',
                           'mobile_menu_and_project_switch': 'ok',
+                          'configuration_assets_persist': 'ok',
                           'page_errors': errors}, ensure_ascii=False))
         return 0
     finally:

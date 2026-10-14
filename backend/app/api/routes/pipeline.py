@@ -169,7 +169,9 @@ def readiness(project_id: int, session: Session = Depends(get_session)) -> dict:
     prompt_ok = cnt(ArtifactKind.PANEL_PROMPT.value, ArtifactStatus.APPROVED.value)
     img_ok = cnt(ArtifactKind.IMAGE.value, ArtifactStatus.APPROVED.value)
     pageimg_ok = cnt(ArtifactKind.PAGE_IMAGE.value, ArtifactStatus.APPROVED.value)
-    has_provider = session.scalars(select(StageModel)).first() is not None or         session.scalars(select(LLMProvider)).first() is not None
+    has_provider = session.scalars(
+        select(LLMProvider).where(LLMProvider.enabled.is_(True)).limit(1)
+    ).first() is not None
 
     def block(stage: str, ok: bool, missing: str, goto: str = "") -> dict:
         return {"stage": stage, "ready": ok, "missing": "" if ok else missing, "goto": goto}
@@ -194,7 +196,7 @@ def readiness(project_id: int, session: Session = Depends(get_session)) -> dict:
             "image_approved": img_ok, "page_image_approved": pageimg_ok,
         },
         "has_llm_provider": has_provider,
-        "llm_hint": "" if has_provider else "尚未配置 LLM 供应商；请到「设置」页添加或从酒馆导入",
+        "llm_hint": "" if has_provider else "没有已启用的 LLM 供应商；请到「LLM 供应商」页添加或启用",
     }
     return out
 
@@ -841,17 +843,53 @@ def _summarize(a) -> str:
     return ""
 
 
+@router.get("/stage-models")
+def stage_models(session: Session = Depends(get_session)) -> dict:
+    bindings = {row.stage: row.provider_id for row in session.scalars(select(StageModel)).all()}
+    fallback = session.scalars(select(LLMProvider).where(LLMProvider.enabled.is_(True)).order_by(LLMProvider.id)).first()
+    return {"scope": "global", "bindings": bindings, "fallback_provider_id": fallback.id if fallback else None}
+
+
+@router.patch("/stage-models")
+def update_stage_models(body: dict, session: Session = Depends(get_session)) -> dict:
+    """阶段绑定作用于所有项目；空值取消显式绑定，使用默认启用供应商。"""
+    validated = {}
+    for stage, provider_id in body.items():
+        if stage not in ("S1", "S2", "S3"):
+            raise HTTPException(400, "只支持 S1 正文、S2 分格、S3 提示词的模型绑定")
+        if isinstance(provider_id, bool) or (provider_id is not None and not isinstance(provider_id, (int, str))):
+            raise HTTPException(400, "供应商 ID 无效")
+        if provider_id is None or provider_id == 0 or provider_id == "":
+            validated[stage] = None
+            continue
+        try:
+            value = int(provider_id)
+        except (TypeError, ValueError) as e:
+            raise HTTPException(400, "供应商 ID 无效") from e
+        provider = session.get(LLMProvider, value)
+        if provider is None or not provider.enabled:
+            raise HTTPException(400, "请选择存在且启用的供应商")
+        validated[stage] = value
+    for stage, provider_id in validated.items():
+        sm = session.get(StageModel, stage)
+        if provider_id is None:
+            if sm is not None:
+                session.delete(sm)
+            continue
+        if sm is None:
+            session.add(StageModel(stage=stage, provider_id=provider_id))
+        else:
+            sm.provider_id = provider_id
+    session.commit()
+    return {"ok": True, **stage_models(session)}
+
+
 @router.patch("/projects/{project_id}/stage-models")
 def set_stage_models(project_id: int, body: dict, session: Session = Depends(get_session)) -> dict:
-    """设置阶段→供应商绑定：{"S2": 1, "S3": 2}。"""
-    for stage, provider_id in body.items():
-        sm = session.get(StageModel, stage)
-        if sm is None:
-            session.add(StageModel(stage=stage, provider_id=int(provider_id)))
-        else:
-            sm.provider_id = int(provider_id)
-    session.commit()
-    return {"ok": True}
+    """兼容原项目路径；返回 scope=global 明确现有表的真实作用域。"""
+    if session.get(Project, project_id) is None:
+        raise HTTPException(404, "项目不存在")
+    return update_stage_models(body, session)
 
 
 @router.get("/projects/{project_id}/stale")

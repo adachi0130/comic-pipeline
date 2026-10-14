@@ -27,6 +27,8 @@ def upsert_character(project_id: int, body: dict, session: Session = Depends(get
         raise HTTPException(404, "项目不存在")
     cid = body.get("id")
     c = session.get(Character, cid) if cid else None
+    if cid and (c is None or c.project_id != project_id):
+        raise HTTPException(404, "当前项目中没有这个角色")
     if c is None:
         c = Character(project_id=project_id, name=body.get("name", "角色"))
         session.add(c)
@@ -67,18 +69,28 @@ def upsert_preset(body: dict, session: Session = Depends(get_session)) -> dict:
     pid = body.get("id")
     p = session.get(PromptPreset, pid) if pid else None
     if p is None:
-        p = PromptPreset(name=body.get("name", "预设"))
+        p = PromptPreset(name=body.get("name", "预设"), scope=body.get("scope", "global"),
+                         kind=body.get("kind", "positive"))
         session.add(p)
     for f in ("name", "text", "kind", "scope", "project_id", "is_default", "loras"):
         if f in body:
             setattr(p, f, body[f])
     if p.kind not in ("positive", "negative"):
         raise HTTPException(400, "kind 必须是 positive 或 negative")
-    # 同一 kind 只能有一个默认：设了新的就清掉旧的
+    if p.scope not in ("global", "project"):
+        raise HTTPException(400, "预设作用域必须是 global 或 project")
+    if p.scope == "project":
+        if not p.project_id or session.get(Project, p.project_id) is None:
+            raise HTTPException(400, "项目预设必须关联一个有效项目")
+    else:
+        p.project_id = None
+    # 同种、同作用域的默认项互斥；项目默认不能清掉其他项目或全局默认。
     if p.is_default:
         session.flush()
+        scope_filter = PromptPreset.project_id == p.project_id if p.scope == "project" else PromptPreset.project_id.is_(None)
         others = session.scalars(
-            select(PromptPreset).where(PromptPreset.kind == p.kind, PromptPreset.id != p.id)
+            select(PromptPreset).where(PromptPreset.kind == p.kind, PromptPreset.scope == p.scope,
+                                      scope_filter, PromptPreset.id != p.id)
         ).all()
         for o in others:
             o.is_default = False
@@ -113,6 +125,8 @@ def set_loras(project_id: int, body: dict, session: Session = Depends(get_sessio
     body: {"scope":"project"|"panel", "panel_ref":"panel:1.1", "loras":[{"name":..., "weight":..., "enabled":...}]}
     """
     scope = body.get("scope", "project")
+    if session.get(Project, project_id) is None:
+        raise HTTPException(404, "项目不存在")
     panel_ref = body.get("panel_ref", "")
     if scope not in ("project", "panel"):
         raise HTTPException(400, "scope 必须是 project 或 panel")

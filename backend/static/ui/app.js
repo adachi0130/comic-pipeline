@@ -6,6 +6,7 @@
 import { createEditorWorkbench } from './editor-workbench.js';
 import { createExportCenter } from './export-center.js';
 import { createWorkbenchNavigation } from './workbench-navigation.js';
+import { createConfigurationCenter } from './configuration-center.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
@@ -37,6 +38,8 @@ const STATUS = {
 const pill = (s) => { const [c, l] = STATUS[s] || ['', s || '—']; return `<span class="pill ${c}"><i class="dotm"></i>${l}</span>`; };
 const exportCenter = createExportCenter({ state, api, $, esc, pill, toast, switchTab, pageLabel });
 const navigation = createWorkbenchNavigation({ state, $, esc, switchTab, pickProject, toast });
+const configuration = createConfigurationCenter({ state, api, $, esc, toast, switchTab,
+  loadProviders, loadStageBinding, loadCharacterPresetPanel, loadStyleLoras, ensureLoraDatalist });
 let projectPickRequest = 0;
 
 // ---------- Tab ----------
@@ -51,8 +54,10 @@ const TITLES = {
   editor: ['漫画编辑器', '在当前工作台精修漫画页，保存后继续编辑'],
   exports: ['整册导出', '预览页序，导出 PDF / CBZ，下载历史版本'],
   settings: ['设置', 'LLM 供应商 / ComfyUI / 阶段绑定'],
+  assets: ['角色与画风', '管理本项目的角色、预设和画风 LoRA'],
+  templates: ['系统提示词', '查看与编辑三个阶段实际使用的系统和用户模板'],
 };
-$$('.nav button[data-tab]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
+$$('.nav button[data-tab]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab, b.dataset.section)));
 
 // 可折叠标题：点标题收起/展开它指向的内容块（状态记在 localStorage，刷新后保留）
 function getFold(key, defClosed) {
@@ -76,8 +81,9 @@ document.addEventListener('click', (e) => {
   h.classList.toggle('closed', hidden);
   setFold(h.dataset.fold, hidden);
 });
-function switchTab(tab) {
-  $$('.nav button[data-tab]').forEach((x) => x.classList.toggle('active', x.dataset.tab === tab));
+function switchTab(tab, requestedSection) {
+  const section = configuration.sectionFor(tab, requestedSection);
+  $$('.nav button[data-tab]').forEach((x) => x.classList.toggle('active', x.dataset.tab === tab && (!x.dataset.section || x.dataset.section === section)));
   Object.keys(TITLES).forEach((t) => $('#tab-' + t).classList.toggle('hidden', t !== tab));
   $('.main').classList.toggle('editor-active', tab === 'editor');
   if (tab !== 'editor') editorWorkbench.collapse();
@@ -94,7 +100,7 @@ function switchTab(tab) {
   if (tab === 'editor') editorWorkbench.loadPages();
   if (tab === 'exports') exportCenter.load();
   if (tab === 'images' || tab === 'prompts') ensureLoraDatalist();
-  if (tab === 'settings') { loadProviders(); loadStageBinding(); }
+  if (['settings', 'assets', 'templates'].includes(tab)) configuration.enter(tab, section).catch((e) => toast(e.message, 'err'));
   if (tab === 'projects') {
     // 已选中项目时停在详情（二级），否则显示列表（一级）
     showProjectView(state.projectId ? 'detail' : 'list');
@@ -177,6 +183,7 @@ async function pickProject(id) {
   if (active === 'pages') loadPages();
   if (active === 'editor') editorWorkbench.loadPages();
   if (active === 'exports') exportCenter.load();
+  if (active === 'assets') configuration.loadAssets();
   navigation.update();
 }
 
@@ -1210,12 +1217,11 @@ function attachLoraCombos(root, selector, opts) {
 async function loadCharacterPresetPanel() {
   const projectId = state.projectId;
   const box = $('#pr-chars');
-  if (!state.projectId) { box.innerHTML = '<div class="empty">先选择项目</div>'; return; }
   let chars = [], presets = { positive: [], negative: [] };
   try {
     [chars, presets] = await Promise.all([
-      api(`/api/projects/${projectId}/characters`),
-      api(`/api/prompt-presets?project_id=${projectId}`),
+      projectId ? api(`/api/projects/${projectId}/characters`) : Promise.resolve([]),
+      api('/api/prompt-presets' + (projectId ? `?project_id=${projectId}` : '')),
     ]);
   } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
 
@@ -1227,7 +1233,7 @@ async function loadCharacterPresetPanel() {
         <div class="spacer"></div>
         <button class="sm" data-addpreset="${kind}">＋ 加</button></div>
       ${(list || []).map((p) => `
-        <div class="mini-card" style="padding:8px 10px;margin-top:6px" data-preset="${p.id}">
+        <div class="mini-card" style="padding:8px 10px;margin-top:6px" data-preset="${p.id}" data-preset-kind="${kind}" data-preset-scope="${esc(p.scope)}" data-preset-project="${p.project_id || ''}">
           <div class="row" style="gap:6px">
             <input class="pres-name" value="${esc(p.name)}" placeholder="预设名称（随便起）" style="width:150px">
             <label class="mut" style="font-size:11.5px"><input type="checkbox" class="pres-def" ${p.is_default ? 'checked' : ''} style="width:auto"> 默认</label>
@@ -1244,11 +1250,13 @@ async function loadCharacterPresetPanel() {
     </div>`;
 
   box.innerHTML = `
+    <div data-asset-part="presets"><div class="row" style="margin-bottom:10px"><label class="fld" for="asset-preset-scope" style="margin:0">新增预设作用域</label>
+      <select id="asset-preset-scope" style="width:160px"><option value="project" ${!projectId ? 'disabled' : 'selected'}>本项目</option><option value="global" ${!projectId ? 'selected' : ''}>全局</option></select></div>
     <div class="row" style="align-items:flex-start;gap:16px">
       ${presetCard('positive', presets.positive)}
       ${presetCard('negative', presets.negative)}
     </div>
-    <div class="divider"></div>
+    </div><div data-asset-part="characters">
     <b style="font-size:13px">角色（触发词 ↔ 角色 LoRA）</b>
     <div class="mut" style="font-size:12px;margin-top:2px">角色出场时，<b>触发词一定会被写进正向提示词</b>；外观词按画面裁剪（特写看不到的、远景看不清的会被去掉）。</div>
     ${chars.map((c) => `
@@ -1269,7 +1277,7 @@ async function loadCharacterPresetPanel() {
         <label class="fld" style="margin:8px 0 3px">外观词块（不依赖 LoRA 时用；可按画面保留/裁剪）</label>
         <textarea class="ch-block" rows="4" placeholder="如 silver hair, mechanical arms, glowing blue eyes, android girl, ..."
           style="width:100%;min-height:88px;resize:vertical;font-size:12px">${esc(c.prompt_block || '')}</textarea>
-      </div>`).join('') || '<div class="mut" style="font-size:12px;margin-top:8px">还没有角色。点右上「＋ 加角色」。</div>'}`;
+      </div>`).join('') || '<div class="mut" style="font-size:12px;margin-top:8px">还没有角色。点右上「＋ 加角色」。</div>'}</div>`;
 
   // 预设：保存 + 自动保存（边填边存，避免忘点保存 / 面板重绘冲掉）
   // LoRA 输入框：即时搜索
@@ -1285,7 +1293,14 @@ async function loadCharacterPresetPanel() {
     });
     const save = async (silent) => {
       try {
-        await api('/api/prompt-presets', { method: 'POST', body: JSON.stringify(payload()) });
+        const body = payload();
+        await api('/api/prompt-presets', { method: 'POST', body: JSON.stringify(body) });
+        if (body.is_default && el.isConnected) {
+          box.querySelectorAll('[data-preset]').forEach((other) => {
+            if (other !== el && other.dataset.presetKind === el.dataset.presetKind && other.dataset.presetScope === el.dataset.presetScope
+              && other.dataset.presetProject === el.dataset.presetProject) other.querySelector('.pres-def').checked = false;
+          });
+        }
         if (!silent) toast('预设已保存', 'ok');
         else flashSaved(el);
       } catch (e) { toast(e.message, 'err'); }
@@ -1309,7 +1324,8 @@ async function loadCharacterPresetPanel() {
     try {
       const p = await api('/api/prompt-presets', { method: 'POST', body: JSON.stringify({
         kind: b.dataset.addpreset, name: '',
-        scope: 'project', project_id: projectId, text: '', is_default: false }) });
+        scope: $('#asset-preset-scope').value, project_id: $('#asset-preset-scope').value === 'project' ? projectId : null,
+        text: '', is_default: false }) });
       toast(`已新建${b.dataset.addpreset === 'positive' ? '正向' : '负向'}预设，填完自动保存`, 'ok');
       // 局部插入，不整块重绘（避免已填内容被冲掉）
       await loadCharacterPresetPanel();
@@ -1323,7 +1339,7 @@ async function loadCharacterPresetPanel() {
     const id = +el.dataset.char;
     const payload = () => ({
       id, name: el.querySelector('.ch-name').value, trigger_words: el.querySelector('.ch-trig').value,
-      lora_name: el.querySelector('.ch-lora').value, lora_weight: +el.querySelector('.ch-w').value || 0.8,
+      lora_name: el.querySelector('.ch-lora').value, lora_weight: el.querySelector('.ch-w').value === '' ? 0.8 : Number(el.querySelector('.ch-w').value),
       use_lora: el.querySelector('.ch-uselora').checked, prompt_block: el.querySelector('.ch-block').value,
     });
     const save = async (silent) => {
@@ -1343,6 +1359,7 @@ async function loadCharacterPresetPanel() {
       catch (e) { toast(e.message, 'err'); }
     });
   });
+  document.dispatchEvent(new Event('comic-assets:rendered'));
 }
 
 // 防抖：连续输入只在停下后触发一次
@@ -1420,6 +1437,7 @@ async function loadStyleLoras() {
   if (projectId !== state.projectId) return;
   box.innerHTML = (rows.length ? rows.map(styleLoraRow).join('') : '<div class="mut" style="font-size:12px">还没配画风 LoRA</div>');
   bindStyle();
+  document.dispatchEvent(new Event('comic-assets:rendered'));
 }
 function bindStyle() {
   const box = $('#pr-style');
@@ -1437,7 +1455,7 @@ $('#pr-style-save').addEventListener('click', async () => {
   if (!state.projectId) return toast('先选择项目', 'err');
   const loras = Array.from($('#pr-style').querySelectorAll('[data-stylerow]')).map((r) => ({
     name: r.querySelector('.st-name').value.trim(),
-    weight: +r.querySelector('.st-w').value || 1,
+    weight: r.querySelector('.st-w').value === '' ? 1 : Number(r.querySelector('.st-w').value),
   })).filter((l) => l.name);
   try {
     await api(`/api/projects/${state.projectId}/loras`, { method: 'PUT', body: JSON.stringify({ scope: 'project', loras }) });
@@ -1447,9 +1465,6 @@ $('#pr-style-save').addEventListener('click', async () => {
 
 async function loadPrompts() {
   const projectId = state.projectId;
-  loadCharacterPresetPanel();
-  loadStyleLoras();
-  ensureLoraDatalist();
   if (!state.projectId) {
     $('#pr-list').innerHTML = '';
     $('#pr-blank').style.display = 'block';
@@ -1780,6 +1795,7 @@ async function openPromptEditor(name) {
         system_text: box.querySelector('#pp-sys').value,
         user_text: box.querySelector('#pp-user').value }) });
       toast('提示词已保存（后续调用立即生效）', 'ok');
+      configuration.refreshTemplates();
       box.remove();
     } catch (e) { toast(e.message, 'err'); }
   });
@@ -1796,6 +1812,7 @@ async function openPromptEditor(name) {
     try {
       await api(`/api/prompts/${name}`, { method: 'DELETE' });
       toast('已还原默认', 'ok');
+      configuration.refreshTemplates();
       box.remove(); openPromptEditor(name);
     } catch (e) { toast(e.message, 'err'); }
   });
@@ -2526,26 +2543,60 @@ function openLightbox(src, onSelect) {
 }
 
 // ---------- 设置 ----------
+let editingProvider = null;
+let providerLoadRequest = 0;
 async function loadProviders() {
-  const rows = await api('/api/providers');
-  $('#pvlist').innerHTML = rows.length ? rows.map((p) => `
-    <div class="pitem"><div><b>${esc(p.name)}</b> <span class="mut">${esc(p.model)}</span>
-      <div class="meta">${esc(p.base_url)} ${p.has_key ? '· 已设 key' : '· 无 key'}</div></div>
-      <div class="spacer"></div><button class="sm" data-test="${p.id}">测试</button></div>`).join('')
-    : '<div class="empty">尚未配置</div>';
-  $$('[data-test]').forEach((b) => b.addEventListener('click', async () => {
-    toast('测试中…');
-    try { const r = await api(`/api/providers/${b.dataset.test}/test`, { method: 'POST' });
-      toast(r.ok ? `可用：${r.reply}` : `失败：${r.error}`, r.ok ? 'ok' : 'err'); }
-    catch (e) { toast(e.message, 'err'); }
-  }));
-}
-$('#btn-addpv').addEventListener('click', async () => {
+  const request = ++providerLoadRequest;
+  const box = $('#pvlist');
   try {
-    await api('/api/providers', { method: 'POST', body: JSON.stringify({
-      name: $('#pv-name').value, base_url: $('#pv-url').value, model: $('#pv-model').value, api_key: $('#pv-key').value }) });
-    toast('已添加', 'ok'); loadProviders(); loadStageBinding();
+    const rows = await api('/api/providers');
+    if (request !== providerLoadRequest) return;
+    box.innerHTML = rows.length ? rows.map((p) => `<div class="pitem" style="cursor:default;flex-wrap:wrap"><div style="min-width:0;overflow-wrap:anywhere"><b>${esc(p.name)}</b> <span class="mut">${esc(p.model)}</span>
+      <div class="meta">${esc(p.base_url)} ${p.has_key ? '· 已设 Key' : '· 无 Key'} · ${p.enabled ? '启用' : '停用'}</div></div>
+      <div class="spacer"></div><button class="sm" data-pv-edit="${p.id}">编辑</button><button class="sm" data-test="${p.id}">测试</button>
+      <button class="sm" data-pv-toggle="${p.id}">${p.enabled ? '停用' : '启用'}</button></div>`).join('') : '<div class="empty">尚未配置供应商，可在上方添加或从酒馆导入。</div>';
+    box.querySelectorAll('[data-pv-edit]').forEach((button) => button.addEventListener('click', () => {
+      const provider = rows.find((row) => row.id === Number(button.dataset.pvEdit));
+      editingProvider = provider.id;
+      $('#pv-name').value = provider.name; $('#pv-url').value = provider.base_url; $('#pv-model').value = provider.model;
+      $('#pv-key').value = ''; $('#pv-key').placeholder = provider.has_key ? '已保存 Key，留空不改' : 'API Key（可选）';
+      $('#btn-addpv').textContent = '保存修改'; $('#pv-cancel-edit').classList.remove('hidden'); $('#pv-name').focus();
+    }));
+    box.querySelectorAll('[data-test]').forEach((button) => button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        const result = await api(`/api/providers/${button.dataset.test}/test`, { method: 'POST' });
+        toast(result.ok ? `可用：${result.reply}` : `失败：${result.error}`, result.ok ? 'ok' : 'err');
+      } catch (e) { toast(e.message, 'err'); }
+      finally { button.disabled = false; }
+    }));
+    box.querySelectorAll('[data-pv-toggle]').forEach((button) => button.addEventListener('click', async () => {
+      const provider = rows.find((row) => row.id === Number(button.dataset.pvToggle));
+      button.disabled = true;
+      try { await api(`/api/providers/${provider.id}`, { method: 'PATCH', body: JSON.stringify({ enabled: !provider.enabled }) }); await loadProviders(); }
+      catch (e) { toast(e.message, 'err'); button.disabled = false; }
+    }));
+  } catch (e) { if (request === providerLoadRequest) box.innerHTML = `<div class="empty">读取供应商失败：${esc(e.message)}，点击刷新重试。</div>`; }
+}
+function resetProviderForm() {
+  editingProvider = null;
+  ['pv-name', 'pv-url', 'pv-model', 'pv-key'].forEach((id) => { $('#' + id).value = ''; });
+  $('#pv-key').placeholder = 'API Key（可选）'; $('#btn-addpv').textContent = '添加供应商'; $('#pv-cancel-edit').classList.add('hidden');
+}
+$('#pv-cancel-edit').addEventListener('click', resetProviderForm);
+$('#btn-addpv').addEventListener('click', async () => {
+  const button = $('#btn-addpv');
+  if (button.disabled) return;
+  const body = { name: $('#pv-name').value.trim(), base_url: $('#pv-url').value.trim(), model: $('#pv-model').value.trim() };
+  if (!body.name || !body.base_url || !body.model) return toast('请填写名称、base_url 和模型', 'err');
+  if ($('#pv-key').value.trim() || editingProvider === null) body.api_key = $('#pv-key').value.trim();
+  button.disabled = true;
+  try {
+    await api(editingProvider === null ? '/api/providers' : `/api/providers/${editingProvider}`, {
+      method: editingProvider === null ? 'POST' : 'PATCH', body: JSON.stringify(body) });
+    toast('供应商已保存', 'ok'); resetProviderForm(); await loadProviders();
   } catch (e) { toast(e.message, 'err'); }
+  finally { button.disabled = false; }
 });
 $('#btn-reloadpv').addEventListener('click', loadProviders);
 $('#btn-import-tv').addEventListener('click', async () => {
@@ -2564,15 +2615,32 @@ $('#btn-import-tv').addEventListener('click', async () => {
 });
 
 async function loadStageBinding() {
-  const providers = await api('/api/providers');
-  const opts = providers.map((p) => `<option value="${p.id}">${esc(p.name)} · ${esc(p.model)}</option>`).join('');
-  $('#stagelist').innerHTML = ['S2', 'S3'].map((s) =>
-    `<div><label class="fld">${s}</label><select data-stage="${s}" class="stage-bind">${providers.length ? opts : '<option value="">（先添加供应商）</option>'}</select></div>`).join('');
-  $$('.stage-bind').forEach((sel) => sel.addEventListener('change', async () => {
-    if (!sel.value || !state.projectId) return;
-    await api(`/api/projects/${state.projectId}/stage-models`, { method: 'PATCH', body: JSON.stringify({ [sel.dataset.stage]: +sel.value }) });
-    toast(`${sel.dataset.stage} 已绑定`, 'ok');
-  }));
+  const box = $('#stagelist');
+  try {
+    const [providers, configuration] = await Promise.all([api('/api/providers'), api('/api/stage-models')]);
+    const enabled = providers.filter((provider) => provider.enabled);
+    const opts = enabled.map((provider) => `<option value="${provider.id}">${esc(provider.name)} · ${esc(provider.model)}</option>`).join('');
+    box.innerHTML = ['S1', 'S2', 'S3'].map((stage) => {
+      const selected = configuration.bindings[stage] || 0;
+      const missing = selected && !enabled.some((provider) => provider.id === selected);
+      return `<div><label class="fld">${stage} · ${{ S1: 'LLM 正文', S2: '分页分格', S3: '分镜提示词' }[stage]}</label>
+        <select data-stage="${stage}" data-saved="${selected}" class="stage-bind"><option value="0">${enabled.length ? '使用默认启用供应商' : '未配置启用供应商'}</option>${opts}
+          ${missing ? `<option value="${selected}" disabled>原绑定不可用（已回退默认）</option>` : ''}</select><div class="mut" data-model-state="${stage}" style="font-size:12px;margin-top:5px">全局设置</div></div>`;
+    }).join('');
+    box.querySelectorAll('.stage-bind').forEach((select) => {
+      select.value = select.dataset.saved;
+      select.addEventListener('change', async () => {
+        const previous = select.dataset.saved;
+        const status = box.querySelector(`[data-model-state="${select.dataset.stage}"]`);
+        select.disabled = true; status.textContent = '保存中…';
+        try {
+          const result = await api('/api/stage-models', { method: 'PATCH', body: JSON.stringify({ [select.dataset.stage]: Number(select.value) || null }) });
+          select.dataset.saved = String(result.bindings[select.dataset.stage] || 0); status.textContent = '已保存 · 影响所有项目';
+        } catch (e) { select.value = previous; status.textContent = '保存失败：' + e.message; toast(e.message, 'err'); }
+        finally { select.disabled = false; }
+      });
+    });
+  } catch (e) { box.innerHTML = `<div class="empty">读取阶段模型失败：${esc(e.message)}，重新进入此页可重试。</div>`; }
 }
 
 $('#cf-assets').addEventListener('click', async () => {

@@ -21,7 +21,7 @@ export function createWorkbenchNavigation({ state, $, esc, switchTab, pickProjec
   function update() {
     const tab = currentTab();
     $('#breadcrumb-project').textContent = state.project?.title || '未选择项目';
-    $('#breadcrumb-section').textContent = document.querySelector(`.nav button[data-tab="${tab}"] .nav-label`)?.textContent || tab;
+    $('#breadcrumb-section').textContent = document.querySelector('.nav button[data-tab].active .nav-label')?.textContent || tab;
     if (state.project) {
       $('#cur-proj').innerHTML = `<b>${esc(state.project.title)}</b><span class="mut">${state.project.target_pages} 页 · ${state.project.review_mode === 'auto' ? '自动审核' : '人工审查'}</span>`;
     }
@@ -46,7 +46,7 @@ export function createWorkbenchNavigation({ state, $, esc, switchTab, pickProjec
   }
 
   function onNavigate(tab) {
-    const active = document.querySelector(`.nav button[data-tab="${tab}"]`);
+    const active = document.querySelector('.nav button[data-tab].active') || document.querySelector(`.nav button[data-tab="${tab}"]`);
     document.querySelectorAll('.nav button[data-tab]').forEach((button) => {
       if (button === active) button.setAttribute('aria-current', 'page');
       else button.removeAttribute('aria-current');
