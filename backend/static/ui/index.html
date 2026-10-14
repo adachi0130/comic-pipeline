@@ -171,7 +171,7 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
   width:16px;height:16px;border-radius:50%;border:1px solid var(--line2);background:#f0f2f5;
   color:var(--muted);font-size:11px;font-weight:700;cursor:help;user-select:none;flex:0 0 auto}
 .help-dot:hover{border-color:var(--accent);color:var(--accent)}
-.help-dot .tip{position:absolute;top:150%;right:0;z-index:50;width:300px;padding:8px 10px;
+.help-dot .tip{position:absolute;top:150%;left:0;z-index:50;width:300px;padding:8px 10px;
   background:#232733;color:#e8eaee;border-radius:8px;font-size:12px;font-weight:400;line-height:1.55;
   box-shadow:0 6px 20px rgba(0,0,0,.22);opacity:0;visibility:hidden;transition:.12s;text-align:left}
 .help-dot:hover .tip{opacity:1;visibility:visible}
@@ -278,13 +278,13 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
       <div id="nv-pane-tavern" class="hidden">
         <div class="card">
           <h2 style="cursor:pointer" id="tv-chats-toggle">对话列表
-            <span class="pill" id="tv-cur">—</span>
-            <span class="spacer"></span>
             <span class="help-dot" title="">?
               <span class="tip">配好角色卡 / 世界书后，在下方「酒馆对话」里<b>直接发一条</b>给酒馆（相当于你在酒馆聊天框里发话），
                 只把这次新返回的内容存为正文；历史消息不会写入产物。<br><br>
                 需酒馆标签页打开且扩展已启用（或常驻桥在跑）。也可用本列表切换当前会话。</span>
             </span>
+            <span class="pill" id="tv-cur">—</span>
+            <span class="spacer"></span>
             <span class="mut" id="tv-chats-arrow">▸</span>
           </h2>
           <div id="tv-chats-body" class="hidden">
@@ -623,6 +623,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=76"></script>
+<script type="module" src="/ui/app.js?v=77"></script>
 </body>
 </html>

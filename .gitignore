@@ -48,3 +48,7 @@ dist/
 .idea/
 Thumbs.db
 desktop.ini
+
+# --- 本地临时/探测文件（下划线开头，勿提交）---
+_*.json
+_*.py
