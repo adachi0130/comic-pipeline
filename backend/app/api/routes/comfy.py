@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -36,7 +37,8 @@ def _client(backend: str = "cloud") -> ComfyClient:
     if backend == "local":
         return ComfyClient(cfg.local_url or get_settings().comfy_local_fallback_url,
                            timeout_s=get_settings().comfy_timeout_s)
-    return service.get_client()
+    return ComfyClient(cfg.cloud_url or get_settings().comfy_base_url,
+                       timeout_s=get_settings().comfy_timeout_s, api_key=cfg.cloud_api_key)
 
 
 def _client_from(url: str, api_key: str = "") -> ComfyClient:
@@ -69,6 +71,83 @@ def _fetch_and_convert(client: ComfyClient, name: str) -> tuple[dict, list[str],
         api, warnings = ui_to_api(flat, info)
         return api, (sw + warnings), True
     return raw, [], False
+
+
+def _uploaded_workflow(body: dict) -> tuple[dict, list[str], bool, dict]:
+    """预览和保存共用转换，API 文件可离线解析，UI 文件需要真实节点定义。"""
+    raw = body.get("workflow")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw.lstrip("\ufeff"))
+        except json.JSONDecodeError as e:
+            raise HTTPException(400, f"JSON 解析失败：{e}") from e
+    if not isinstance(raw, dict):
+        raise HTTPException(400, "workflow 必须是 JSON 对象")
+    was_ui = is_ui_format(raw)
+    info: dict = {}
+    warnings: list[str] = []
+    if was_ui or body.get("check_nodes"):
+        try:
+            _, url, key = _resolve_backend(body)
+            info = _client_from(url, key).object_info()
+        except ComfyError as e:
+            if was_ui:
+                raise HTTPException(
+                    400, "这是 ComfyUI UI 格式工作流，解析需要连接 ComfyUI 读取节点定义。"
+                    f"请先连接，或改用「保存（API 格式）」导出的 JSON：{e}",
+                ) from e
+            warnings.append("暂时无法读取后端节点定义，已解析 API 工作流；出图前请确认所需节点已安装")
+    if was_ui:
+        try:
+            raw, subgraph_warnings = expand_subgraphs_ui(raw)
+            raw, conversion_warnings = ui_to_api(raw, info)
+            warnings.extend(subgraph_warnings + conversion_warnings)
+        except (ConvertError, TypeError, ValueError, KeyError, AttributeError) as e:
+            raise HTTPException(400, f"UI 工作流转换失败：{e}") from e
+    if not is_api_format(raw):
+        raise HTTPException(400, "无法识别的工作流：API 格式的每个节点必须有 class_type 和 inputs，或上传有效的 UI 格式 JSON")
+    return raw, warnings, was_ui, info
+
+
+def _workflow_details(name: str, workflow: dict, *, warnings=None, was_ui=False, info=None) -> dict:
+    desc = describe_workflow(workflow, info)
+    resolved = _resolve_sampler_prompts(workflow, desc)
+    # 占位符定义了实际注入位置，复杂拼装链路也无需猜正负文本节点。
+    for key, token in (("prompt_pos", "%prompt%"), ("prompt_neg", "%negative%")):
+        fields = [
+            {"node_id": nid, "class_type": node["class_type"], "input": field, "value": value}
+            for nid, node in workflow.items()
+            for field, value in node["inputs"].items()
+            if isinstance(value, str) and token in value
+        ]
+        if fields:
+            resolved[key] = ({**fields[0], "placeholder": token} if len(fields) == 1 else
+                             {"dynamic": True, "chunks": fields, "placeholder": token})
+            resolved["reason"] = ""
+    return {
+        "name": name, "workflow": workflow, "ui_format": was_ui,
+        "warnings": warnings or [], "describe": desc, "resolved": resolved,
+        "node_ids": list(workflow),
+    }
+
+
+@router.post("/comfy/workflows/preview")
+def preview_workflow(body: dict) -> dict:
+    """上传仅解析预览，选用后才保存；同名文件默认建议一个新名称。"""
+    name = (body.get("name") or "上传的工作流").strip()
+    if name.lower().endswith(".json"):
+        name = name[:-5]
+    try:
+        name = store.safe_workflow_name(name)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    stem, index = name, 2
+    existing = set(store.list_workflows())
+    while name in existing:
+        name = store.safe_workflow_name(f"{stem[:70]}_{index}")
+        index += 1
+    workflow, warnings, was_ui, info = _uploaded_workflow(body)
+    return _workflow_details(name, workflow, warnings=warnings, was_ui=was_ui, info=info)
 
 
 def _source_text_chunks(api: dict, start: Any, depth: int = 0, seen: set | None = None) -> list[dict]:
@@ -228,18 +307,9 @@ def server_workflow(body: dict) -> dict:
         info = client.object_info()
     except ComfyError:
         info = {}
-    desc = describe_workflow(api, info)
-    # 直接从 KSampler 的 positive/negative 链接解析「正/负条件」的实际文本节点，
-    # 让前端不必在一堆文本块里猜。解析不到时给出原因（如工作流用了子图）。
-    resolved = _resolve_sampler_prompts(api, desc)
-    return {
-        "name": name,
-        "ui_format": was_ui,
-        "warnings": warnings,
-        "describe": desc,
-        "resolved": resolved,
-        "node_ids": list(api.keys()),
-    }
+    if not is_api_format(api):
+        raise HTTPException(400, "工作流转换结果无效，请检查节点或改用 API 格式")
+    return _workflow_details(name, api, warnings=warnings, was_ui=was_ui, info=info)
 
 
 @router.get("/comfy/server-workflow-download")
@@ -426,42 +496,15 @@ def import_workflow(body: dict) -> dict:
     name = (body.get("name") or "").strip()
     if not name:
         raise HTTPException(400, "请给工作流起个名字")
-    raw = body.get("workflow")
-    if raw is None:
-        raise HTTPException(400, "缺少 workflow 内容")
-
-    import json
-
-    if isinstance(raw, str):
-        try:
-            wf = json.loads(raw)
-        except json.JSONDecodeError as e:
-            raise HTTPException(400, f"JSON 解析失败：{e}") from e
-    elif isinstance(raw, dict):
-        wf = raw
-    else:
-        raise HTTPException(400, "workflow 必须是对象或 JSON 文本")
-
-    warnings: list[str] = []
-    if is_ui_format(wf):
-        # 需要 object_info 才能把位置对应到输入名
-        try:
-            info = _client("cloud" if store.load_comfy_config().backend == "cloud" else "local").object_info()
-        except ComfyError as e:
-            raise HTTPException(
-                400,
-                f"这是 ComfyUI UI 格式工作流，转 API 格式需要连上出图后端拉 /object_info，但拉取失败：{e}。"
-                "请先在「连接」里把仙宫云（或本机）地址调通，或在 ComfyUI 里用「保存（API 格式）」导出后上传。",
-            ) from e
-        try:
-            wf, warnings = ui_to_api(wf, info)
-        except ConvertError as e:
-            raise HTTPException(400, str(e)) from e
-        if not wf:
-            raise HTTPException(400, "转换后工作流为空，请改用 API 格式导出")
-    elif not is_api_format(wf):
-        raise HTTPException(400, "无法识别的格式：既不是 API 格式也不是 UI 格式")
-
+    if name.lower().endswith(".json"):
+        name = name[:-5]
+    try:
+        name = store.safe_workflow_name(name)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    if body.get("overwrite") is False and name in store.list_workflows():
+        raise HTTPException(409, "已有同名工作流，请重新上传以生成新名称")
+    wf, warnings, _, _ = _uploaded_workflow(body)
     store.save_workflow_json(name, wf)
     # 顺手初猜一次参数映射并落盘
     try:
@@ -472,9 +515,10 @@ def import_workflow(body: dict) -> dict:
 
     # 若还没有活动工作流，就把这个设为活动
     cfg = store.load_comfy_config()
-    if not cfg.workflow_name:
+    if not cfg.workflow_name or body.get("activate"):
         cfg.workflow_name = name
         store.save_comfy_config(cfg)
+    service.get_workflow_params(refresh=True)
 
     return {
         "ok": True,
@@ -513,6 +557,16 @@ def workflow_raw(name: str) -> dict:
         return {"name": name, "workflow": store.load_workflow_json(name)}
     except FileNotFoundError as e:
         raise HTTPException(404, str(e)) from e
+
+
+@router.get("/comfy/workflows/{name}/inspect")
+def inspect_saved_workflow(name: str) -> dict:
+    """本地已保存的工作流可在未连接 ComfyUI 时重新打开。"""
+    try:
+        wf = store.load_workflow_json(name)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from e
+    return _workflow_details(name, wf)
 
 
 # ==========================================================================

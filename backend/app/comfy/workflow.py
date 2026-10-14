@@ -72,8 +72,13 @@ def is_api_format(wf: dict[str, Any]) -> bool:
         return False
     if not wf:
         return False
-    first = next(iter(wf.values()))
-    return isinstance(first, dict) and "class_type" in first
+    return all(
+        isinstance(node, dict)
+        and isinstance(node.get("class_type"), str)
+        and bool(node["class_type"])
+        and isinstance(node.get("inputs"), dict)
+        for node in wf.values()
+    )
 
 
 def _nodes_by_class(wf: dict[str, Any], classes: tuple[str, ...]) -> list[tuple[str, dict]]:
@@ -239,16 +244,34 @@ def describe_workflow(wf: dict[str, Any], object_info: dict[str, Any] | None = N
             raw = sinputs.get(slot.name_input)
             if st.style == "dict" and isinstance(raw, dict):
                 lora_slots.append({
+                    "node_id": st.node_id,
                     "input": slot.name_input, "lora": raw.get("lora", ""),
                     "on": bool(raw.get("on")), "strength": raw.get("strength", 1),
+                    "strength_clip": raw.get("strengthTwo"),
                 })
             else:
                 name = str(raw or "")
                 lora_slots.append({
+                    "node_id": st.node_id, "strength_input": slot.strength_input,
                     "input": slot.name_input, "lora": "" if name == st.empty_token else name,
                     "on": bool(name) and name != st.empty_token,
                     "strength": sinputs.get(slot.strength_input) if slot.strength_input else None,
                 })
+
+    else:
+        for slot in _detect_lora_chain(wf):
+            inputs = wf[slot.node_id]["inputs"]
+            name = inputs.get(slot.name_input, "")
+            strength = inputs.get(slot.strength_model_input, 1)
+            strength_clip = inputs.get(slot.strength_clip_input)
+            lora_slots.append({
+                "node_id": slot.node_id, "input": slot.name_input,
+                "lora": name, "on": bool(name) and (strength != 0 or strength_clip not in (None, 0)),
+                "strength": strength,
+                "strength_input": slot.strength_model_input,
+                "strength_clip_input": slot.strength_clip_input,
+                "strength_clip": strength_clip,
+            })
 
     return {
         "node_count": len(wf),
@@ -258,13 +281,14 @@ def describe_workflow(wf: dict[str, Any], object_info: dict[str, Any] | None = N
         "number_params": number_params,
         "sampler": sampler,
         "lora": {
-            "mode": ("堆加载 · " + ("对象式" if st.style == "dict" else "扁平式")) if st else "无",
+            "mode": ("堆加载 · " + ("对象式" if st.style == "dict" else "扁平式")) if st else ("串联" if lora_slots else "无"),
             "node_id": st.node_id if st else "",
             "class_type": st.class_type if st else "",
             "slots": lora_slots,
         },
         "output_node_ids": outputs,
         "has_prompt_placeholder": _contains_value(wf, PLACEHOLDER_PROMPT),
+        "has_negative_placeholder": _contains_value(wf, PLACEHOLDER_NEGATIVE),
     }
 
 
@@ -408,7 +432,7 @@ def _detect_lora_chain(wf: dict[str, Any]) -> list[LoraSlot]:
                 node_id=nid,
                 name_input="lora_name",
                 strength_model_input="strength_model" if "strength_model" in inp else "strength",
-                strength_clip_input="strength_clip" if "strength_clip" in inp else "strength",
+                strength_clip_input="strength_clip" if "strength_clip" in inp else ("strength" if "strength" in inp else ""),
             )
         )
     return slots
@@ -521,7 +545,7 @@ def apply_loras(wf: dict[str, Any], loras: list[dict[str, Any]], slots: list[Lor
         if slot.strength_model_input in node["inputs"] or slot.strength_model_input not in ("", None):
             node["inputs"][slot.strength_model_input] = weight
         if slot.strength_clip_input and slot.strength_clip_input != slot.strength_model_input:
-            node["inputs"][slot.strength_clip_input] = weight
+            node["inputs"][slot.strength_clip_input] = lora.get("weight_clip", weight)
         # 链内连接
         if i == 0:
             if model_entry is not None:
@@ -567,7 +591,7 @@ def apply_lora_stacker(
                     "on": True,
                     "lora": lora["name"],
                     "strength": lora.get("weight", 0.8),
-                    "strengthTwo": None,
+                    "strengthTwo": lora.get("weight_clip"),
                 }
             else:
                 # 保留原值里的 lora 名（可能是作者预设），只关掉
@@ -592,25 +616,26 @@ def apply_lora_stacker(
 
 
 def _replace_placeholders(obj: Any, mapping: dict[str, str]) -> None:
-    """把 ``%prompt%`` / ``%negative%`` 这类占位符整体替换成实际文本（就地）。"""
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if isinstance(v, str):
-                for token, text in mapping.items():
-                    if token and token in v:
-                        v = v.replace(token, text)
-                obj[k] = v
-            else:
-                _replace_placeholders(v, mapping)
-    elif isinstance(obj, list):
-        for i, v in enumerate(obj):
-            if isinstance(v, str):
-                for token, text in mapping.items():
-                    if token and token in v:
-                        v = v.replace(token, text)
-                obj[i] = v
-            else:
-                _replace_placeholders(v, mapping)
+    """只替换原模板中的占位符，保留固定文本且不解释用户提示词里的占位符。"""
+    if not mapping:
+        return
+    pattern = re.compile("|".join(re.escape(token) for token in mapping if token))
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if isinstance(item, str):
+                    value[key] = pattern.sub(lambda match: mapping[match.group()], item)
+                else:
+                    walk(item)
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                if isinstance(item, str):
+                    value[index] = pattern.sub(lambda match: mapping[match.group()], item)
+                else:
+                    walk(item)
+
+    walk(obj)
 
 
 def apply(
@@ -626,7 +651,7 @@ def apply(
 
     注入顺序：
     1. 占位符替换（``%prompt%`` / ``%negative%``）；
-    2. 字段映射写入（覆盖同名输入）；
+    2. 字段映射写入（占位符对应的正负向字段保留模板）；
     3. LoRA：优先堆加载节点，其次多 LoraLoader 串联。
     """
     out = copy.deepcopy(wf)
@@ -642,6 +667,10 @@ def apply(
 
     # 2. 字段映射
     for key, binding in params.bindings.items():
+        # 兼容以前落盘的映射表：占位符模式不再覆盖另一段固定条件文本。
+        token = {"prompt_pos": params.prompt_placeholder, "prompt_neg": params.negative_placeholder}.get(key)
+        if token and _contains_value(wf, token):
+            continue
         if key not in values:
             continue
         val = values[key]

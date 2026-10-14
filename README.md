@@ -154,7 +154,14 @@ cp config/comfy.example.yaml config/comfy.yaml     # Windows: copy config\comfy.
 2. **连云端 ComfyUI**（如仙宫云）：填云端给的访问地址；若需要鉴权会以 `Authorization: Bearer <key>` 发送。
    云端若只能 SSH 访问，可在 `config/comfy.yaml` 或环境变量里开 SSH 隧道（见 `app/config.py` 的 `TunnelSettings`）。
 
-连上后：
+工作流可以从后端拉取，也可以点「**上传 JSON 工作流**」选择本地文件：
+
+- **API 格式**可以离线解析；普通 **UI 格式**需要连接 ComfyUI 读取节点定义，支持先展开子图再转换。
+- 上传后先预览，确认后点「**保存并用它出图**」。工作流保存在本项目，可从「已保存的工作流」再次打开；上传同名文件会建议新名称。
+- 工作流正向文本使用 `%prompt%`，负向使用 `%negative%`，也可在解析后的文本框中点「插入」添加。出图时替换占位符，保留前后的固定词，例如 `masterpiece, %prompt%`。
+- 串联和堆加载 LoRA 都集中展示为列表，可调整启用、文件名、模型权重及节点支持的 CLIP 权重。
+
+从后端选择工作流时：
 
 - **点一个工作流 → 看参数**：读该工作流原始文件，UI 格式自动转 API 格式（靠 `/object_info` 把控件位置对应到输入名），
   并体检出提示词参数、采样参数、LoRA 槽、缺失节点。
