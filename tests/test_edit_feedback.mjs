@@ -115,3 +115,27 @@ test('清除表单调用清理一次并移除离开保护', async (t) => {
   feedback.clear('cards'); editor.dispose(); assert.equal(cleaned, 1);
   listeners.get('beforeunload')({ preventDefault: () => { warned = true; } }); assert.equal(warned, false);
 });
+
+test('明确保存指令可提交未改动的工作流，重复点击仍共享请求', async (t) => {
+  const { feedback } = fixture(t), pending = deferred(); let writes = 0;
+  const c = card(feedback, { write: async () => { writes++; await pending.promise; } });
+  const saving = c.editor.flush(true); assert.equal(c.editor.flush(true), saving); await tick();
+  assert.equal(writes, 1); pending.resolve(); assert.equal(await saving, true); assert.equal(c.editor.dirty(), false);
+});
+
+test('上传预览使用未保存基线，即使尚未编辑也需要保存', async (t) => {
+  const { feedback } = fixture(t); let writes = 0;
+  const editor = feedback.track({ element: new Element(), group: 'cards', label: '工作流', savedValue: null,
+    read: () => [], write: async () => { writes++; } });
+  assert.equal(editor.dirty(), true); assert.equal(await editor.flush(), true);
+  assert.equal(writes, 1); assert.equal(editor.dirty(), false);
+});
+
+test('试跑输入等未持久化字段不会清掉工作流保存失败提示', async (t) => {
+  const { feedback } = fixture(t), element = new Element(), status = new Element(); let value = 'original';
+  element.matches = () => true;
+  const editor = feedback.track({ element, group: 'cards', label: '工作流', watchSelector: '.persisted', status,
+    read: () => value, write: async () => { throw new Error('failed'); } });
+  value = 'dirty'; element.dispatchEvent(new Event('input')); assert.equal(await editor.flush(), false);
+  element.matches = () => false; element.dispatchEvent(new Event('input')); assert.equal(status.dataset.status, 'failed');
+});

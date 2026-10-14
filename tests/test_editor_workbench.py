@@ -59,6 +59,11 @@ def main():
     delay_character_save = threading.Event()
     delay_assets_read = threading.Event()
     delay_project_switch = threading.Event()
+    delay_provider_save = threading.Event()
+    delay_stage_response = threading.Event()
+    test_run_started = threading.Event()
+    test_run_release = threading.Event()
+    test_run_bodies = []
     fake_comfy = Mock(base_url='http://mock.invalid', ping=Mock(return_value=True),
                       object_info=Mock(return_value={}), list_models=Mock(return_value=[]),
                       list_workflows=Mock(return_value=[]), list_loras=Mock(return_value=[]),
@@ -100,6 +105,12 @@ def main():
             content_disposition = None
             if self.path.split('?')[0] == '/api/health':
                 body, status, content_type = b'{"ok":true}', 200, 'application/json'
+            elif self.path == '/api/comfy/test-run' and self.command == 'POST':
+                test_run_bodies.append(json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0)))))
+                test_run_started.set()
+                test_run_release.wait(timeout=5)
+                body = json.dumps({'url': data_url(png('pink'))}).encode('utf-8')
+                status, content_type = 200, 'application/json'
             elif self.path.split('?')[0] in ('/api/jobs/events', '/api/tavern/events'):
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/event-stream')
@@ -119,12 +130,16 @@ def main():
                     time.sleep(0.45)
                 if delay_assets_read.is_set() and self.command == 'GET' and self.path == '/api/projects/1/characters':
                     time.sleep(0.45)
+                if delay_provider_save.is_set() and self.command == 'PATCH' and self.path.startswith('/api/providers/'):
+                    time.sleep(0.45)
                 content = self.rfile.read(int(self.headers.get('Content-Length', 0)))
                 with api_lock, patch.object(comfy.service, 'get_client', side_effect=RuntimeError('模拟环境不访问 ComfyUI')), patch.object(pipeline.jobq, 'enqueue', side_effect=simulate_enqueue), patch.object(comfy, '_client', return_value=fake_comfy), patch.object(comfy, '_client_from', return_value=fake_comfy):
                     response = case.client.request(self.command, self.path, content=content,
                                                    headers={'Content-Type': 'application/json'})
                 body, status, content_type = response.content, response.status_code, response.headers.get('content-type', 'application/json')
                 content_disposition = response.headers.get('content-disposition')
+                if delay_stage_response.is_set() and self.command == 'GET' and self.path == '/api/stage-models':
+                    time.sleep(0.45)  # 已读取旧绑定后延迟响应，制造真实的读取/保存交错。
                 if '/med-doc/' in self.path and self.command == 'POST': captures.append(json.loads(body))
             self.send_response(status)
             self.send_header('Content-Type', content_type)
@@ -267,10 +282,54 @@ def main():
             page.locator('#btn-addpv').click()
             expect(page.locator('#pvlist')).to_contain_text('model-b')
             expect(page.locator('#pvlist')).to_contain_text('已设 Key')
+            # 供应商草稿：切分类、取消替换、失败重试与保存时锁定输入。
+            page.locator('[data-pv-edit]').first.click()
+            page.locator('#pv-model').fill('model-c')
+            page.once('dialog', lambda dialog: dialog.dismiss())
+            page.locator('#pv-cancel-edit').click()
+            expect(page.locator('#pv-model')).to_have_value('model-c')
+            provider_route = '**/api/providers/' + provider_id
+            def fail_provider(route):
+                if route.request.method == 'PATCH': route.fulfill(status=503, content_type='application/json', body='{"detail":"供应商保存失败"}')
+                else: route.continue_()
+            page.route(provider_route, fail_provider)
+            page.locator('#btn-addpv').click()
+            expect(page.locator('#pv-form-status')).to_contain_text('供应商保存失败')
+            expect(page.locator('#pv-model')).to_have_value('model-c')
+            page.unroute(provider_route, fail_provider)
             page.locator('.nav [data-tab="settings"][data-section="models"]').click()
+            page.locator('.nav [data-tab="settings"][data-section="providers"]').click()
+            expect(page.locator('#pv-model')).to_have_value('model-c')
+            delay_provider_save.set()
+            page.locator('#btn-addpv').click()
+            expect(page.locator('#pv-model')).to_be_disabled()
+            expect(page.locator('#btn-addpv')).to_be_disabled()
+            expect(page.locator('#pvlist')).to_contain_text('model-c')
+            delay_provider_save.clear()
+            expect(page.locator('#pv-model')).to_be_enabled()
+            assert browser_context.request.get(origin + '/api/providers').json()[0]['has_key']
+            # 酒馆导入保持现有草稿；只提供模拟配置，不读取真实酒馆配置。
+            page.locator('[data-pv-edit]').first.click()
+            page.locator('#pv-model').fill('still-draft')
+            imported_config = {'found': True, 'has_key': True, 'name': '导入测试', 'base_url': 'http://mock.invalid/v1', 'model': 'imported-model', 'api_key': 'not-a-real-key'}
+            page.route('**/api/providers/import-tavern', lambda route: route.fulfill(status=200, content_type='application/json', body=json.dumps(imported_config)))
+            page.locator('#btn-import-tv').click()
+            expect(page.locator('#pvlist')).to_contain_text('imported-model')
+            expect(page.locator('#pv-model')).to_have_value('still-draft')
+            page.unroute('**/api/providers/import-tavern')
+            page.once('dialog', lambda dialog: dialog.accept())
+            page.locator('#pv-cancel-edit').click()
+            expect(page.locator('#pv-model')).to_have_value('')
+            delay_stage_response.set()
+            with page.expect_request(lambda request: request.method == 'GET' and request.url.endswith('/api/stage-models')):
+                page.locator('.nav [data-tab="settings"][data-section="models"]').click()
             expect(page.locator('.stage-bind')).to_have_count(3)
             page.locator('.stage-bind[data-stage="S1"]').select_option(provider_id)
             expect(page.locator('[data-model-state="S1"]')).to_contain_text('已保存')
+            page.wait_for_timeout(650)
+            expect(page.locator('.stage-bind[data-stage="S1"]')).to_have_value(provider_id)
+            expect(page.locator('[data-model-state="S1"]')).to_contain_text('已保存')
+            delay_stage_response.clear()
             page.locator('.nav [data-tab="settings"][data-section="comfy"]').click()
             expect(page.locator('#settings-comfy-overview')).to_contain_text('还没有选定工作流')
             page.locator('.nav [data-tab="settings"][data-section="models"]').click()
@@ -461,6 +520,78 @@ def main():
             assert browser_context.request.get(origin + '/api/projects/1/characters').json() == []
             page.locator('#project-switch').select_option('2')
             expect(page.locator('#project-switch')).to_have_value('2')
+            # 出图设置：连接和工作流独立保存，关闭/切工作流保护未保存文本。
+            page.locator('.nav [data-tab="settings"][data-section="comfy"]').click()
+            page.locator('#cf-open').click()
+            page.locator('#cs-backend').select_option('cloud')
+            page.locator('#cs-url').fill('http://mock.invalid')
+            page.locator('#cs-key').fill('not-a-real-key')
+            page.once('dialog', lambda dialog: dialog.dismiss())
+            page.locator('.comfy-settings-window [data-close]').click()
+            expect(page.locator('#cs-url')).to_have_value('http://mock.invalid')
+            page.locator('#cs-save-connection').click()
+            expect(page.locator('#cs-connection-save-state')).to_have_text('已保存连接')
+            page.locator('#cs-connect').click()
+            expect(page.locator('#cs-state')).to_contain_text('已连接')
+            workflow = {
+                '1': {'class_type': 'CheckpointLoaderSimple', 'inputs': {'ckpt_name': 'base.safetensors'}},
+                '2': {'class_type': 'LoraLoader', 'inputs': {'model': ['1', 0], 'clip': ['1', 1], 'lora_name': 'style.safetensors', 'strength_model': 0.7, 'strength_clip': 0.4}},
+                '3': {'class_type': 'CLIPTextEncode', 'inputs': {'clip': ['2', 1], 'text': 'masterpiece, %prompt%'}},
+                '4': {'class_type': 'CLIPTextEncode', 'inputs': {'clip': ['2', 1], 'text': 'lowres, %negative%'}},
+                '5': {'class_type': 'KSampler', 'inputs': {'positive': ['3', 0], 'negative': ['4', 0], 'model': ['2', 0], 'seed': 1}},
+                '6': {'class_type': 'SaveImage', 'inputs': {'images': ['5', 0], 'filename_prefix': 'comic'}},
+            }
+            page.locator('#cs-upload-file').set_input_files({'name': 'guard-workflow.json', 'mimeType': 'application/json', 'buffer': json.dumps(workflow).encode('utf-8')})
+            expect(page.locator('#cs-workflow-save-state')).to_contain_text('未保存')
+            page.locator('.cs-workflow-text').first.fill('comic, %prompt%, fixed words')
+            page.locator('.cs-lora-w').first.fill('0')
+            workflow_route = '**/api/comfy/workflows'
+            def fail_workflow(route):
+                route.fulfill(status=503, content_type='application/json', body='{"detail":"工作流保存失败"}')
+            page.route(workflow_route, fail_workflow)
+            page.locator('#cs-use').click()
+            expect(page.locator('#cs-workflow-save-state')).to_contain_text('工作流保存失败')
+            expect(page.locator('.cs-workflow-text').first).to_have_value('comic, %prompt%, fixed words')
+            expect(page.locator('#cs-connection-save-state')).to_have_text('已保存连接')
+            page.unroute(workflow_route, fail_workflow)
+            page.locator('#cs-use').click()
+            expect(page.locator('#cs-workflow-save-state')).to_have_text('已保存')
+            saved_name = page.locator('#cs-current').inner_text()
+            saved_workflow = browser_context.request.get(origin + '/api/comfy/workflows/' + saved_name + '/inspect').json()['workflow']
+            assert saved_workflow['3']['inputs']['text'] == 'comic, %prompt%, fixed words'
+            assert saved_workflow['2']['inputs']['strength_model'] == 0
+            page.locator('.cs-workflow-text').first.fill('pending edits, %prompt%')
+            page.once('dialog', lambda dialog: dialog.dismiss())
+            page.locator('[data-saved-wf]').first.click()
+            expect(page.locator('.cs-workflow-text').first).to_have_value('pending edits, %prompt%')
+            page.once('dialog', lambda dialog: dialog.dismiss())
+            page.locator('.comfy-settings-window [data-close]').click()
+            expect(page.locator('.cs-workflow-text').first).to_have_value('pending edits, %prompt%')
+            page.screenshot(path=str(screenshots / 'workflow-draft-desktop.png'))
+            for width in (768, 390):
+                page.set_viewport_size({'width': width, 'height': 1000})
+                assert page.locator('.comfy-settings-window .box').evaluate('element => element.scrollWidth <= element.clientWidth + 1'), f'出图配置在 {width}px 溢出'
+                page.screenshot(path=str(screenshots / f'workflow-draft-{width}.png'))
+            page.once('dialog', lambda dialog: dialog.accept())
+            page.locator('.comfy-settings-window [data-close]').click()
+            page.set_viewport_size({'width': 1440, 'height': 1100})
+            page.locator('#cf-open').click()
+            expect(page.locator('#cs-key')).to_have_value('')
+            page.locator('#cs-connect').click()
+            expect(page.locator('#cs-state')).to_contain_text('已连接')
+            page.locator('[data-saved-wf]').first.click()
+            expect(page.locator('.cs-workflow-text').first).to_have_value('comic, %prompt%, fixed words')
+            page.locator('#cs-t-pos').fill('test-run positive')
+            page.locator('#cs-t-neg').fill('test-run negative')
+            page.locator('#cs-test').click()
+            assert test_run_started.wait(timeout=3), '前端应提交试跑参数'
+            assert test_run_bodies[-1]['prompt_pos'] == 'test-run positive'
+            assert test_run_bodies[-1]['prompt_neg'] == 'test-run negative'
+            assert test_run_bodies[-1]['loras'][0]['weight'] == 0
+            expect(page.locator('#cs-use')).to_be_disabled()
+            page.locator('.comfy-settings-window [data-close]').click()
+            expect(page.locator('.comfy-settings-window')).to_have_count(0)
+            test_run_release.set()
             assert not errors, errors
             # 将本次截图复制到调用者指定的独立可写目录，仅用于视觉检查。
             import os
@@ -476,7 +607,7 @@ def main():
                           'export_pdf_cbz_download': 'ok',
                           'mobile_menu_and_project_switch': 'ok',
                           'configuration_assets_persist': 'ok',
-                          'project_and_dialog_drafts': 'ok', 'save_failure_and_race': 'ok',
+                          'configuration_window_drafts': 'ok', 'project_and_dialog_drafts': 'ok', 'save_failure_and_race': 'ok',
                           'page_errors': errors}, ensure_ascii=False))
         return 0
     finally:

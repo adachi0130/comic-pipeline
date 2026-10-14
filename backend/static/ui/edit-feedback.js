@@ -12,8 +12,8 @@ export function createEditFeedback({ toast, confirmAction = (message) => window.
     return next;
   }
 
-  function track({ element, group, label, read, write, auto = false, saveButton, status, onSaved, onDispose, busyCheck }) {
-    let saved = JSON.stringify(read());
+  function track({ element, group, label, read, write, auto = false, saveButton, status, onSaved, onDispose, busyCheck, savedValue, savedText = '已保存', watchSelector }) {
+    let saved = JSON.stringify(savedValue === undefined ? read() : savedValue);
     let timer = null, running = null, disposed = false, failure = '', locked = false;
     const baselineButton = saveButton?.textContent;
     if (!status) {
@@ -27,11 +27,12 @@ export function createEditFeedback({ toast, confirmAction = (message) => window.
       if (disposed) return;
       status.dataset.status = running ? 'saving' : failure ? 'failed' : dirty() ? 'dirty' : 'saved';
       status.textContent = running ? '保存中…' : failure ? `保存失败：${failure}；修改已保留，点击保存重试。`
-        : dirty() ? (auto ? '修改未保存，停止输入后自动保存' : '有未保存的修改') : '已保存';
+        : dirty() ? (auto ? '修改未保存，停止输入后自动保存' : '有未保存的修改') : (typeof savedText === 'function' ? savedText() : savedText);
       if (saveButton) { saveButton.disabled = !!running || locked; saveButton.textContent = running ? '保存中…' : baselineButton; }
     }
-    function changed() {
+    function changed(event) {
       if (disposed) return;
+      if (event && watchSelector && !event.target.matches(watchSelector)) return;
       failure = ''; clearTimeout(timer); render();
       if (auto && dirty()) timer = setTimeout(() => flush(), 700);
     }
@@ -50,10 +51,11 @@ export function createEditFeedback({ toast, confirmAction = (message) => window.
       } catch (error) { failure = error.message || '请求失败'; return false; }
       finally { running = null; clearTimeout(timer); render(); }
     }
-    function flush() {
+    function flush(force = false) {
       clearTimeout(timer);
       if (disposed) return Promise.resolve(true);
       if (running) return running;
+      if (force) saved = null;
       if (!dirty()) { failure = ''; render(); return Promise.resolve(true); }
       // 推迟到微任务，保证即使同步校验失败也能在 finally 中清掉 running。
       running = Promise.resolve().then(persist); render();
