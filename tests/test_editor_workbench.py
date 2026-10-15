@@ -64,6 +64,8 @@ def main():
     test_run_started = threading.Event()
     test_run_release = threading.Event()
     test_run_bodies = []
+    image_requests = []
+    delay_image_submit = threading.Event()
     fake_comfy = Mock(base_url='http://mock.invalid', ping=Mock(return_value=True),
                       object_info=Mock(return_value={}), list_models=Mock(return_value=[]),
                       list_workflows=Mock(return_value=[]), list_loras=Mock(return_value=[]),
@@ -71,14 +73,27 @@ def main():
                       list_schedulers=Mock(return_value=[]))
 
     def simulate_enqueue(kind, *, project_id=None, stage='', payload=None):
-        assert kind == 'book', '冒烟检查不运行真实出图或模型作业'
+        assert kind in ('book', 'image'), '冒烟检查不运行真实模型作业'
         with Session(case.engine) as session:
-            job = Job(project_id=project_id, kind=kind, stage=stage, payload=payload or {}, status='running')
+            job = Job(project_id=project_id, kind=kind, stage=stage, payload=payload or {}, status='queued' if kind == 'image' else 'running')
             session.add(job); session.commit()
+            if kind == 'image':
+                image_requests.append(payload)
+                session.refresh(job)
+                return job
             job.result = book.handle(session, job)
             job.status = 'done'
             session.commit(); session.refresh(job)
             return job
+
+    def simulate_cancel(job_id):
+        with Session(case.engine) as session:
+            job = session.get(Job, job_id)
+            if job is None: return False
+            job.cancel_requested = True
+            job.status = 'cancelled'
+            session.commit()
+            return True
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         def log_message(self, *args):
@@ -133,11 +148,13 @@ def main():
                 if delay_provider_save.is_set() and self.command == 'PATCH' and self.path.startswith('/api/providers/'):
                     time.sleep(0.45)
                 content = self.rfile.read(int(self.headers.get('Content-Length', 0)))
-                with api_lock, patch.object(comfy.service, 'get_client', side_effect=RuntimeError('模拟环境不访问 ComfyUI')), patch.object(pipeline.jobq, 'enqueue', side_effect=simulate_enqueue), patch.object(comfy, '_client', return_value=fake_comfy), patch.object(comfy, '_client_from', return_value=fake_comfy):
+                with api_lock, patch.object(comfy.service, 'get_client', side_effect=RuntimeError('模拟环境不访问 ComfyUI')), patch.object(pipeline.jobq, 'enqueue', side_effect=simulate_enqueue), patch.object(jobs.jobq, 'request_cancel', side_effect=simulate_cancel), patch.object(comfy, '_client', return_value=fake_comfy), patch.object(comfy, '_client_from', return_value=fake_comfy):
                     response = case.client.request(self.command, self.path, content=content,
                                                    headers={'Content-Type': 'application/json'})
                 body, status, content_type = response.content, response.status_code, response.headers.get('content-type', 'application/json')
                 content_disposition = response.headers.get('content-disposition')
+                if delay_image_submit.is_set() and self.command == 'POST' and self.path.endswith('/generate'):
+                    time.sleep(0.6)
                 if delay_stage_response.is_set() and self.command == 'GET' and self.path == '/api/stage-models':
                     time.sleep(0.45)  # 已读取旧绑定后延迟响应，制造真实的读取/保存交错。
                 if '/med-doc/' in self.path and self.command == 'POST': captures.append(json.loads(body))
@@ -592,6 +609,105 @@ def main():
             page.locator('.comfy-settings-window [data-close]').click()
             expect(page.locator('.comfy-settings-window')).to_have_count(0)
             test_run_release.set()
+            # A6：实际逐格工作台，隔离候选文件/参数，生成仅入临时队列。
+            page.locator('#project-switch').select_option('1')
+            expect(page.locator('#project-switch')).to_have_value('1')
+            with api_lock:
+                case.artifact('page_script', 'page:1', payload={'template_id': 'vertical:test', 'panels': [
+                    {'panel_order': 1, 'shot': 'close-up', 'characters': ['小明'], 'action': '望向月亮'}, {'panel_order': 2, 'shot': 'wide'}]})
+                case.artifact('page_script', 'page:2', payload={'template_id': 'vertical:test', 'panels': [{'panel_order': 1, 'shot': 'long'}]})
+                for ref in ('panel:1.1', 'panel:2.1'):
+                    case.artifact('panel_prompt', ref, payload={'prompt_pos': 'moonlight', 'prompt_neg': 'blur', 'width': 704, 'height': 996,
+                        'seed': 0, 'params': {'ckpt_name': 'keep-base'}, 'loras': [{'name': 'style.safetensors', 'weight': 0, 'weight_clip': 0}]})
+                old_image = case.artifact('image', 'panel:1.1', payload={'candidates': [case.candidate(case.file('qa/red.png', png('red'))), case.candidate(case.file('qa/blue.png', png('blue')))], 'selected_index': 0})
+                old_image_id = old_image.id
+            page.locator('.nav [data-tab="images"]').click()
+            expect(page.locator('[data-iw-pick]')).to_have_count(3)
+            expect(page.locator('#iw-positive')).to_have_value('moonlight')
+            expect(page.locator('#iw-candidates .iw-candidate')).to_have_count(2)
+            page.locator('[data-iw-compare-key]').nth(0).check()
+            page.locator('[data-iw-compare-key]').nth(1).check()
+            page.locator('#iw-compare').click()
+            expect(page.locator('.iw-compare-grid img')).to_have_count(2)
+            page.locator('[data-iw-adopt]').nth(1).click()
+            expect(page.locator('.iw-compare-modal')).to_have_count(0)
+            expect(page.locator('#iw-candidate-count')).to_contain_text('已选 #2')
+            assert browser_context.request.get(origin + f'/api/artifacts/{old_image_id}').json()['payload']['selected_index'] == 0
+            with page.expect_download() as image_download:
+                page.locator('#iw-candidates a').nth(1).click()
+            assert Path(image_download.value.path()).read_bytes().startswith(b'\x89PNG')
+            page.locator('#iw-search').fill('不存在的关键词')
+            expect(page.locator('[data-iw-pick]')).to_have_count(0)
+            expect(page.locator('#iw-current')).to_contain_text('没有分格或没有匹配项')
+            page.locator('#iw-clear-filter').click()
+            expect(page.locator('[data-iw-pick]')).to_have_count(3)
+            page.locator('#iw-status').select_option('prompt')
+            expect(page.locator('[data-iw-pick]')).to_have_count(1)
+            expect(page.locator('#iw-prepare')).to_be_visible()
+            page.locator('#iw-clear-filter').click()
+            page.locator('[data-iw-pick="panel:1.1"]').click()
+            # 自动保存失败禁止切格，保留草稿；重试后 PN/尺寸/零权重同一版本保存。
+            inline_route = '**/api/projects/1/panel-prompt/*'
+            page.route(inline_route, lambda route: route.fulfill(status=503, content_type='application/json', body='{"detail":"本格保存失败"}') if route.request.method == 'PATCH' else route.continue_())
+            page.locator('#iw-positive').fill('retained draft')
+            expect(page.locator('#iw-save-state')).to_contain_text('本格保存失败')
+            page.locator('#iw-next').click()
+            expect(page.locator('#iw-positive')).to_have_value('retained draft')
+            page.unroute(inline_route)
+            page.locator('#iw-negative').fill('negative draft')
+            page.locator('.iw-settings summary').click()
+            page.locator('#iw-width').fill('832')
+            page.locator('#iw-seed').fill('0')
+            page.locator('.iw-lora-weight').fill('0')
+            page.locator('.iw-lora-clip').fill('0')
+            page.locator('#iw-save').click()
+            expect(page.locator('#iw-save-state')).to_have_text('已保存')
+            saved = browser_context.request.get(origin + '/api/projects/1/image-board').json()['pages'][0]['panels'][0]['prompt']
+            assert saved['prompt_pos'] == 'retained draft' and saved['prompt_neg'] == 'negative draft'
+            assert saved['seed'] == 0 and saved['width'] == 832 and saved['params']['ckpt_name'] == 'keep-base'
+            assert saved['loras'][0]['weight'] == 0 and saved['loras'][0]['weight_clip'] == 0
+            # 上传、移除当前选图，历史下载仍可读取。
+            page.locator('#iw-upload-file').set_input_files({'name': 'green.png', 'mimeType': 'image/png', 'buffer': png('green')})
+            expect(page.locator('#iw-candidates .iw-candidate')).to_have_count(3)
+            page.locator('[data-iw-use]').nth(2).click()
+            expect(page.locator('#iw-candidate-count')).to_contain_text('已选 #3')
+            page.once('dialog', lambda dialog: dialog.accept())
+            page.locator('[data-iw-delete]').nth(2).click()
+            expect(page.locator('#iw-candidates .iw-candidate')).to_have_count(2)
+            expect(page.locator('#iw-candidate-count')).not_to_contain_text('已选')
+            assert browser_context.request.get(origin + f'/api/artifacts/{old_image_id}/candidate/1').status == 200
+            # 提交期间切格，迟到结果归原格，不跳回；取消写入隔离队列。
+            page.locator('#iw-count').fill('2')
+            delay_image_submit.set()
+            with page.expect_request(lambda request: request.method == 'POST' and request.url.endswith('/generate')):
+                page.locator('#iw-generate').click()
+            page.locator('[data-iw-pick="panel:2.1"]').click()
+            expect(page.locator('#iw-current h2').first).to_contain_text('第二页')
+            page.wait_for_timeout(800)
+            assert image_requests[-1]['panel_ref'] == 'panel:1.1' and image_requests[-1]['count'] == 2
+            assert image_requests[-1]['prompt_artifact_id'] == saved['artifact_id']
+            assert image_requests[-1]['seed'] == 0 and image_requests[-1]['loras'][0]['weight_clip'] == 0
+            expect(page.locator('#iw-task')).to_have_text('')
+            page.locator('[data-iw-pick="panel:1.1"]').click()
+            expect(page.locator('#iw-task')).to_contain_text('本格任务')
+            page.locator('#iw-cancel').click()
+            expect(page.locator('#iw-task')).to_contain_text('取消')
+            delay_image_submit.clear()
+            page.locator('#iw-next-page').click()
+            expect(page.locator('#iw-page')).to_have_value('page:2')
+            page.reload()
+            expect(page.locator('#iw-page')).to_have_value('page:2')
+            expect(page.locator('#iw-current h2').first).to_contain_text('第二页')
+            page.locator('#iw-prev-page').click()
+            for width in (1440, 768, 390):
+                page.set_viewport_size({'width': width, 'height': 1100})
+                page.wait_for_timeout(150)
+                assert page.evaluate('() => document.documentElement.scrollWidth <= innerWidth + 1'), f'逐格工作台在 {width}px 溢出'
+                for selector in ('.iw-lora-weight', '.iw-lora-clip'):
+                    field = page.locator(selector)
+                    field.scroll_into_view_if_needed()
+                    assert field.evaluate('(el) => {const r=el.getBoundingClientRect(); return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===el}'), f'{selector} 在 {width}px 被遮挡'
+                page.screenshot(path=str(screenshots / f'image-workbench-{width}.png'), full_page=True)
             assert not errors, errors
             # 将本次截图复制到调用者指定的独立可写目录，仅用于视觉检查。
             import os
@@ -607,7 +723,7 @@ def main():
                           'export_pdf_cbz_download': 'ok',
                           'mobile_menu_and_project_switch': 'ok',
                           'configuration_assets_persist': 'ok',
-                          'configuration_window_drafts': 'ok', 'project_and_dialog_drafts': 'ok', 'save_failure_and_race': 'ok',
+                          'configuration_window_drafts': 'ok', 'project_and_dialog_drafts': 'ok', 'save_failure_and_race': 'ok', 'image_workbench': 'ok',
                           'page_errors': errors}, ensure_ascii=False))
         return 0
     finally:

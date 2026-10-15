@@ -14,6 +14,7 @@ from ...models import (
     ArtifactEdge,
     ArtifactKind,
     ArtifactStatus,
+    Job,
     Project,
     LLMProvider,
     StageModel,
@@ -479,6 +480,7 @@ def prompt_board(project_id: int, session: Session = Depends(get_session)) -> di
             "prompt_pos": p.get("prompt_pos", ""), "prompt_neg": p.get("prompt_neg", ""),
             "loras": p.get("loras", []), "width": p.get("width"), "height": p.get("height"),
             "frame": p.get("frame", ""), "params": p.get("params", {}),
+            "seed": p.get("seed"),
         }
 
     pages = []
@@ -522,6 +524,47 @@ def prompt_board(project_id: int, session: Session = Depends(get_session)) -> di
             select(LLMProvider).where(LLMProvider.enabled.is_(True)).limit(1)
         ).first()),
     }
+
+
+@router.get("/projects/{project_id}/image-board")
+def image_board(project_id: int, session: Session = Depends(get_session)) -> dict:
+    """按页/格汇总出图上下文，不暴露候选文件的本机路径。"""
+    import hashlib
+    from ...storage import StorageError, resolve_project_path
+    from .jobs import _brief as job_brief
+
+    board = prompt_board(project_id, session)
+    images = {art.ref: art for art in A.all_current(session, project_id, ArtifactKind.IMAGE.value)}
+    referenced = set()
+    for page in board["pages"]:
+        for panel in page["panels"]:
+            ref = panel["panel_ref"]; referenced.add(ref)
+            art = images.get(ref)
+            panel["image"] = None
+            if art is None:
+                continue
+            payload = art.payload or {}
+            candidates = []
+            for index, raw in enumerate(payload.get("candidates") or []):
+                candidate = raw if isinstance(raw, dict) else {}
+                raw_path = candidate.get("path")
+                try:
+                    resolve_project_path(raw_path, project_id)
+                    available = True
+                except (StorageError, OSError, TypeError):
+                    available = False
+                key = hashlib.sha256(str(raw_path or f"{art.id}:{index}").encode("utf-8")).hexdigest()[:24]
+                candidates.append({"index": index, "key": key, "available": available,
+                                   "url": f"/api/artifacts/{art.id}/candidate/{index}" if available else "",
+                                   "uploaded": bool(candidate.get("uploaded")), "seed": candidate.get("seed")})
+            panel["image"] = {"artifact_id": art.id, "version": art.version, "status": art.status,
+                              "selected_index": payload.get("selected_index"), "candidates": candidates}
+    jobs = session.scalars(select(Job).where(Job.project_id == project_id, Job.kind == "image")
+                           .order_by(Job.id.desc()).limit(100)).all()
+    board["jobs"] = [job_brief(job) for job in jobs]
+    board["project_id"] = project_id
+    board["orphan_image_count"] = sum(ref not in referenced for ref in images)
+    return board
 
 
 @router.patch("/projects/{project_id}/panel-prompt/{panel_ref}")

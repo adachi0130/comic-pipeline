@@ -219,6 +219,56 @@ body.editor-expanded .editor-frame-wrap iframe{height:calc(100dvh - 180px)}
 .toast-stack{position:fixed;right:18px;bottom:18px;z-index:99999;display:flex;flex-direction:column;align-items:flex-end;gap:8px;max-width:calc(100vw - 36px);pointer-events:none}
 .toast-stack .toast{position:static;display:flex;align-items:flex-start;gap:8px;max-width:min(420px,calc(100vw - 36px));pointer-events:auto;overflow-wrap:anywhere}
 .toast-close{border:0;background:transparent;padding:0 2px;font-size:18px;line-height:1.15;color:var(--muted);flex-shrink:0}
+.iw-toolbar .h2sub{margin-bottom:6px}
+.iw-layout{display:grid;grid-template-columns:240px minmax(0,1fr);gap:16px;align-items:start}
+.iw-browser{padding:16px;position:sticky;top:16px}
+.iw-page-actions{justify-content:space-between;margin:8px 0}
+#iw-clear-filter{margin:8px 0}
+#iw-panel-list{display:grid;gap:6px;margin-top:10px;max-height:65vh;overflow:auto}
+.iw-panel-pick{display:flex;align-items:center;gap:8px;text-align:left;padding:8px;background:#fff;border-color:var(--line);min-width:0}
+.iw-panel-pick.active{border-color:var(--accent);background:#f4f7ff}
+.iw-panel-pick img,.iw-panel-placeholder{width:42px;height:54px;object-fit:contain;border-radius:5px;background:#f1f5f9;flex-shrink:0}
+.iw-panel-placeholder{display:flex;align-items:center;justify-content:center;color:var(--muted)}
+.iw-panel-label{display:flex;flex-wrap:wrap;gap:3px;min-width:0;font-size:12px}
+.iw-panel-label b,.iw-panel-label>span:first-of-type{width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.iw-panel-label>span:first-of-type{color:var(--muted);font-size:11px}
+.iw-page-preview{display:flex;gap:8px;align-items:center;margin:12px 0;font-size:12px;overflow-wrap:anywhere}
+.iw-page-preview img{width:58px;max-height:85px;object-fit:contain;background:#f8fafc}
+.iw-current-card h2{flex-wrap:wrap}
+.iw-script{margin-top:12px;font-size:12px;overflow-wrap:anywhere}
+.iw-script summary,.iw-settings summary,.iw-advanced>summary{cursor:pointer;color:var(--ink2);padding:8px 0}
+.iw-script dl{display:grid;grid-template-columns:40px minmax(0,1fr);gap:5px;background:#f8fafc;padding:10px;border-radius:8px}
+.iw-script dd{margin:0;white-space:pre-wrap}
+.iw-task{margin-top:10px;font-size:12px;overflow-wrap:anywhere}
+.iw-candidate-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,160px),1fr));gap:10px}
+.iw-candidate{border:2px solid var(--line);border-radius:10px;overflow:hidden;min-width:0}
+.iw-candidate.selected{border-color:var(--ok);background:#f6fffb}
+.iw-candidate>.row{padding:6px 8px;gap:5px;font-size:11px}
+.iw-image-open{display:block;width:100%;padding:0;border:0;border-radius:0;background:#f5f7fa}
+.iw-image-open img{display:block;width:100%;height:190px;object-fit:contain}
+.iw-image-missing{height:190px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;background:#f8fafc}
+.iw-compare-check{display:flex;align-items:center;gap:3px}
+.iw-compare-check input{width:auto;margin:0}
+.iw-parameter-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:8px}
+.iw-parameter-grid input{min-width:0}
+.iw-settings{margin-top:10px;font-size:12px}
+.iw-lora-row,.iw-lora-head{display:grid;grid-template-columns:minmax(0,1fr) 74px 74px 54px;gap:6px;align-items:center;margin-top:6px}
+.iw-lora-row input{min-width:0;padding:7px 8px}
+.iw-lora-row .lora-wrap{min-width:0;display:block}
+.iw-weight{min-width:0}.iw-weight>span{display:none}
+.iw-lora-head{font-size:11px;color:var(--muted)}
+.iw-generate-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;border-top:1px solid var(--line);padding-top:14px;margin-top:14px}
+.iw-generate-bar label{margin:0}.iw-generate-bar input{width:70px}
+.iw-generate-bar>.mut{font-size:12px}
+.iw-compare-modal .box{width:min(1120px,95vw)}
+.iw-compare-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.iw-compare-grid.single{grid-template-columns:minmax(0,1fr)}
+.iw-compare-grid img{width:100%;height:60vh;object-fit:contain;background:#f8fafc;border-radius:8px}
+.iw-compare-grid .row{margin-top:8px;font-size:12px}
+.iw-advanced>summary{font-weight:600}
+@media(max-width:1100px){.iw-layout{grid-template-columns:210px minmax(0,1fr)}.iw-parameter-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:900px){.iw-layout{grid-template-columns:minmax(0,1fr)}.iw-browser{position:static}#iw-panel-list{display:flex;overflow-x:auto;max-height:none;padding-bottom:3px}.iw-panel-pick{flex:0 0 180px}.iw-page-preview{display:none}.iw-compare-grid{gap:8px}.iw-compare-grid img{height:45vh}}
+@media(max-width:600px){.iw-lora-head{display:none}.iw-lora-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;align-items:end;margin-top:10px}.iw-lora-row .lora-wrap{grid-column:1/-1}.iw-weight>span{display:block;font-size:11px;color:var(--muted);margin:3px 0}.iw-lora-row input{width:100%}}
 @media(max-width:700px){.toast-stack .toast:nth-last-child(n+2){display:none}}
 .switch{display:flex;align-items:center;gap:9px;background:#f8fafc;border:1px solid var(--line);border-radius:999px;padding:6px 14px}
 .switch input{width:auto}
@@ -582,39 +632,19 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
 
     <!-- 出图 -->
     <section id="tab-images" class="hidden">
-      <div class="card">
-        <h2>出图工作台 <span class="mut" style="font-size:12px;font-weight:400">分格产物 → 逐格出图</span></h2>
-        <div class="h2sub">先看 S2 分出来的版式与格子，再逐格改提示词 / 勾选 LoRA / 调批量张数 / 挑图。
-          点右上角「出图设置」配仙宫云地址与工作流。</div>
-        <div class="row">
-          <button class="sm" id="wb-reload">刷新</button>
-          <label class="fld" style="margin:0">每格批量张数</label>
-          <input id="wb-count" type="number" value="4" min="1" max="8" style="width:74px">
-          <span class="spacer"></span>
-          <span class="pill" id="wb-info">—</span>
-          <button class="sm primary" id="wb-comfy">出图设置</button>
-        </div>
+      <div class="card iw-toolbar"><div class="row"><div><h2>逐格出图工作台</h2><div class="h2sub">选页与格，编辑提示词和参数，比较候选图后采用满意的画面。</div></div><span class="spacer"></span>
+        <button class="sm" id="iw-refresh">刷新</button><button class="sm primary" id="iw-comfy">出图设置</button><button class="sm" id="iw-compose">去分页合成</button></div>
+        <div class="row"><span class="pill tag" id="iw-connection">读取出图设置…</span><span class="pill" id="iw-info">—</span><span class="mut" id="iw-orphans"></span></div></div>
+      <div class="iw-layout"><aside class="card iw-browser"><div class="row"><h2>页与格</h2><span class="spacer"></span><button class="sm" id="iw-filter-toggle" aria-expanded="true">筛选</button></div>
+        <label class="fld" for="iw-page">漫画页</label><select id="iw-page"><option value="">全部页面</option></select>
+        <div class="row iw-page-actions"><button class="sm" id="iw-prev-page">上一页</button><button class="sm" id="iw-next-page">下一页</button></div>
+        <div id="iw-filters"><label class="fld" for="iw-status">进度</label><select id="iw-status"><option value="">全部进度</option><option value="prompt">待提示词</option><option value="image">待出图</option><option value="selection">待选图</option><option value="selected">已选定</option><option value="stale">需确认</option></select>
+          <label class="fld" for="iw-search">搜索角色、动作或提示词</label><input id="iw-search" type="search" placeholder="输入关键词"><button class="sm" id="iw-clear-filter">清空筛选</button></div>
+        <div id="iw-page-summary"></div><div class="mut" id="iw-filter-info">加载后显示格列表</div><div id="iw-panel-list"></div></aside>
+        <div id="iw-current"><div class="card"><div class="empty">选择项目后开始逐格出图。</div></div></div>
       </div>
-      <div class="card" id="wb-pages-card">
-        <h2 class="foldable" data-fold="wb-pages">分格产物 <span class="pill" id="wb-pages-info">—</span>
-          <span class="mut" style="font-size:12px;font-weight:400">来自 S2，点标题收起</span>
-          <span class="fold-ic">▾</span></h2>
-        <div id="wb-pages" style="margin-top:12px"><div class="empty">点「刷新」加载（需先跑 S2 分格）</div></div>
-      </div>
-      <div class="card" id="wb-gallery-card">
-        <h2 class="foldable" data-fold="wb-gallery">候选图库 <span class="pill" id="wb-gallery-info">—</span>
-          <span class="mut" style="font-size:12px;font-weight:400">出图后攒在这里，点图挑选（点标题收起）</span>
-          <span class="fold-ic">▾</span></h2>
-        <div id="wb-gallery" style="margin-top:12px"><div class="empty">还没有候选图，去下面点「出图」</div></div>
-      </div>
-      <h2 class="foldable" data-fold="wb-list" style="font-size:16px;margin:6px 2px">逐格出图
-        <span class="mut" style="font-size:12px;font-weight:400">改词 / 自动填写 / 出图</span>
-        <span class="fold-ic">▾</span></h2>
-      <div id="wb-list">
-        <div class="card"><div class="empty">点「刷新」加载逐格提示词（需先跑 S3 提示词）</div></div>
-      </div>
-      <div class="card">
-        <h2>候选图与审查</h2>
+      <details class="card iw-advanced"><summary>高级产物与其他记录</summary>
+        <h2>产物诊断</h2>
         <div class="h2sub">选类型后加载；点图放大，点「采用」选定</div>
         <div class="row"><button class="sm" id="reload-art">刷新产物</button>
           <select id="art-kind" style="width:200px">
@@ -625,7 +655,7 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
             <option value="prose">正文分段（S1）</option>
           </select></div>
         <div id="artbox" style="margin-top:12px"><div class="empty">点「刷新产物」加载</div></div>
-      </div>
+      </details>
     </section>
 
     <!-- 分页合成（S5） -->
@@ -779,6 +809,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=84"></script>
+<script type="module" src="/ui/app.js?v=85"></script>
 </body>
 </html>

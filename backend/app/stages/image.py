@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..artifacts import create, current, set_status
-from ..models import ArtifactKind, ArtifactStatus, Job, Project
+from ..models import Artifact, ArtifactKind, ArtifactStatus, Job, Project
 from ..storage import new_output_dir, validate_ref
 from .select import select_index
 
@@ -68,7 +68,15 @@ def handle(session: Session, job: Job) -> dict:
         raise ValueError(f"项目不存在：{project_id}")
 
     # 该格的 S3 提示词产物：提示词/尺寸/LoRA 的权威来源（S3 已按画框算好宽高、合并好 LoRA）
-    s3_art = current(session, project_id, ArtifactKind.PANEL_PROMPT.value, panel_ref)
+    pinned_id = payload.get("prompt_artifact_id")
+    if pinned_id is not None:
+        if isinstance(pinned_id, bool) or not isinstance(pinned_id, int):
+            raise ValueError("提示词版本 ID 必须是整数")
+        s3_art = session.get(Artifact, pinned_id)
+        if s3_art is None or s3_art.project_id != project_id or s3_art.kind != ArtifactKind.PANEL_PROMPT.value or s3_art.ref != panel_ref:
+            raise ValueError("提示词版本不属于当前项目和格")
+    else:
+        s3_art = current(session, project_id, ArtifactKind.PANEL_PROMPT.value, panel_ref)
     s3_payload: dict = (s3_art.payload or {}) if s3_art is not None else {}
 
     prompt_pos = payload.get("prompt_pos")
@@ -99,7 +107,7 @@ def handle(session: Session, job: Job) -> dict:
     req = GenRequest(
         prompt_pos=prompt_pos,
         prompt_neg=prompt_neg,
-        seed=payload.get("seed"),
+        seed=payload.get("seed", s3_payload.get("seed")),
         steps=params.get("steps"),
         cfg=params.get("cfg"),
         sampler=params.get("sampler"),
@@ -123,6 +131,8 @@ def handle(session: Session, job: Job) -> dict:
     paths = save_images(images, out_dir, stem="cand")
     candidates = [{"index": i, "path": str(p), "seed": req.seed, "params": params} for i, p in enumerate(paths)]
 
+    latest_prompt = current(session, project_id, ArtifactKind.PANEL_PROMPT.value, panel_ref)
+    outdated = s3_art is not None and (latest_prompt is None or latest_prompt.id != s3_art.id)
     art = create(
         session,
         project_id=project_id,
@@ -135,11 +145,13 @@ def handle(session: Session, job: Job) -> dict:
             "loras": req.loras,
             "candidates": candidates,
             "selected_index": None,
+            "prompt_artifact_id": s3_art.id if s3_art is not None else None,
         },
         path=str(out_dir),
-        status=ArtifactStatus.REVIEW.value,
+        status=ArtifactStatus.STALE.value if outdated else ArtifactStatus.REVIEW.value,
+        inputs=[s3_art] if s3_art is not None else [],
     )
-    if project.review_mode == "auto":
+    if project.review_mode == "auto" and not outdated:
         idx = select_index(candidates, project.select_strategy)
         art.payload = {**art.payload, "selected_index": idx}
         set_status(session, art, ArtifactStatus.APPROVED.value)

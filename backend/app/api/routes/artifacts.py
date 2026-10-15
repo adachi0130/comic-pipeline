@@ -127,19 +127,33 @@ def review(
 def select_candidate(
     artifact_id: int, body: dict, session: Session = Depends(get_session)
 ) -> dict:
-    """人工选定候选图（G5）。"""
+    """人工选图写新版本，保留旧选择并使已合成的下游标记需重跑。"""
     a = session.get(Artifact, artifact_id)
     if a is None:
         raise HTTPException(404, "产物不存在")
-    idx = int(body.get("index", 0))
+    if a.kind != ArtifactKind.IMAGE.value:
+        raise HTTPException(400, "只能对候选图产物选图")
+    if not a.is_current:
+        raise HTTPException(409, "候选列表已更新，请刷新后再选图")
+    raw_index = body.get("index", 0)
+    if isinstance(raw_index, (bool, float)):
+        raise HTTPException(400, "候选序号必须是整数")
+    try:
+        idx = int(raw_index)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "候选序号必须是整数") from None
     candidates = (a.payload or {}).get("candidates") or []
     if not (0 <= idx < len(candidates)):
         raise HTTPException(400, f"候选序号越界：{idx}")
-    a.payload = {**(a.payload or {}), "selected_index": idx}
-    A.set_status(session, a, ArtifactStatus.APPROVED.value)
+    _project_file(candidates[idx].get("path"), a.project_id)
+    if (a.payload or {}).get("selected_index") == idx and a.status == ArtifactStatus.APPROVED.value:
+        return _full(a)
+    new = A.create(session, project_id=a.project_id, kind=a.kind, ref=a.ref,
+                   payload={**(a.payload or {}), "selected_index": idx}, path=a.path,
+                   inputs=[a], status=ArtifactStatus.APPROVED.value)
     session.commit()
-    session.refresh(a)
-    return _full(a)
+    session.refresh(new)
+    return _full(new)
 
 
 @router.get("/artifacts/{artifact_id}/downstream")
@@ -289,6 +303,8 @@ def delete_candidate(artifact_id: int, index: int, session: Session = Depends(ge
     a = session.get(Artifact, artifact_id)
     if a is None or a.kind != ArtifactKind.IMAGE.value:
         raise HTTPException(404, "候选产物不存在")
+    if not a.is_current:
+        raise HTTPException(409, "候选列表已更新，请刷新后再移除")
     payload = deepcopy(a.payload or {})
     cands = list(payload.get("candidates") or [])
     if not (0 <= index < len(cands)):
@@ -302,7 +318,8 @@ def delete_candidate(artifact_id: int, index: int, session: Session = Depends(ge
         sel = None if sel == index else (sel - 1 if sel > index else sel)
     new_payload = {**payload, "candidates": cands, "selected_index": sel}
     new = A.create(session, project_id=a.project_id, kind=ArtifactKind.IMAGE.value, ref=a.ref,
-                   payload=new_payload, path=a.path, inputs=[a], status=a.status)
+                   payload=new_payload, path=a.path, inputs=[a],
+                   status=ArtifactStatus.REVIEW.value if sel is None and a.status == ArtifactStatus.APPROVED.value else a.status)
     session.commit()
     return {"ok": True, "artifact_id": new.id, "remaining": len(cands)}
 

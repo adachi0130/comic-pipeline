@@ -77,11 +77,13 @@ def cancel_job(job_id: int) -> dict:
 
 
 def _brief(j: Job) -> dict:
+    payload = j.payload if isinstance(j.payload, dict) else {}
     return {
         "id": j.id,
         "kind": j.kind,
         "project_id": j.project_id,
         "stage": j.stage,
+        "ref": payload.get("panel_ref") or payload.get("page_ref") or "",
         "status": j.status,
         "progress": j.progress,
         "total": j.total,
