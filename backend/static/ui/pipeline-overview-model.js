@@ -25,6 +25,32 @@ export function suggestedStage(board) {
   if (board.pages.some((page) => !page.page_image_url || page.page_image?.status !== 'approved' || page.needs_update)) return 'S5';
   return 'S6';
 }
+export const PAGE_FILTERS = [
+  ['all', '全部页'], ['pending', '待处理'], ['stale', '需更新'],
+  ['missing', '缺画面'], ['selection', '待采用'], ['ready', '可合成'], ['done', '已完成'],
+];
+export function pageTodo(page) {
+  const next = (key, tab, label, hint, panel) => ({ key, tab, label, hint, pageRef: page.ref, panelRef: panel?.ref });
+  if (!page.script) return next(page.page_image_url && page.page_image?.status === 'approved' && !page.needs_update ? 'done' : 'compose', 'compose', '查看整页', '此页没有分格记录，可查看已有整页。');
+  if (page.script.status !== 'approved') return next('script', 'pages', '检查分格', '先检查并审核本页分格。');
+  if (!page.panels.length) return next('script', 'pages', '补充分格', '本页还没有漫画格。');
+  const prompt = page.panels.find((panel) => panel.prompt?.status !== 'approved');
+  if (prompt) return next('prompt', 'prompts', prompt.prompt ? '检查提示词' : '补充提示词', `第 ${prompt.order} 格${prompt.prompt ? '提示词待检查或审核' : '还没有提示词'}。`, prompt);
+  const image = page.panels.find((panel) => !panel.approved_image);
+  if (image) return next('image', 'images', !image.image_url ? '补充画面' : image.image?.status === 'stale' ? '更新画面' : '选择并采用', `第 ${image.order} 格${!image.image_url ? '还没有可用画面' : image.image?.status === 'stale' ? '画面需要更新' : '候选画面尚未采用或审核'}。`, image);
+  if (!page.page_image_url || page.needs_update) return next('compose', 'compose', page.page_image ? '更新整页' : '合成整页', '每格已采用画面，可继续整页合成。');
+  if (page.page_image?.status !== 'approved') return next('compose', 'compose', '审核整页', '整页已生成，检查后审核即可导出。');
+  return next('done', 'compose', '查看整页', '整页已通过，可到成册导出选择页序。');
+}
+export function pageMatches(page, filter) {
+  if (filter === 'pending') return pageTodo(page).key !== 'done';
+  if (filter === 'stale') return !!page.needs_update;
+  if (filter === 'missing') return page.panels.some((panel) => !panel.image_url);
+  if (filter === 'selection') return page.panels.some((panel) => panel.image_url && !panel.approved_image);
+  if (filter === 'ready') return page.composable && pageTodo(page).key === 'compose' && (!page.page_image_url || page.needs_update);
+  if (filter === 'done') return pageTodo(page).key === 'done';
+  return true;
+}
 export function panelBox(page, panel, index) {
   const geometry = (Array.isArray(page.geometry) ? page.geometry : []).find((item) => Number(item.index) === Number(panel.order));
   if (geometry) {

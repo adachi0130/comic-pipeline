@@ -60,14 +60,33 @@ const configuration = createConfigurationCenter({ state, api, $, esc, toast, swi
   loadProviders, loadStageBinding, loadCharacterPresetPanel, loadStyleLoras, ensureLoraDatalist, editFeedback });
 const imageWorkbench = createImageWorkbench({ state, api, $, esc, pill, toast, editFeedback, refreshGates, openComfySettings, switchTab, pageLabel, panelFullLabel, attachLoraCombos, ensureLoraDatalist });
 const pipelineOverview = createPipelineOverview({ state, api, $, esc, pill, toast, switchTab, refreshGates,
-  pageLabel, panelFullLabel, openPageDetail, openStageArtifacts, openMedPage,
+  pageLabel, panelFullLabel, openPageDetail, openStageArtifacts, focusWorkbench,
   focusImage: (ref) => { switchTab('images'); imageWorkbench.focus(ref); } });
 let projectPickRequest = 0;
 let assetCardsRequest = 0, styleRequest = 0, styleEditor = null;
 let assetMutationInFlight = false;
 let projectDetailRequest = 0, projectDetailId = null;
 let projectWriteEpoch = 0;
+let pagesRequest = 0, promptsRequest = 0, pendingWorkbenchFocus = null;
 const assetEditors = new WeakMap();
+
+function focusWorkbench(tab, pageRef, panelRef) {
+  pendingWorkbenchFocus = { projectId: state.projectId, tab, pageRef, panelRef };
+  switchTab(tab);
+}
+function applyWorkbenchFocus(tab, root) {
+  const pending = pendingWorkbenchFocus;
+  if (!pending || pending.tab !== tab) return;
+  pendingWorkbenchFocus = null;
+  if (pending.projectId !== state.projectId || $('#tab-' + tab).classList.contains('hidden')) return;
+  const find = (key, ref) => [...root.querySelectorAll(`[${key}]`)].find((node) => node.getAttribute(key) === ref);
+  const element = (pending.panelRef && find('data-prpanel', pending.panelRef)) || find(tab === 'pages' ? 'data-page' : 'data-prpage', pending.pageRef);
+  if (!element) { toast('原页格已变化，请刷新总览后重新选择。', 'err'); return; }
+  root.querySelectorAll('.workbench-focused').forEach((node) => node.classList.remove('workbench-focused'));
+  element.classList.add('workbench-focused'); element.tabIndex = -1;
+  element.focus({ preventScroll: true });
+  element.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+}
 
 // ---------- Tab ----------
 const TITLES = {
@@ -109,6 +128,7 @@ document.addEventListener('click', (e) => {
   setFold(h.dataset.fold, hidden);
 });
 function switchTab(tab, requestedSection) {
+  if (pendingWorkbenchFocus && pendingWorkbenchFocus.tab !== tab) pendingWorkbenchFocus = null;
   const section = configuration.sectionFor(tab, requestedSection);
   $$('.nav button[data-tab]').forEach((x) => x.classList.toggle('active', x.dataset.tab === tab && (!x.dataset.section || x.dataset.section === section)));
   Object.keys(TITLES).forEach((t) => $('#tab-' + t).classList.toggle('hidden', t !== tab));
@@ -1034,11 +1054,11 @@ $('#pg-add').addEventListener('click', async () => {
 });
 
 async function loadPages() {
-  const projectId = state.projectId;
+  const projectId = state.projectId, version = ++pagesRequest;
   if (!state.projectId) { $('#pg-list').innerHTML = '<div class="empty">请先选择项目</div>'; return; }
   try {
     const d = await api(`/api/projects/${projectId}/pages`);
-    if (projectId !== state.projectId) return;
+    if (projectId !== state.projectId || version !== pagesRequest) return;
     state._tpls = d.templates || [];
     $('#pg-count').textContent = `${d.pages.length} 页`;
     $('#pg-meta').textContent = `已审核正文 ${d.novel_chars} 字 · 目标 ${d.target_pages} 页 · 提示词 ${d.panel_prompt_count} 条`;
@@ -1046,13 +1066,14 @@ async function loadPages() {
     // 正文产物预览（可编辑）：复用 /novel 拿分段，改动走产物编辑接口
     try {
       const nv = await api(`/api/projects/${projectId}/novel`);
-      if (projectId !== state.projectId) return;
+      if (projectId !== state.projectId || version !== pagesRequest) return;
       renderPagesNovel(nv);
     } catch { /* 预览失败不影响分格主流程 */ }
+    if (projectId !== state.projectId || version !== pagesRequest) return;
 
     const box = $('#pg-list');
     $('#pg-blank').style.display = d.pages.length ? 'none' : 'block';
-    if (!d.pages.length) { box.innerHTML = ''; return; }
+    if (!d.pages.length) { box.innerHTML = ''; applyWorkbenchFocus('pages', box); return; }
     box.innerHTML = d.pages.map((p) => `
       <div class="card" style="padding:14px" data-page="${esc(p.page_ref)}">
         <div class="row">
@@ -1113,7 +1134,8 @@ async function loadPages() {
       await api(`/api/projects/${projectId}/pages/${encodeURIComponent(b.dataset.del)}`, { method: 'DELETE' });
       toast('已删除该页', 'ok'); loadPages(); refreshGates();
     }));
-  } catch (e) { toast(e.message, 'err'); }
+    applyWorkbenchFocus('pages', box);
+  } catch (e) { if (projectId === state.projectId && version === pagesRequest) toast(e.message, 'err'); }
 }
 
 /** 「分格分页」页里的正文产物预览：列出作为分格依据的正文分段，可就地编辑。 */
@@ -1568,7 +1590,7 @@ $('#pr-style-save').addEventListener('click', async () => {
 });
 
 async function loadPrompts() {
-  const projectId = state.projectId;
+  const projectId = state.projectId, version = ++promptsRequest;
   if (!state.projectId) {
     $('#pr-list').innerHTML = '';
     $('#pr-blank').style.display = 'block';
@@ -1578,12 +1600,12 @@ async function loadPrompts() {
   }
   try {
     const d = await api(`/api/projects/${projectId}/prompt-board`);
-    if (projectId !== state.projectId) return;
+    if (projectId !== state.projectId || version !== promptsRequest) return;
     $('#pr-count').textContent = `${d.pages.length} 页`;
     $('#pr-meta').textContent = `提示词 ${d.panel_done}/${d.panel_total} 格${d.has_llm_provider ? '' : ' · ⚠ 还没配 LLM 供应商'}`;
     const box = $('#pr-list');
     $('#pr-blank').style.display = d.pages.length ? 'none' : 'block';
-    if (!d.pages.length) { box.innerHTML = ''; return; }
+    if (!d.pages.length) { box.innerHTML = ''; applyWorkbenchFocus('prompts', box); return; }
 
     box.innerHTML = d.pages.map((pg) => `
       <div class="card" style="padding:14px" data-prpage="${esc(pg.page_ref)}">
@@ -1601,9 +1623,9 @@ async function loadPrompts() {
           <button class="sm" data-prpreview="${esc(pg.page_ref)}">预览整页</button>
           <button class="sm" data-prrun="${esc(pg.page_ref)}">生成这页</button>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:8px;margin-top:10px">
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:8px;margin-top:10px">
           ${pg.panels.map((p) => `
-            <div class="mini-card" style="padding:9px 11px">
+            <div class="mini-card" style="padding:9px 11px" data-prpanel="${esc(p.panel_ref)}">
               <div class="row" style="gap:6px">
                 <b style="font-size:12px">第${cnNum(p.panel_order)}格</b>
                 <span class="mut" style="font-size:11px">${esc(p.shot || '')}</span>
@@ -1651,7 +1673,8 @@ async function loadPrompts() {
       const pg = d.pages.find((x) => x.page_ref === b.dataset.prpreview);
       openPanelPromptPreview((pg ? pg.panels : []).filter((p) => p.prompt).map((p) => p.panel_ref), b.dataset.prpreview);
     }));
-  } catch (e) { toast(e.message, 'err'); }
+    applyWorkbenchFocus('prompts', box);
+  } catch (e) { if (projectId === state.projectId && version === promptsRequest) toast(e.message, 'err'); }
 }
 
 /** 提示词完整预览（审查用）：一页/一格的全部正向、负向、LoRA、尺寸。 */
@@ -1943,7 +1966,7 @@ function startJobsSSE() {
     try {
       const list = await api(`/api/jobs?project_id=${projectId}`);
       if (valid() && version === pipelineOverview.version()) renderJobs(list);
-    } catch { if (valid()) pipelineOverview.onConnection('polling'); }
+    } catch (error) { if (valid() && version === pipelineOverview.version()) pipelineOverview.onReadError(error.message); }
   };
   pipelineOverview.onConnection('connecting'); read();
   _sse = new EventSource(API + `/api/jobs/events?project_id=${projectId}`);

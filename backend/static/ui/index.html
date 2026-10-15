@@ -309,6 +309,12 @@ body.editor-expanded .editor-frame-wrap iframe{height:calc(100dvh - 180px)}
 .ov-cell-tag{position:absolute;left:0;bottom:0;padding:2px 5px;font-size:9px;color:#fff;background:#142135c9;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ov-whole{position:absolute;inset:0;border:0;border-radius:0;padding:0;background:#fff;width:100%;height:100%}.ov-whole img{display:block;width:100%;height:100%;object-fit:contain}
 .ov-page>footer{font-size:11px;color:var(--muted);margin-top:10px}.ov-page>footer>.row{margin-top:8px;gap:6px}
+.ov-page-tools{margin-top:16px;padding:12px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.ov-page-filters{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}.ov-filter{display:inline-flex;align-items:center;gap:6px}.ov-filter span{font-size:10px;opacity:.75;font-variant-numeric:tabular-nums}
+.ov-filter.selected{border-color:var(--accent);color:var(--accent);background:var(--accent-bg,#eef5ff)}
+.ov-page-search{flex:1;min-width:min(100%,190px)}.ov-page-search input{width:100%}.ov-page-tools select{width:auto;max-width:100%;min-width:125px}.ov-page-results{font-size:11px;margin-top:10px;color:var(--muted)}
+.ov-page-grid.compact{grid-template-columns:repeat(auto-fill,minmax(min(100%,185px),1fr));gap:12px}.ov-page-grid.compact .ov-page{padding:9px}.ov-page-hint{margin-top:8px;line-height:1.6;overflow-wrap:anywhere}
+.ov-page:focus,.workbench-focused{outline:2px solid var(--accent);outline-offset:3px;scroll-margin-top:24px}#ov-live[data-status=failed]{color:var(--err)}
 .ov-prose{margin-top:14px;border:1px solid var(--line);border-radius:9px;overflow:hidden}.ov-prose>summary{padding:13px 16px;cursor:pointer;font-size:13px;font-weight:600;background:#fafbfc}
 .ov-manuscript{padding:20px;max-height:65vh;overflow:auto;max-width:800px;margin:auto}
 .ov-manuscript article+article{margin-top:26px}.ov-manuscript header{display:flex;gap:8px;align-items:center;font-size:11px;color:var(--muted);margin-bottom:12px}
@@ -679,6 +685,10 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
         <div id="jobs"><div class="ov-idle">当前没有运行中的任务</div></div>
         <details id="ov-history-wrap"><summary>最近任务 <span class="mut" id="ov-history-count">0 条</span></summary><div id="ov-history"></div></details></div>
       <div class="card ov-preview-wrap"><div class="row"><h2 id="ov-preview-title">当前漫画</h2><span class="spacer"></span><span class="mut ov-preview-note">点击格子查看出图，整页可继续编辑</span></div>
+        <div id="ov-page-tools" class="ov-page-tools hidden"><div id="ov-page-filters" class="ov-page-filters" role="group" aria-label="按漫画页状态筛选"></div>
+          <div class="row"><label class="ov-page-search"><input id="ov-page-query" type="search" aria-label="搜索页码或故事内容" placeholder="搜索页码、动作、对白" autocomplete="off"></label>
+            <select id="ov-page-jump" aria-label="跳到指定漫画页"><option value="">跳到指定页</option></select><button class="sm" id="ov-page-density" aria-pressed="false">紧凑显示</button><button class="sm" id="ov-page-clear">清除筛选</button></div>
+          <div id="ov-page-results" class="ov-page-results" role="status" aria-live="polite"></div></div>
         <div id="ov-preview"><div class="empty">选择项目后显示当前漫画。</div></div></div></div>
     </section>
 
@@ -861,6 +871,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=87"></script>
+<script type="module" src="/ui/app.js?v=88"></script>
 </body>
 </html>

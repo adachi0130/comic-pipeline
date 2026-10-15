@@ -1,10 +1,12 @@
-import { STAGES, activeJob, jobStage, shapeTitle, suggestedStage, panelBox, duration } from './pipeline-overview-model.js';
+import { STAGES, PAGE_FILTERS, pageTodo, pageMatches, activeJob, jobStage, shapeTitle, suggestedStage, panelBox, duration } from './pipeline-overview-model.js';
 
 export function createPipelineOverview({ state, api, $, esc, pill, toast, switchTab, refreshGates,
-  pageLabel, panelFullLabel, openPageDetail, openStageArtifacts, focusImage }) {
+  pageLabel, panelFullLabel, openPageDetail, openStageArtifacts, focusImage, focusWorkbench }) {
   let board = null, projectId = null, request = 0, jobsEpoch = 0, jobs = [], stage = '', artifactSignature = '';
   let refreshTimer, connection = 'connecting', historyOpen = false;
-  const targets = {}, counts = {}, submissions = new Map(), cancelling = new Set(), accepted = new Map();
+  let actionSignature = '', stepsSignature = '', readProblem = '', lastReadAt = 0;
+  let pageFilter = 'all', pageQuery = '', density = 'comfortable', proseOpen;
+  const targets = {}, targetMissing = {}, counts = {}, submissions = new Map(), cancelling = new Set(), accepted = new Map();
   const visible = () => !$('#tab-pipeline').classList.contains('hidden');
   const scoped = () => board?.project_id === state.projectId;
   const label = (ref) => ref?.startsWith('panel:') ? panelFullLabel(ref) : ref?.startsWith('page:') ? pageLabel(ref) : '整个项目';
@@ -14,7 +16,10 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     request++; projectId = null; board = null; jobs = []; stage = ''; artifactSignature = ''; historyOpen = false; accepted.clear();
     clearTimeout(refreshTimer);
     jobsEpoch++;
-    for (const map of [targets, counts]) for (const key of Object.keys(map)) delete map[key];
+    actionSignature = ''; stepsSignature = ''; readProblem = ''; lastReadAt = 0;
+    pageFilter = 'all'; pageQuery = ''; proseOpen = undefined;
+    $('#ov-page-query').value = ''; $('#ov-page-tools').classList.add('hidden');
+    for (const map of [targets, targetMissing, counts]) for (const key of Object.keys(map)) delete map[key];
     $('#ov-summary').innerHTML = ''; $('#ov-steps').innerHTML = ''; $('#ov-action').innerHTML = '';
     $('#ov-preview').innerHTML = '<div class="empty">选择项目后显示当前漫画。</div>';
     $('#jobs').innerHTML = ''; $('#ov-history').innerHTML = ''; $('#ov-feedback').textContent = '';
@@ -36,10 +41,12 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
       state._gates = data.stages;
       render();
       $('#ov-feedback').textContent = '';
+      return true;
     } catch (error) {
       if (id !== state.projectId || version !== request) return;
       $('#ov-feedback').textContent = '总览读取失败：' + error.message + '，可点刷新重试。';
       if (!board) $('#ov-preview').innerHTML = '<div class="empty">暂时无法读取漫画产物。</div>';
+      return false;
     } finally { if (version === request) $('#ov-refresh').disabled = false; }
   }
   function render() {
@@ -50,17 +57,19 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
       <button class="primary sm" data-ov-suggest>处理下一步</button>`;
     $('#ov-summary [data-ov-suggest]').onclick = () => { stage = suggestedStage(board); renderSteps(); renderAction(); $('#ov-action').scrollIntoView({ block: 'nearest', behavior: 'smooth' }); };
     renderSteps(); renderAction(); renderJobs();
-    const signature = JSON.stringify([board.prose, board.pages, board.book]);
+    const signature = JSON.stringify([board.prose, board.pages, board.book, pageFilter, pageQuery, density]);
     if (signature !== artifactSignature) { artifactSignature = signature; renderPreview(); }
   }
   function renderSteps() {
     if (!scoped()) return;
-    $('#ov-steps').innerHTML = STAGES.map((step) => {
+    const html = STAGES.map((step) => {
       const stats = board.stages[step.id] || {}, active = jobs.filter((job) => activeJob(job) && jobStage(job)?.id === step.id);
       const pending = [...submissions.values()].some((item) => item.id === state.projectId && item.stage === step.id);
       const text = pending ? '正在提交' : active.length ? `${active.length} 个任务${active.some((job) => job.cancel_requested) ? '取消中' : '进行中'}` : stats.stale ? `${stats.stale} 项需更新` : stats.review ? `${stats.review} 项待审` : stats.count ? `${stats.approved} / ${stats.count} 已通过` : '尚未产出';
       return `<button type="button" class="ov-step ${step.id === stage ? 'selected' : ''} ${active.length || pending ? 'working' : ''}" data-ov-stage="${step.id}" aria-pressed="${step.id === stage}"><span>${step.id}</span><b>${step.name}</b><small>${text}</small></button>`;
     }).join('');
+    if (html === stepsSignature) return;
+    stepsSignature = html; $('#ov-steps').innerHTML = html;
     $('#ov-steps').querySelectorAll('[data-ov-stage]').forEach((button) => button.onclick = () => { stage = button.dataset.ovStage; renderSteps(); renderAction(); });
   }
   function actionInfo() {
@@ -91,8 +100,10 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     if (['S3', 'S4', 'S5'].includes(stage)) {
       if (!info.targets.length && info.ready) Object.assign(info, { ready: false,
         hint: stage === 'S3' ? '先审核至少一页分格。' : stage === 'S4' ? '先审核要出图的格及对应漫画页。' : '先审核漫画页，并给这页每格采用一张可用图片。', goto: stage === 'S3' ? 'pages' : stage === 'S4' ? 'prompts' : 'images' });
-      if (!info.targets.some((item) => item.ref === targets[stage])) targets[stage] = (info.targets.find((item) => stage === 'S4' ? !item.panel.image_url : stage === 'S3' ? item.page.panels.some((panel) => !panel.prompt) : !item.page.page_image_url) || info.targets[0])?.ref || '';
-      info.body = stage === 'S4' ? { panel_ref: targets[stage], count: counts.S4 || Math.min(8, state.project?.candidates_per_panel || 4) } : { page_ref: targets[stage] };
+      if (targets[stage] && !info.targets.some((item) => item.ref === targets[stage])) { targetMissing[stage] = true; targets[stage] = ''; }
+      if (!targets[stage] && !targetMissing[stage]) targets[stage] = (info.targets.find((item) => stage === 'S4' ? !item.panel.image_url : stage === 'S3' ? item.page.panels.some((panel) => !panel.prompt) : !item.page.page_image_url) || info.targets[0])?.ref || '';
+      if (targetMissing[stage] && !targets[stage]) Object.assign(info, { ready: false, hint: '原目标已不可用或没有明确的页格，请重新选择处理目标。' });
+      info.body = stage === 'S4' ? { panel_ref: targets[stage], count: counts.S4 ?? Math.min(8, state.project?.candidates_per_panel || 4) } : { page_ref: targets[stage] };
       const chosen = info.targets.find((item) => item.ref === targets[stage]);
       if (stage === 'S4' && chosen) info.body.prompt_artifact_id = chosen.panel.prompt.id;
       info.replacing = stage === 'S3' ? chosen?.page.panels.some((panel) => panel.prompt) : stage === 'S4' ? chosen?.panel.image : chosen?.page.page_image;
@@ -105,31 +116,51 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   function renderAction() {
     if (!scoped()) return;
     const info = actionInfo(), step = STAGES.find((item) => item.id === stage);
+    const signature = JSON.stringify([stage, info.targets.map((item) => [item.ref, item.name]), targets[stage], info.goto, info.section, !!info.navigate]);
+    if (signature === actionSignature && $('#ov-submit')) { updateActionState(info); return; }
+    actionSignature = signature;
     $('#ov-action').innerHTML = `<div class="ov-action-heading"><b>${step.id} · ${step.name}</b><button class="sm" data-ov-tab>进入工作台</button><button class="sm" data-ov-records>产物记录</button></div>
-      <div class="row">${info.targets.length ? `<label class="ov-target">处理目标<select id="ov-target">${info.targets.map((item) => `<option value="${esc(item.ref)}" ${targets[stage] === item.ref ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select></label>` : ''}
-      ${stage === 'S4' ? `<label class="ov-count">候选张数<input id="ov-count" type="number" min="1" max="8" value="${info.body.count}"></label>` : ''}
+      <div class="row">${info.targets.length ? `<label class="ov-target">处理目标<select id="ov-target">${targetMissing[stage] && !targets[stage] ? '<option value="" selected disabled>请重新选择页或格</option>' : ''}${info.targets.map((item) => `<option value="${esc(item.ref)}" ${targets[stage] === item.ref ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select></label>` : ''}
+      ${stage === 'S4' ? `<label class="ov-count">候选张数<input id="ov-count" type="number" min="1" max="8" value="${esc(info.body.count)}"></label>` : ''}
       <button class="primary" id="ov-submit" ${!info.ready || info.active || info.submitting ? 'disabled' : ''}>${info.submitting ? '正在提交…' : info.active ? info.active.cancel_requested ? '任务正在取消…' : '该目标已有任务' : info.text}</button>
       ${info.goto ? '<button class="sm" data-ov-fix>去处理前置条件</button>' : ''}</div>
       <div class="ov-action-hint">${esc(info.hint || (info.active ? `任务 #${info.active.id} · ${label(info.active.ref)}，可在任务区查看。` : info.navigate ? '' : info.replacing ? '已有产物，重新生成会保留历史版本，并将相关下游标记需更新。' : '任务提交后在后台执行，任务区会持续显示进度。'))}</div>`;
     $('#ov-action [data-ov-tab]').onclick = () => switchTab(step.tab);
     $('#ov-action [data-ov-records]').onclick = () => openStageArtifacts(stage);
     $('#ov-action [data-ov-fix]')?.addEventListener('click', () => switchTab(info.goto, info.section));
-    $('#ov-target')?.addEventListener('change', (event) => { targets[stage] = event.target.value; renderAction(); });
-    $('#ov-count')?.addEventListener('input', (event) => { counts.S4 = Number(event.target.value); });
+    $('#ov-target')?.addEventListener('change', (event) => { targets[stage] = event.target.value; targetMissing[stage] = false; renderAction(); });
+    $('#ov-count')?.addEventListener('input', (event) => { counts.S4 = event.target.value; });
     $('#ov-submit').onclick = () => {
-      if (info.navigate) { switchTab(info.tab); return; }
-      const body = { ...info.body }; if (stage === 'S4') body.count = Number($('#ov-count').value);
-      if (info.replacing && !confirm(`${step.name}已有产物，确定为${label(body.panel_ref || body.page_ref)}重新生成吗？历史版本会保留。`)) return;
+      const currentInfo = actionInfo();
+      if (!currentInfo.ready || currentInfo.active || currentInfo.submitting) return;
+      if (currentInfo.navigate) { switchTab(currentInfo.tab); return; }
+      const body = { ...currentInfo.body }; if (stage === 'S4') body.count = Number($('#ov-count').value);
+      if (currentInfo.replacing && !confirm(`${step.name}已有产物，确定为${label(body.panel_ref || body.page_ref)}重新生成吗？历史版本会保留。`)) return;
       submit(stage, body);
     };
   }
+  function updateActionState(info) {
+    const button = $('#ov-submit');
+    button.disabled = !info.ready || !!info.active || info.submitting;
+    button.textContent = info.submitting ? '正在提交…' : info.active ? info.active.cancel_requested ? '任务正在取消…' : '该目标已有任务' : info.text;
+    $('#ov-action .ov-action-hint').textContent = info.hint || (info.active ? `任务 #${info.active.id} · ${label(info.active.ref)}，可在任务区查看。` : info.navigate ? '' : info.replacing ? '已有产物，重新生成会保留历史版本，并将相关下游标记需更新。' : '任务提交后在后台执行，任务区会持续显示进度。');
+  }
   function renderPreview() {
+    artifactSignature = JSON.stringify([board.prose, board.pages, board.book, pageFilter, pageQuery, density]);
     const sum = board.summary;
+    const previousProse = $('#ov-preview .ov-prose');
+    if (previousProse) proseOpen = previousProse.open;
+    renderPageTools();
+    const query = pageQuery.trim().toLocaleLowerCase();
+    const shownPages = board.pages.filter((page) => pageMatches(page, pageFilter) && (!query ||
+      [page.ref, String(page.index), pageLabel(page.ref), page.layout_desc, ...page.panels.flatMap((panel) => [panel.action, panel.dialogue, panel.shot])].join(' ').toLocaleLowerCase().includes(query)));
+    $('#ov-page-results').textContent = `显示 ${shownPages.length} / ${board.pages.length} 页`;
     $('#ov-preview-title').textContent = board.pages.length ? `漫画页 · ${sum.with_image}/${sum.panels} 格有画面` : board.prose.length ? '正文' : '还没有漫画产物';
-    const novel = board.prose.length ? `<details class="ov-prose" ${board.pages.length ? '' : 'open'}><summary>故事正文 · ${sum.prose_chars.toLocaleString()} 字 · ${board.prose.length} 段</summary>
+    const novel = board.prose.length ? `<details class="ov-prose" ${(proseOpen ?? !board.pages.length) ? 'open' : ''}><summary>故事正文 · ${sum.prose_chars.toLocaleString()} 字 · ${board.prose.length} 段</summary>
       <div class="ov-manuscript">${board.prose.map((item, index) => `<article><header><b>第 ${index + 1} 段</b>${pill(item.status)}<span>v${item.version}</span></header><div>${esc(item.text)}</div></article>`).join('')}</div></details>` : '';
     const book = board.book ? `<div class="ov-book"><div><b>成册文件 · v${board.book.version}</b> ${pill(board.book.status)}</div><div class="row">${board.book.downloads.map((file) => `<a class="download-button" href="${esc(file.url)}">下载 ${file.format.toUpperCase()}</a>`).join('') || '<span class="mut">当前版本的导出文件不可用</span>'}<button class="sm" data-ov-export>导出中心</button></div></div>` : '';
-    const pages = board.pages.map((page) => {
+    const pages = shownPages.map((page) => {
+      const todo = pageTodo(page);
       const whole = page.page_image_url && !page.needs_update, canvas = page.canvas.map(Number), ratio = canvas.length === 2 && canvas.every((n) => Number.isFinite(n) && n > 0) ? canvas[0] / canvas[1] : 672 / 950;
       return `<article class="ov-page" data-ov-page="${esc(page.ref)}"><header><b>${esc(pageLabel(page.ref))}</b><span class="pill ${page.needs_update ? 'stale' : whole ? 'ok' : 'tag'}">${page.needs_update ? '需更新' : whole ? '整页成图' : page.panels.some((panel) => panel.image_url) ? '画面填充中' : '已分格'}</span></header><span class="ov-page-job" data-ov-page-task="${esc(page.ref)}"></span>
         <div class="ov-paper" style="aspect-ratio:${ratio}">${whole ? `<button class="ov-whole" data-ov-compose="${esc(page.ref)}"><img src="${esc(page.page_image_url)}" alt="${esc(pageLabel(page.ref))}整页成图" loading="lazy"></button>` : page.panels.map((panel, index) => {
@@ -139,19 +170,48 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
             ${panel.image_url ? `<span class="ov-cell-tag">${panel.order} · ${stale ? '需更新' : panel.preview_kind === 'candidate' ? '候选待采用' : '已采用'}</span>` : ''}<span class="ov-cell-live hidden" data-ov-cell-task></span></button>`;
         }).join('') || '<div class="empty">缺少分格记录</div>'}</div>
         <footer><span>${page.panels.filter((panel) => panel.image_url).length}/${page.panels.length} 格有画面 · ${page.panels.filter((panel) => panel.approved_image).length} 已采用</span><div class="row">
-          ${page.script ? `<button class="sm" data-ov-edit="${esc(page.ref)}">查看分格</button>` : ''}<button class="sm" data-ov-compose="${esc(page.ref)}">${whole ? '查看整页' : '编辑 / 合成'}</button></div></footer></article>`;
+          <button class="sm ${todo.key === 'done' ? '' : 'primary'}" data-ov-next="${esc(page.ref)}">${esc(todo.label)}</button>${page.script ? `<button class="sm" data-ov-edit="${esc(page.ref)}">查看分格</button>` : ''}</div><div class="ov-page-hint">${esc(todo.hint)}</div></footer></article>`;
     }).join('');
-    $('#ov-preview').innerHTML = book + (pages ? `<div class="ov-legend"><span>空格：等待画面</span><span>虚线画面：候选未采用</span><span>实线画面：已采用</span><span>紫色：上游已修改</span></div><div class="ov-page-grid">${pages}</div>` : '') + novel
+    $('#ov-preview').innerHTML = book + (pages ? `<div class="ov-legend"><span>空格：等待画面</span><span>虚线画面：候选未采用</span><span>实线画面：已采用</span><span>紫色：上游已修改</span></div><div class="ov-page-grid ${density === 'compact' ? 'compact' : ''}">${pages}</div>` : board.pages.length ? '<div class="empty">没有符合条件的漫画页。<button class="sm" data-ov-clear>清除筛选</button></div>' : '') + novel
       || '<div class="empty">还没有产物，先写正文或粘贴已有故事。</div>';
     $('#ov-preview').querySelectorAll('[data-ov-panel]').forEach((button) => button.onclick = () => focusImage(button.dataset.ovPanel));
     $('#ov-preview').querySelectorAll('[data-ov-edit]').forEach((button) => button.onclick = () => openPageDetail(button.dataset.ovEdit));
     $('#ov-preview').querySelectorAll('[data-ov-compose]').forEach((button) => button.onclick = () => { state._composeSelected = button.dataset.ovCompose; switchTab('compose'); });
+    $('#ov-preview').querySelectorAll('[data-ov-next]').forEach((button) => button.onclick = () => {
+      const page = board.pages.find((item) => item.ref === button.dataset.ovNext);
+      if (page) continuePage(page);
+    });
+    $('#ov-preview [data-ov-clear]')?.addEventListener('click', clearPageFilter);
     $('#ov-preview [data-ov-export]')?.addEventListener('click', () => switchTab('exports'));
     renderPanelTasks();
   }
+  function continuePage(page) {
+    const todo = pageTodo(page);
+    if (todo.tab === 'images') focusImage(todo.panelRef);
+    else if (todo.tab === 'compose') { state._composeSelected = page.ref; switchTab('compose'); }
+    else focusWorkbench(todo.tab, page.ref, todo.panelRef);
+  }
+  function renderPageTools() {
+    $('#ov-page-tools').classList.toggle('hidden', !board.pages.length);
+    // Only replace controls when their data changes; live updates retain keyboard focus.
+    const filters = PAGE_FILTERS.map(([key, name]) => `<button type="button" class="sm ov-filter ${pageFilter === key ? 'selected' : ''}" data-ov-filter="${key}" aria-pressed="${pageFilter === key}">${name}<span>${board.pages.filter((page) => pageMatches(page, key)).length}</span></button>`).join('');
+    if ($('#ov-page-filters').innerHTML !== filters) {
+      $('#ov-page-filters').innerHTML = filters;
+      $('#ov-page-filters').querySelectorAll('[data-ov-filter]').forEach((button) => button.onclick = () => { pageFilter = button.dataset.ovFilter; renderPreview(); });
+    }
+    const options = '<option value="">跳到指定页</option>' + board.pages.map((page) => `<option value="${esc(page.ref)}">${esc(pageLabel(page.ref))}</option>`).join('');
+    if ($('#ov-page-jump').innerHTML !== options) $('#ov-page-jump').innerHTML = options;
+    $('#ov-page-density').textContent = density === 'compact' ? '舒展显示' : '紧凑显示';
+    $('#ov-page-density').setAttribute('aria-pressed', String(density === 'compact'));
+    $('#ov-page-clear').disabled = pageFilter === 'all' && !pageQuery;
+  }
+  function clearPageFilter() {
+    pageFilter = 'all'; pageQuery = ''; $('#ov-page-query').value = '';
+    if (scoped()) renderPreview();
+  }
   function renderPanelTasks() {
     $('#ov-preview').querySelectorAll('[data-ov-panel]').forEach((button) => {
-      const task = matching('S4', button.dataset.ovPanel), badge = button.querySelector('[data-ov-cell-task]');
+      const task = jobs.find((job) => activeJob(job) && jobStage(job)?.id === 'S4' && job.ref === button.dataset.ovPanel), badge = button.querySelector('[data-ov-cell-task]');
       button.classList.toggle('rendering', !!task); badge.classList.toggle('hidden', !task);
       badge.textContent = task ? task.cancel_requested ? '正在取消' : task.status === 'queued' ? '等待出图' : '正在出图' : '';
     });
@@ -201,6 +261,9 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     const list = jobs.filter((job) => job.project_id === state.projectId), active = list.filter(activeJob), past = list.filter((job) => !activeJob(job));
     const pending = [...submissions.values()].filter((item) => item.id === state.projectId);
     $('#ov-live').textContent = connection === 'live' ? '实时同步' : connection === 'polling' ? '实时连接重连中 · 每 5 秒刷新' : '正在连接任务状态…';
+    if (readProblem) $('#ov-live').textContent = '任务读取失败，保留上次状态';
+    $('#ov-live').dataset.status = readProblem ? 'failed' : connection;
+    $('#ov-live').title = readProblem || (lastReadAt ? '最近收到任务状态：' + new Date(lastReadAt).toLocaleTimeString('zh-CN') : '');
     $('#ov-task-count').textContent = `${active.length} 进行中${pending.length ? ' · ' + pending.length + ' 正在提交' : ''}`;
     $('#jobs').innerHTML = pending.map((item) => `<div class="ov-submitting" role="status">正在提交 ${item.stage} · ${esc(label(item.ref))}…</div>`).join('')
       + (active.map(taskCard).join('') || (!pending.length ? '<div class="ov-idle">当前没有运行中的任务</div>' : ''));
@@ -212,6 +275,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
       const job = list.find((item) => item.id === Number(button.dataset.ovJobGo));
       if (job.ref?.startsWith('panel:')) focusImage(job.ref);
       else if (job.ref?.startsWith('page:') && jobStage(job)?.id === 'S5') { state._composeSelected = job.ref; switchTab('compose'); }
+      else if (job.ref?.startsWith('page:') && ['S2', 'S3'].includes(jobStage(job)?.id)) focusWorkbench(jobStage(job).tab, job.ref);
       else switchTab(jobStage(job)?.tab || 'pipeline');
     });
     $('#tab-pipeline').querySelectorAll('[data-ov-job-detail]').forEach((button) => button.onclick = () => showFailure(Number(button.dataset.ovJobDetail)));
@@ -219,11 +283,15 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
       const job = list.find((item) => item.id === Number(button.dataset.ovRetry)), origin = state.projectId;
       if (!job) return;
       stage = jobStage(job).id;
+      const retryStage = stage;
       targets[stage] = job.ref;
-      await load({ quiet: true });
-      if (origin !== state.projectId) return;
+      targetMissing[stage] = ['S3', 'S4', 'S5'].includes(stage) && !job.ref;
+      renderSteps(); renderAction();
+      const loaded = await load({ quiet: true });
+      if (origin !== state.projectId || stage !== retryStage) return;
       $('#ov-action').scrollIntoView({ block: 'center', behavior: 'smooth' });
-      $('#ov-feedback').textContent = `已定位任务 #${job.id} 的处理阶段，请核对当前目标与参数后重新提交。`;
+      if (!loaded) return;
+      $('#ov-feedback').textContent = targetMissing[stage] ? `任务 #${job.id} 的原目标已不可用或未指定页格，请重新选择目标。` : `已定位任务 #${job.id} 的处理阶段，请核对当前目标与参数后重新提交。`;
     });
   }
   async function showFailure(id) {
@@ -256,12 +324,13 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     try {
       const list = await api(`/api/jobs?project_id=${id}`);
       if (id === state.projectId && epoch === jobsEpoch) onJobs(list);
-    } catch { if (id === state.projectId && epoch === jobsEpoch) $('#ov-live').textContent = '任务状态读取失败，可点刷新重试'; }
+    } catch (error) { if (id === state.projectId && epoch === jobsEpoch) onReadError(error.message); }
   }
   function scheduleRefresh() {
     clearTimeout(refreshTimer); if (visible()) refreshTimer = setTimeout(() => load({ quiet: true }), 400);
   }
   function onJobs(list) {
+    readProblem = ''; lastReadAt = Date.now();
     const next = list.filter((job) => job.project_id === state.projectId);
     for (let index = 0; index < next.length; index++) {
       const incoming = next[index], previous = jobs.find((job) => job.id === incoming.id);
@@ -276,6 +345,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     if (changed) scheduleRefresh();
   }
   function onConnection(value) { connection = value; renderJobs(); }
+  function onReadError(message) { readProblem = message || '读取失败，可刷新重试'; renderJobs(); }
   function onGates(stages) {
     if (!scoped()) return;
     const changed = JSON.stringify(board.stages) !== JSON.stringify(stages);
@@ -283,6 +353,17 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     if (changed) scheduleRefresh();
   }
   $('#ov-refresh').onclick = () => { $('#ov-refresh').disabled = true; load(); refreshTasks(); refreshGates(); };
+  $('#ov-page-query').addEventListener('input', (event) => { pageQuery = event.target.value; if (scoped()) renderPreview(); });
+  $('#ov-page-clear').onclick = clearPageFilter;
+  $('#ov-page-density').onclick = () => { density = density === 'compact' ? 'comfortable' : 'compact'; if (scoped()) renderPreview(); };
+  $('#ov-page-jump').onchange = (event) => {
+    const ref = event.target.value;
+    if (!ref || !scoped()) return;
+    clearPageFilter();
+    const page = [...$('#ov-preview').querySelectorAll('[data-ov-page]')].find((element) => element.dataset.ovPage === ref);
+    if (page) { page.tabIndex = -1; page.focus({ preventScroll: true }); page.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' }); }
+    event.target.value = '';
+  };
   $('#ov-history-wrap').addEventListener('toggle', () => { historyOpen = $('#ov-history-wrap').open; });
   setInterval(() => {
     if (!visible()) return;
@@ -290,5 +371,5 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
       const job = jobs.find((item) => item.id === Number(element.dataset.ovDuration)); if (job) element.textContent = duration(job);
     });
   }, 1000);
-  return { load, reset, submit, onJobs, onGates, onConnection, refreshTasks, version: () => jobsEpoch };
+  return { load, reset, submit, onJobs, onGates, onConnection, onReadError, refreshTasks, version: () => jobsEpoch };
 }
