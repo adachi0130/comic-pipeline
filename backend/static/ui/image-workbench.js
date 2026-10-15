@@ -329,5 +329,12 @@ export function createImageWorkbench({ state, api, $, esc, pill, toast, editFeed
   $('#iw-filter-toggle').addEventListener('click', () => foldFilters(!$('#iw-filters').classList.contains('hidden')));
   window.addEventListener('keydown', (event) => { if (event.key === 'Escape' && compareBox && [...document.querySelectorAll('.modal:not(.hidden)')].at(-1) === compareBox) closeCompare(); });
 
-  return { load, reset, refreshConnection };
+  async function focus(ref) {
+    const id = state.projectId;
+    await load();
+    if (id !== state.projectId || projectId !== id) return;
+    if (!panels.some((panel) => panel.panel_ref === ref)) { toast('这个格已不存在，请刷新漫画分格。', 'err'); return; }
+    await pick(ref, { page: '', status: '', query: '' });
+  }
+  return { load, reset, refreshConnection, focus };
 }

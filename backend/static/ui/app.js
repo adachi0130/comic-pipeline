@@ -11,6 +11,7 @@ import { createEditFeedback } from './edit-feedback.js';
 import { createProviderManager } from './provider-manager.js';
 import { createComfySettings } from './comfy-settings.js';
 import { createImageWorkbench } from './image-workbench.js';
+import { createPipelineOverview } from './pipeline-overview.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
@@ -58,6 +59,9 @@ const providerManager = createProviderManager({ api, $, esc, toast, editFeedback
 const configuration = createConfigurationCenter({ state, api, $, esc, toast, switchTab,
   loadProviders, loadStageBinding, loadCharacterPresetPanel, loadStyleLoras, ensureLoraDatalist, editFeedback });
 const imageWorkbench = createImageWorkbench({ state, api, $, esc, pill, toast, editFeedback, refreshGates, openComfySettings, switchTab, pageLabel, panelFullLabel, attachLoraCombos, ensureLoraDatalist });
+const pipelineOverview = createPipelineOverview({ state, api, $, esc, pill, toast, switchTab, refreshGates,
+  pageLabel, panelFullLabel, openPageDetail, openStageArtifacts, openMedPage,
+  focusImage: (ref) => { switchTab('images'); imageWorkbench.focus(ref); } });
 let projectPickRequest = 0;
 let assetCardsRequest = 0, styleRequest = 0, styleEditor = null;
 let assetMutationInFlight = false;
@@ -69,7 +73,7 @@ const assetEditors = new WeakMap();
 const TITLES = {
   projects: ['项目管理', '选择或新建一部漫画'],
   novel: ['正文', '用酒馆写小说，逐段审核，然后进入分页'],
-  pipeline: ['流水线总览', '查看六阶段进度、审核状态与当前任务'],
+  pipeline: ['流水线总览', '从正文到漫画成册，查看当前画面与后台任务'],
   pages: ['分格分页', '每页选模板（或让 AI 选）+ 打分格，并预览正文产物'],
   prompts: ['提示词', 'S3 分镜提示词：每格一句出图词'],
   images: ['出图', '连上后端 → 选工作流 → 出图挑图'],
@@ -115,7 +119,7 @@ function switchTab(tab, requestedSection) {
   $('#view-sub').textContent = TITLES[tab][1];
   navigation.onNavigate(tab);
   if (tab === 'novel') { loadNovel(); setNovelMethod(getNovelMethod()); }
-  if (tab === 'pipeline') renderFlow().then(refreshGates);
+  if (tab === 'pipeline') renderFlow();
   if (tab === 'images') loadWorkbench();
   if (tab === 'pages') loadPages();
   if (tab === 'prompts') loadPrompts();
@@ -191,6 +195,7 @@ async function pickProject(id) {
     if (state.editor?.dirty && state.editor.projectId !== id && !confirm('当前漫画页有未保存的修改。切换项目会关闭它，确定继续吗？')) return;
     editFeedback.clear(['asset-cards', 'asset-style', 'project-form', 'project-dialog', 'image-editor']); styleEditor = null;
     imageWorkbench.reset();
+    pipelineOverview.reset();
     projectDetailId = null; projectDetailRequest++;
     $('#proj-detail').innerHTML = '<div class="empty">正在加载新项目详情…</div>';
     $('#pr-chars').innerHTML = '<div class="empty">正在加载新项目资产…</div>';
@@ -202,6 +207,7 @@ async function pickProject(id) {
   state.project = project;
   state._gates = null; state._composePages = null; state._composeSelected = null;
   state._doneJobs = {}; navigation.update();
+  startJobsSSE();
   showProjectView('detail');                       // 进入二级页面
   const h = $('#pd-title-h'); if (h) h.textContent = state.project.title || '项目详情';
   const c = $('#pv-crumb'); if (c) c.textContent = `项目 / ${state.project.title || ''}`;
@@ -1785,67 +1791,8 @@ async function openPanelPromptEdit(panelRef) {
 }
 
 // ---------- 流水线 ----------
-async function renderFlow() {
-  const box = $('#flow');
-  if (!state.projectId) {
-    box.innerHTML = `<div class="empty" style="text-align:left">
-      还没有选中项目，所以看不到流水线。<br><br>
-      · 去「项目」页点一个项目卡片（或新建一个），选中后这里会显示 S1–S6 六个阶段；<br>
-      · 每个走 LLM 的阶段（<b>S2 分页分格</b>、<b>S3 分镜提示词</b>）右上角会有「<b>提示词</b>」按钮，可编辑该阶段的提示词模板。
-      <div class="row" style="margin-top:10px"><button class="sm primary" data-go-projects>去选择/新建项目</button></div>
-    </div>`;
-    const gb = box.querySelector('[data-go-projects]');
-    if (gb) gb.addEventListener('click', () => switchTab('projects'));
-    return;
-  }
-  const meta = await ensureMeta();
-  if (!meta) { box.innerHTML = '<div class="empty">元信息加载失败，请稍后重试或刷新页面</div>'; return; }
-  if (!state._gates) await refreshGates();
-  const stages = meta.stages || [];
-  const gates = state._gates || {};
-  box.innerHTML = stages.map((s) => {
-    const g = gates[s.id] || { count: 0, approved: 0, review: 0, stale: 0 };
-    const total = g.count || 0;
-    const pct = total ? Math.round(100 * (g.approved || 0) / total) : 0;
-    const isS1 = s.id === 'S1';
-    return `<div class="stage" data-stage="${s.id}">
-      <div class="idx">${s.id}</div>
-      <div><div class="nm">${esc(s.name)}</div><div class="ds">${esc(s.desc)}</div>
-        <div class="bar"><i style="width:${pct}%"></i></div></div>
-      <div class="stat">
-        <span class="pill tag">${total} 项</span>
-        ${g.approved ? `<span class="pill ok"><i class="dotm"></i>${g.approved} 通过</span>` : ''}
-        ${g.review ? `<span class="pill warn"><i class="dotm"></i>${g.review} 待审</span>` : ''}
-        ${g.stale ? `<span class="pill stale"><i class="dotm"></i>${g.stale} 需重跑</span>` : ''}
-        <button class="sm" data-view="${s.id}">查看</button>
-        ${isS1 ? '<button class="sm primary" data-go="novel">去写正文</button>' : `<button class="sm" data-run="${s.id}">运行</button>`}
-        ${PROMPT_OF_STAGE[s.id] ? `<button class="sm" data-prompt="${PROMPT_OF_STAGE[s.id]}">提示词</button>` : ''}
-      </div></div>`;
-  }).join('');
-  $$('[data-view]').forEach((b) => b.addEventListener('click', () => openStageArtifacts(b.dataset.view)));
-  $$('[data-run]').forEach((b) => b.addEventListener('click', () => runStage(b.dataset.run)));
-  $$('[data-go]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.go)));
-  // 提示词按钮统一由全局 document 委托处理（见 loadPages 附近），避免重复弹窗
-}
-
-async function runStage(stage) {
-  if (!state.projectId) return toast('先选择项目', 'err');
-  if (stage === 'S6') { switchTab('exports'); return; }
-  // 前端先查前置条件，缺什么就明确提示并给跳转
-  try {
-    const rd = await api(`/api/projects/${state.projectId}/readiness`);
-    const info = rd[stage] || {};
-    if (!info.ready) {
-      if (info.goto && confirm(`前置条件未满足：\n\n${info.missing}\n\n要现在去处理吗？`)) switchTab(info.goto);
-      else toast('前置未满足：' + info.missing, 'err');
-      return;
-    }
-  } catch { /* 检查失败就交给后端兜底 */ }
-  try {
-    const r = await api(`/api/projects/${state.projectId}/run/${stage}`, { method: 'POST', body: '{}' });
-    toast(`${stage} 已入队 #${r.job_id}`);
-  } catch (e) { toast(e.message, 'err'); }
-}
+function renderFlow() { return pipelineOverview.load(); }
+function runStage(stage) { return pipelineOverview.submit(stage); }
 
 // 阶段 -> 提示词名（只有走 LLM 的阶段才有）
 const PROMPT_OF_STAGE = { S2: 's2_script', S3: 's3_prompt' };
@@ -1932,7 +1879,11 @@ async function openPromptEditor(name) {
 
 async function openStageArtifacts(stage) {
   if (!state.projectId) return toast('先选择项目', 'err');
-  const d = await api(`/api/projects/${state.projectId}/stage-artifacts`);
+  const projectId = state.projectId;
+  let d;
+  try { d = await api(`/api/projects/${projectId}/stage-artifacts`); }
+  catch (error) { toast('产物读取失败：' + error.message, 'err'); return; }
+  if (projectId !== state.projectId) return;
   const blk = d[stage] || { label: stage, items: [] };
   const box = document.createElement('div');
   box.className = 'modal';
@@ -1943,7 +1894,7 @@ async function openStageArtifacts(stage) {
         <td class="mut" style="max-width:320px">${esc(it.summary)}</td>
         <td><button class="sm" data-open="${it.id}">JSON</button>
           ${stage === 'S2' ? `<button class="sm primary" data-page="${esc(it.ref)}">详情/编辑</button>` : ''}
-          ${stage === 'S3' || stage === 'S4' ? `<button class="sm" data-rerun="${esc(it.ref)}">重跑</button>` : ''}
+          ${stage === 'S3' || stage === 'S4' ? `<button class="sm" data-rerun="${esc(it.ref)}">${stage === 'S4' ? '去出图' : '重跑本页'}</button>` : ''}
         </td></tr>`).join('')}
     </tbody></table>` : '<div class="empty">该阶段还没有产物</div>'}
     <div class="row" style="margin-top:14px"><div class="spacer"></div><button class="sm" data-close>关闭</button></div>
@@ -1957,10 +1908,11 @@ async function openStageArtifacts(stage) {
   }));
   box.querySelectorAll('[data-page]').forEach((b) => b.addEventListener('click', () => { box.remove(); openPageDetail(b.dataset.page); }));
   box.querySelectorAll('[data-rerun]').forEach((b) => b.addEventListener('click', async () => {
-    try {
-      const r = await api(`/api/projects/${state.projectId}/run/S3`, { method: 'POST', body: JSON.stringify({ page_ref: b.dataset.rerun }) });
-      toast(`提示词重跑已入队 #${r.job_id}（按该页格数重新生成）`, 'ok');
-    } catch (e) { toast(e.message, 'err'); }
+    if (projectId !== state.projectId) { box.remove(); return; }
+    if (stage === 'S4') { box.remove(); switchTab('images'); imageWorkbench.focus(b.dataset.rerun); return; }
+    const pageRef = 'page:' + b.dataset.rerun.split(':')[1].split('.')[0];
+    if (!confirm(`重新生成${pageLabel(pageRef)}的提示词？原版本会保留，相关下游将标记需更新。`)) return;
+    box.remove(); await pipelineOverview.submit('S3', { page_ref: pageRef });
   }));
 }
 
@@ -1974,58 +1926,56 @@ async function refreshGates() {
     navigation.update();
     // 只更新统计块；绝不整块重绘（否则会清空用户正在编辑的输入框）
     updateProjectStats();
-    if (document.querySelector('.nav button.active')?.dataset.tab === 'pipeline') renderFlow();
+    pipelineOverview.onGates(g.stages);
   } catch { /* 忽略 */ }
 }
 
 // ---------- 作业 SSE ----------
-let _sse = null;
+let _sse = null, jobsStreamEpoch = 0, jobsFallback = null;
 function startJobsSSE() {
   if (_sse) _sse.close();
-  _sse = new EventSource(API + '/api/jobs/events' + (state.projectId ? `?project_id=${state.projectId}` : ''));
-  _sse.onmessage = (ev) => { try { renderJobs(JSON.parse(ev.data)); } catch { /* keep-alive */ } };
+  clearInterval(jobsFallback); jobsFallback = null;
+  const projectId = state.projectId, epoch = ++jobsStreamEpoch;
+  if (!projectId) { renderJobs([]); return; }
+  const valid = () => epoch === jobsStreamEpoch && projectId === state.projectId;
+  const read = async () => {
+    const version = pipelineOverview.version();
+    try {
+      const list = await api(`/api/jobs?project_id=${projectId}`);
+      if (valid() && version === pipelineOverview.version()) renderJobs(list);
+    } catch { if (valid()) pipelineOverview.onConnection('polling'); }
+  };
+  pipelineOverview.onConnection('connecting'); read();
+  _sse = new EventSource(API + `/api/jobs/events?project_id=${projectId}`);
+  _sse.onopen = () => {
+    if (!valid()) return;
+    clearInterval(jobsFallback); jobsFallback = null; pipelineOverview.onConnection('live');
+  };
+  _sse.onerror = () => {
+    if (!valid()) return;
+    pipelineOverview.onConnection('polling');
+    if (!jobsFallback) { read(); jobsFallback = setInterval(read, 5000); }
+  };
+  _sse.onmessage = (event) => {
+    if (!valid()) return;
+    try { renderJobs(JSON.parse(event.data)); } catch { /* keep-alive */ }
+  };
 }
-function renderJobs(jobs) {
-  exportCenter.onJobs(jobs);
-  const box = $('#jobs');
-  if (!box) return;
-  if (!jobs.length) { box.innerHTML = '<div class="empty">暂无作业</div>'; }
-  else {
-    box.innerHTML = jobs.slice(0, 12).map((j) => {
-      const active = j.status === 'running' || j.status === 'queued';
-      return `<div class="job"><span class="pill tag">${j.stage || j.kind}</span>
-        <span class="mut" style="min-width:52px">#${j.id}</span>${pill(j.status)}
-        <div class="bar"><i style="width:${j.total ? Math.round(100 * j.progress / j.total) : (j.status === 'done' ? 100 : 6)}%"></i></div>
-        <span class="mut" style="font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(j.message || '')}</span>
-        ${active ? `<button class="sm danger" data-cancel="${j.id}" title="取消该作业">✕</button>` : ''}</div>`;
-    }).join('');
-    box.querySelectorAll('[data-cancel]').forEach((b) => b.addEventListener('click', async () => {
-      try {
-        await api(`/api/jobs/${b.dataset.cancel}/cancel`, { method: 'POST', body: '{}' });
-        toast(`已请求取消作业 #${b.dataset.cancel}`, 'ok');
-      } catch (e) { toast(e.message, 'err'); }
-    }));
-  }
+function renderJobs(list) {
+  const jobs = list.filter((job) => job.project_id === state.projectId);
+  exportCenter.onJobs(jobs); pipelineOverview.onJobs(jobs);
   refreshGates();
-
-  // 作业完成/失败时，自动刷新当前标签页（否则出图完成后前端不更新，要手动刷新才看到）
   const nowDone = {};
-  jobs.forEach((j) => { if (j.status === 'done' || j.status === 'failed') nowDone[j.id] = j.status; });
-  const newlyDone = Object.keys(nowDone).filter((id) => !state._doneJobs?.[id]);
+  jobs.forEach((job) => { if (['done', 'failed', 'cancelled'].includes(job.status)) nowDone[job.id] = job.status; });
+  const newlyDone = Object.keys(nowDone).filter((id) => state._doneJobs?.[id] !== nowDone[id]);
   state._doneJobs = nowDone;
-  if (newlyDone.length) {
-    // 失败的作业弹个提示，说明原因（如 LoRA 名不存在、工作流校验失败）
-    jobs.filter((j) => newlyDone.includes(String(j.id)) && j.status === 'failed')
-      .forEach((j) => toast(`作业 #${j.id} 失败：${(j.error || '').slice(0, 160)}`, 'err'));
-    const t = document.querySelector('.nav button.active')?.dataset.tab;
-    if (t === 'images') loadWorkbench();
-    else if (t === 'novel') loadNovel();
-    else if (t === 'prompts') loadPrompts();
-    else if (t === 'pages') loadPages();
-  } else {
-    const t = document.querySelector('.nav button.active')?.dataset.tab;
-    if (t === 'novel') loadNovel();
-  }
+  if (!newlyDone.length) return;
+  const tab = document.querySelector('.nav button.active')?.dataset.tab;
+  if (tab === 'images') loadWorkbench();
+  else if (tab === 'novel') loadNovel();
+  else if (tab === 'prompts') loadPrompts();
+  else if (tab === 'pages') loadPages();
+  else if (tab === 'compose') loadCompose();
 }
 
 // ---------- 出图工作台 ----------

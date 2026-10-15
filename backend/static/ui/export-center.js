@@ -17,9 +17,9 @@ export function createExportCenter({ state, api, $, esc, pill, toast, switchTab,
     if (!job) { box.innerHTML = ''; updateRunButton(); return; }
     const running = job.status === 'queued' || job.status === 'running';
     const progress = job.total ? Math.min(100, Math.round(100 * job.progress / job.total)) : (job.status === 'done' ? 100 : 0);
-    box.innerHTML = `<div class="export-task"><div class="row"><b>导出任务 #${job.id}</b>${pill(job.status)}
+    box.innerHTML = `<div class="export-task"><div class="row"><b>导出任务 #${job.id}</b>${job.cancel_requested && running ? '<span class="pill warn">正在取消</span>' : pill(job.status)}
       <span class="mut">${esc(job.message || (running ? '正在生成成册文件…' : ''))}</span><div class="spacer"></div>
-      ${running ? `<button class="sm" id="export-cancel">取消导出</button>` : ''}</div>
+      ${running ? `<button class="sm" id="export-cancel" ${job.cancel_requested ? 'disabled' : ''}>${job.cancel_requested ? '等待停止…' : '取消导出'}</button>` : ''}</div>
       <progress max="100" value="${progress}" aria-label="导出进度" style="width:100%;height:6px;margin-top:8px"></progress></div>`;
     if (job.status === 'failed' && job.error) box.insertAdjacentHTML('beforeend', `<div class="export-hint warn">${esc(job.error)}</div>`);
     box.querySelector('#export-cancel')?.addEventListener('click', async (event) => {
@@ -27,6 +27,7 @@ export function createExportCenter({ state, api, $, esc, pill, toast, switchTab,
       try {
         const result = await api(`/api/jobs/${job.id}/cancel`, { method: 'POST', body: '{}' });
         if (!result.ok) throw new Error('任务已结束或无法取消，请刷新结果');
+        job.cancel_requested = true; renderTask();
         toast('已请求取消导出', 'ok');
       } catch (e) { toast(e.message, 'err'); event.target.disabled = false; }
     });
