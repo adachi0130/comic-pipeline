@@ -237,10 +237,15 @@ def handle(session: Session, job: Job) -> dict:
     only_panel = payload.get("panel_ref")
     out: list[str] = []
     from .. import jobs as jobq
+    job.total = len(pages)
+    job.progress = 0
+    session.commit()
     for page in pages:
         if jobq.is_cancelled(job.id):
             break
         page_payload = page.payload or {}
+        job.message = f"正在生成第 {page.ref.split(':', 1)[-1]} 页提示词，等待模型返回"
+        session.commit()
         geom = page_payload.get("geometry") or {}
         geometry_by_order = {p.get("index"): p for p in (geom.get("panels") or [])}
         user = promptlib.render(
@@ -260,6 +265,8 @@ def handle(session: Session, job: Job) -> dict:
             log=log,
             should_cancel=lambda: jobq.is_cancelled(job.id),
         )
+        if jobq.is_cancelled(job.id):
+            break
         # 格数适配校验：必须与分页脚本的 panels 一一对应
         expected = len(page_payload.get("panels", []))
         if len(prompts.panels) != expected:
@@ -309,6 +316,10 @@ def handle(session: Session, job: Job) -> dict:
             if project.review_mode == "auto":
                 set_status(session, art, ArtifactStatus.APPROVED.value)
             out.append(item.panel_ref)
+
+        job.progress += 1
+        job.message = f"已完成 {job.progress}/{job.total} 页提示词 · {len(out)} 格"
+        session.commit()
 
     session.commit()
     return {"panels": out}

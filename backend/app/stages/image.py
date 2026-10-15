@@ -121,6 +121,8 @@ def handle(session: Session, job: Job) -> dict:
     )
 
     job.message = f"出图中：{panel_ref} × {count}"
+    job.total = count
+    job.progress = 0
     session.commit()
 
     from .. import jobs as jobq
@@ -157,6 +159,6 @@ def handle(session: Session, job: Job) -> dict:
         set_status(session, art, ArtifactStatus.APPROVED.value)
     session.commit()
 
-    job.progress = count
-    job.total = count
+    job.progress = len(candidates)
+    job.total = len(candidates)
     return {"panel_ref": panel_ref, "candidates": len(candidates), "selected": art.payload.get("selected_index")}

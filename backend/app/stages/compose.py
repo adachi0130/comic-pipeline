@@ -51,6 +51,7 @@ def handle(session: Session, job: Job) -> dict:
     page_no = page_ref.split(":", 1)[-1]
     prompts: list[str] = []
     arts: list = []
+    inputs = [page_art]
 
     from ..med.base import PanelArt, ToneOp
     from ..med.composer import MedComposer
@@ -69,6 +70,9 @@ def handle(session: Session, job: Job) -> dict:
             if idx is not None and 0 <= idx < len(cands):
                 image_path = resolve_project_path(cands[idx]["path"], project_id)
                 arts.append(PanelArt(order=order, image_path=str(image_path), prompt=prompts[-1]))
+                inputs.append(img_art)
+                if prompt_art is not None:
+                    inputs.append(prompt_art)
 
     tones: list[ToneOp] = []
     for panel in (page_art.payload or {}).get("panels", []):
@@ -112,7 +116,7 @@ def handle(session: Session, job: Job) -> dict:
             "warnings": result.warnings,
         },
         path=str(out_path),
-        inputs=[page_art],
+        inputs=inputs,
         status=ArtifactStatus.REVIEW.value,
     )
     if project.review_mode == "auto":

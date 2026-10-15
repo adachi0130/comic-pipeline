@@ -159,8 +159,8 @@ def request_cancel(job_id: int) -> bool:
     """请求取消一个作业。
 
     排队中的：直接标记取消，worker 拿到时会跳过。
-    运行中的：标记 cancel_requested 并**立即把状态改成已取消**（前端马上看到停），
-    处理函数会在检查点退出；即便某次底层请求挂住，线程结束后也不会覆盖成别的状态。
+    运行中的：标记 cancel_requested，前端显示“正在取消”；处理函数退出后才记为已取消，
+    避免外部调用仍在收尾时，被误认为已经停下并再次提交相同任务。
     """
     session = SessionLocal()
     try:
@@ -170,7 +170,7 @@ def request_cancel(job_id: int) -> bool:
         ):
             return False
         job.cancel_requested = True
-        if job.status in (JobStatus.QUEUED.value, JobStatus.RUNNING.value):
+        if job.status == JobStatus.QUEUED.value:
             job.status = JobStatus.CANCELLED.value
             job.finished_at = utcnow()
         session.commit()

@@ -24,12 +24,23 @@ def list_jobs(
     limit: int = 100,
     session: Session = Depends(get_session),
 ) -> list[dict]:
-    stmt = select(Job).order_by(Job.id.desc()).limit(limit)
+    if status is None:
+        return [_brief(job) for job in _visible_jobs(session, project_id, limit)]
+    stmt = select(Job).order_by(Job.id.desc()).limit(max(1, min(limit, 200)))
     if project_id is not None:
         stmt = stmt.where(Job.project_id == project_id)
     if status:
         stmt = stmt.where(Job.status == status)
     return [_brief(j) for j in session.scalars(stmt).all()]
+
+
+def _visible_jobs(session: Session, project_id: int | None, limit: int = 50) -> list[Job]:
+    query = select(Job)
+    if project_id is not None:
+        query = query.where(Job.project_id == project_id)
+    recent = session.scalars(query.order_by(Job.id.desc()).limit(max(1, min(limit, 200)))).all()
+    active = session.scalars(query.where(Job.status.in_(("queued", "running")))).all()
+    return sorted({job.id: job for job in [*recent, *active]}.values(), key=lambda job: job.id, reverse=True)
 
 
 @router.get("/jobs/events")
@@ -45,10 +56,7 @@ async def events(project_id: int | None = None) -> StreamingResponse:
         while True:
             session = SessionLocal()
             try:
-                stmt = select(Job).order_by(Job.id.desc()).limit(50)
-                if project_id is not None:
-                    stmt = stmt.where(Job.project_id == project_id)
-                rows = session.scalars(stmt).all()
+                rows = _visible_jobs(session, project_id)
                 snapshot = json.dumps([_brief(j) for j in rows], ensure_ascii=False)
             finally:
                 session.close()
@@ -90,6 +98,9 @@ def _brief(j: Job) -> dict:
         "message": j.message,
         "error": j.error.splitlines()[0] if j.error else "",
         "cancel_requested": j.cancel_requested,
+        "created_at": j.created_at.isoformat() if j.created_at else None,
+        "started_at": j.started_at.isoformat() if j.started_at else None,
+        "finished_at": j.finished_at.isoformat() if j.finished_at else None,
     }
 
 

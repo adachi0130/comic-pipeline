@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from threading import Lock
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
@@ -23,6 +25,7 @@ from ...models import (
 )
 
 router = APIRouter(tags=["pipeline"])
+_submission_lock = Lock()
 
 # 阶段顺序：S1 正文（酒馆桥）→ S2 分格 → S3 提示词 → S4 出图 → S5 合成 → S6 导出
 # S1 由扩展领取，不在此表内（见 bridge.py）。
@@ -186,9 +189,9 @@ def readiness(project_id: int, session: Session = Depends(get_session)) -> dict:
         "S3": block("S3", page_ok > 0,
                     "还没有已审核通过的分格页；请到「分格」页通过至少一页", "pages"),
         "S4": block("S4", prompt_ok > 0,
-                    "还没有已审核通过的提示词；请到「流水线」页对 S3 产物审核通过", "pipeline"),
+                    "还没有已审核通过的提示词；请到「提示词」工作台审核通过", "prompts"),
         "S5": block("S5", page_ok > 0 and img_ok > 0,
-                    "需要：已通过的分格页 + 该页每格选定成图", "pages"),
+                    "需要：已通过的分格页 + 该页每格选定成图", "images" if page_ok else "pages"),
         "S6": block("S6", pageimg_ok > 0,
                     "还没有已审核通过的整页成图；请先完成 S5 分页合成并审核", "compose"),
         "counts": {
@@ -324,6 +327,7 @@ def compose_board(project_id: int, session: Session = Depends(get_session)) -> d
     if project is None:
         raise HTTPException(404, "项目不存在")
 
+    from ...overview import available
     pages = []
     for a in A.all_current(session, project_id, ArtifactKind.PAGE_SCRIPT.value):
         payload = a.payload or {}
@@ -334,7 +338,7 @@ def compose_board(project_id: int, session: Session = Depends(get_session)) -> d
         tpl = session.get(Template, payload.get("template_id")) if payload.get("template_id") else None
         geom = payload.get("geometry") or (tpl.geometry if tpl else {})
         panels = []
-        ready = True
+        ready = a.status == "approved" and bool(payload.get("panels"))
         for p in payload.get("panels", []):
             order = p.get("panel_order")
             pref = f"panel:{no}.{order}"
@@ -344,9 +348,11 @@ def compose_board(project_id: int, session: Session = Depends(get_session)) -> d
             if img is not None:
                 cands = (img.payload or {}).get("candidates") or []
                 idx = (img.payload or {}).get("selected_index")
+                if type(idx) is not int or img.status != "approved":
+                    ready = False
                 if idx is None and cands:
                     idx = 0
-                if idx is not None and 0 <= idx < len(cands):
+                if type(idx) is int and 0 <= idx < len(cands) and available(cands[idx].get("path"), project_id):
                     url = f"/api/artifacts/{img.id}/candidate/{idx}"
             if not url:
                 ready = False
@@ -807,8 +813,81 @@ def run_stage(project_id: int, stage: str, body: dict | None = None, session: Se
     info = rd.get(stage) or {}
     if not info.get("ready", True):
         raise HTTPException(400, f"前置条件未满足：{info.get('missing', '请先完成前一阶段')}")
-    job = jobq.enqueue(kinds[stage], project_id=project_id, stage=stage, payload={"project_id": project_id, **(body or {})})
-    return {"job_id": job.id, "stage": stage, "status": job.status}
+    from ...storage import StorageError, validate_ref
+    from ...overview import available
+    from .jobs import _brief
+
+    payload = {**(body or {}), "project_id": project_id}
+    target = payload.get("panel_ref") if stage == "S4" else payload.get("page_ref") if stage in ("S3", "S5") else ""
+    if stage in ("S4", "S5") and not target:
+        raise HTTPException(400, "请先选择要出图的格" if stage == "S4" else "请先选择要合成的页")
+    if target:
+        try:
+            validate_ref(target, "panel" if stage == "S4" else "page")
+        except (StorageError, TypeError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        page_ref = "page:" + target.split(":", 1)[1].split(".", 1)[0] if stage == "S4" else target
+        page = A.current(session, project_id, "page_script", page_ref)
+        if page is None:
+            raise HTTPException(404, "所选漫画页不存在")
+        if page.status != "approved":
+            raise HTTPException(400, "所选漫画页需要先审核通过")
+        if stage == "S4":
+            count = payload.get("count", p.candidates_per_panel or 4)
+            if type(count) is not int or not 1 <= count <= 8:
+                raise HTTPException(400, "候选张数需为 1 到 8 的整数")
+            payload["count"] = count
+            orders = {f"panel:{page_ref.split(':', 1)[1]}.{panel.get('panel_order')}" for panel in (page.payload or {}).get("panels", [])}
+            prompt = A.current(session, project_id, "panel_prompt", target)
+            if target not in orders or prompt is None:
+                raise HTTPException(404, "所选格或提示词不存在")
+            if prompt.status != "approved":
+                raise HTTPException(400, "所选格的提示词需要先审核通过")
+            if payload.get("prompt_artifact_id", prompt.id) != prompt.id:
+                raise HTTPException(409, "提示词版本已变化，请到出图页核对后重新提交")
+            payload["prompt_artifact_id"] = prompt.id
+        if stage == "S5":
+            panels = (page.payload or {}).get("panels") or []
+            if not panels:
+                raise HTTPException(400, "所选页没有分格")
+            for panel in panels:
+                image = A.current(session, project_id, "image", f"panel:{page_ref.split(':', 1)[1]}.{panel.get('panel_order')}")
+                image_payload = (image.payload or {}) if image else {}
+                index, candidates = image_payload.get("selected_index"), image_payload.get("candidates") or []
+                if image is None or image.status != "approved" or type(index) is not int or not 0 <= index < len(candidates) or not available(candidates[index].get("path"), project_id):
+                    raise HTTPException(400, "所选页需要每格都采用可用的图片后再合成")
+    # 相同目标的活动任务复用；不同页/格可分别入队，防止连点造成重复模型调用。
+    with _submission_lock:
+        active = session.scalars(select(Job).where(Job.project_id == project_id, Job.kind == kinds[stage], Job.status.in_(("queued", "running")))).all()
+        for existing in active:
+            old = existing.payload or {}
+            old_target = old.get("panel_ref") if stage == "S4" else old.get("page_ref") if stage in ("S3", "S5") else ""
+            if stage == "S3" and not target and old_target:
+                raise HTTPException(409, "已有单页提示词任务进行中，请结束后再提交全部页")
+            if old_target == target or (stage == "S3" and not old_target):
+                return {"job_id": existing.id, "stage": stage, "status": existing.status, "job": _brief(existing), "reused": True}
+        job = jobq.enqueue(kinds[stage], project_id=project_id, stage=stage, payload=payload)
+    return {"job_id": job.id, "stage": stage, "status": job.status, "job": _brief(job), "reused": False}
+
+
+@router.get("/projects/{project_id}/overview")
+def project_overview(project_id: int, session: Session = Depends(get_session)) -> dict:
+    from ...overview import snapshot
+    from ...comfy.store import load_comfy_config
+    from yaml import YAMLError
+
+    project = session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "项目不存在")
+    result = snapshot(session, project)
+    result["stages"] = gates(project_id, session)["stages"]
+    result["readiness"] = readiness(project_id, session)
+    result["has_templates"] = session.scalars(select(Template.id).limit(1)).first() is not None
+    try:
+        result["has_workflow"] = bool(load_comfy_config().workflow_name)
+    except (OSError, ValueError, YAMLError):
+        result["has_workflow"] = False
+    return result
 
 
 @router.patch("/projects/{project_id}/review-mode")

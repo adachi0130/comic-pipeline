@@ -265,6 +265,21 @@ def tavern_chats(session: Session = Depends(get_session)) -> dict:
     }
 
 
+def _finish_cancelled(session: Session, job: Job) -> dict:
+    """外部酒馆调用退出后结算取消，迟到结果不追加正文。"""
+    from ...models import TavernMirror
+    job.status = JobStatus.CANCELLED.value
+    job.finished_at = datetime.now(timezone.utc)
+    job.result = {"cancelled": True}
+    row = session.get(TavernMirror, 1)
+    if row is not None and ((row.payload or {}).get("live") or {}).get("job_id") == job.id:
+        payload = dict(row.payload or {})
+        payload["live"] = {"job_id": job.id, "text": "", "chars": 0, "done": True, "error": ""}
+        row.payload = payload
+    session.commit()
+    return {"ok": True, "cancelled": True}
+
+
 @router.post("/bridge/result")
 def result(body: dict, session: Session = Depends(get_session)) -> dict:
     """扩展回传生成结果。body: {job_id, text, receipt?}"""
@@ -273,6 +288,8 @@ def result(body: dict, session: Session = Depends(get_session)) -> dict:
     job = session.get(Job, int(job_id)) if job_id else None
     if job is None:
         raise HTTPException(404, "作业不存在")
+    if job.cancel_requested:
+        return _finish_cancelled(session, job)
 
     # 非正文任务（例如切换对话）或空文本：只更新作业状态，**不创建正文产物**。
     # 否则会出现 project_id 为空却要写 prose 的错误（曾经导致 500 循环）。
@@ -382,6 +399,10 @@ def bridge_stream(body: dict, session: Session = Depends(get_session)) -> dict:
     """
     from ...models import TavernMirror
 
+    job_id = body.get("job_id")
+    job = session.get(Job, int(job_id)) if job_id else None
+    if job is not None and job.cancel_requested and job.status == JobStatus.CANCELLED.value:
+        return {"ok": True, "skipped": "cancelled"}
     row = session.get(TavernMirror, 1)
     if row is None:
         row = TavernMirror(id=1, payload={})
@@ -521,6 +542,8 @@ def bridge_error(body: dict, session: Session = Depends(get_session)) -> dict:
     job_id = body.get("job_id")
     msg = (body.get("error") or "生成失败").strip()
     job = session.get(Job, int(job_id)) if job_id else None
+    if job is not None and job.cancel_requested:
+        return _finish_cancelled(session, job)
     if job is not None:
         job.status = JobStatus.FAILED.value
         job.error = msg

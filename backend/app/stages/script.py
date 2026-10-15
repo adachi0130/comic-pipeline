@@ -60,9 +60,20 @@ def handle(session: Session, job: Job) -> dict:
 
     log = LLMLogContext(session=session, stage="S2", project_id=project_id, provider_id=provider.id)
     produced: list[dict] = []
+    from .. import jobs as jobq
+    job.total = target
+    job.progress = sum(f"page:{number}" in existing for number in range(1, target + 1))
+    session.commit()
     start = 1
     while start <= target:
+        if jobq.is_cancelled(job.id):
+            break
         end = min(start + batch - 1, target)
+        if all(f"page:{number}" in existing for number in range(start, end + 1)):
+            start = end + 1
+            continue
+        job.message = f"正在分页：第 {start}–{end} 页，等待模型返回"
+        session.commit()
         user = promptlib.render(
             user_tpl,
             {
@@ -78,7 +89,10 @@ def handle(session: Session, job: Job) -> dict:
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             Storyboard,
             log=log,
+            should_cancel=lambda: jobq.is_cancelled(job.id),
         )
+        if jobq.is_cancelled(job.id):
+            break
         for page in board.pages:
             tpl = session.get(Template, page.template_id)
             if tpl is None:
@@ -101,6 +115,9 @@ def handle(session: Session, job: Job) -> dict:
             if project.review_mode == "auto":
                 set_status(session, art, ArtifactStatus.APPROVED.value)
             produced.append({"page": page.page_index, "template": tpl.id, "panels": tpl.panels_count})
+            existing.add(ref)
+        job.progress = sum(f"page:{number}" in existing for number in range(1, target + 1))
+        job.message = f"已完成 {job.progress}/{target} 页分格"
         session.commit()
         start = end + 1
 
