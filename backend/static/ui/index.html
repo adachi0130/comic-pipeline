@@ -311,6 +311,7 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
   background:#232733;color:#e8eaee;border-radius:8px;font-size:12px;font-weight:400;line-height:1.55;
   box-shadow:0 6px 20px rgba(0,0,0,.22);opacity:0;visibility:hidden;transition:.12s;text-align:left}
 .help-dot:hover .tip{opacity:1;visibility:visible}
+@media(max-width:600px){.help-dot .tip{position:fixed;top:120px;left:16px;right:16px;width:auto;max-height:60vh;overflow-y:auto}}
 </style>
 </head>
 <body>
@@ -433,18 +434,20 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
       <!-- 方式一：用酒馆写 -->
       <div id="nv-pane-tavern" class="hidden">
         <div class="card">
-          <h2 style="cursor:pointer" id="tv-chats-toggle">对话列表
+          <div class="row" style="margin-bottom:10px"><h2 style="cursor:pointer;flex:1;min-width:0;flex-wrap:wrap;margin:0" id="tv-chats-toggle" role="button" tabindex="0" aria-expanded="true" aria-controls="tv-chats-body">对话列表
             <span class="help-dot" title="">?
               <span class="tip">配好角色卡 / 世界书后，在下方「酒馆对话」里<b>直接发一条</b>给酒馆（相当于你在酒馆聊天框里发话），
                 只把这次新返回的内容存为正文；历史消息不会写入产物。<br><br>
                 需酒馆标签页打开且扩展已启用（或常驻桥在跑）。也可用本列表切换当前会话。</span>
             </span>
-            <span class="pill" id="tv-cur">—</span>
+            <span class="pill" id="tv-cur" style="max-width:100%;white-space:normal;overflow-wrap:anywhere">—</span>
+            <span class="pill tag" id="tv-chats-count">0 个</span>
             <span class="spacer"></span>
-            <span class="mut" id="tv-chats-arrow">▸</span>
-          </h2>
-          <div id="tv-chats-body" class="hidden">
-            <div class="h2sub">与酒馆「Recent Chats」一致；点条目切换会同步改变酒馆当前对话。</div>
+            <span class="mut" id="tv-chats-arrow">▾</span>
+          </h2><button class="sm" id="tv-chats-refresh" type="button">刷新列表</button></div>
+          <div id="tv-chats-body">
+            <div class="h2sub">显示酒馆桥最近同步的会话；点条目会切换酒馆当前对话。</div>
+            <div id="tv-chats-state" class="save-feedback" role="status" aria-live="polite">正在读取对话列表…</div>
             <div id="tv-chats"><div class="empty">等待酒馆扩展推送…</div></div>
           </div>
         </div>
@@ -809,6 +812,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=85"></script>
+<script type="module" src="/ui/app.js?v=86"></script>
 </body>
 </html>

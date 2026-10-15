@@ -184,6 +184,12 @@ def main():
             browser_context = browser.new_context(viewport={'width': 1440, 'height': 1100})
             page = browser_context.new_page()
             page.on('pageerror', lambda error: errors.append(str(error)))
+            page.add_init_script('''(() => {
+              const Native = window.EventSource;
+              window.EventSource = class extends Native {
+                constructor(url, options) { super(url, options); if (String(url).includes('/tavern/events')) window.__qaTavernEvents = this; }
+              };
+            })()''')
             page.goto(origin + '/ui/')
             page.locator('[data-pick="1"]').click()
             expect(page.locator('#breadcrumb-project')).to_have_text('我的漫画')
@@ -708,6 +714,73 @@ def main():
                     field.scroll_into_view_if_needed()
                     assert field.evaluate('(el) => {const r=el.getBoundingClientRect(); return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===el}'), f'{selector} 在 {width}px 被遮挡'
                 page.screenshot(path=str(screenshots / f'image-workbench-{width}.png'), full_page=True)
+            # 正文会话：最近列表不包含当前会话时仍显示，刷新失败保留列表和输入。
+            page.set_viewport_size({'width': 1440, 'height': 1100})
+            fixture = {
+                'context': {'character_name': '测试角色', 'character_avatar': 'hero.png', 'chat_id': 'outside-recent', 'message_count': 1},
+                'messages': [{'name': '测试角色', 'mes': '本地测试会话正文', 'is_user': False}],
+                'chats': [{'file_name': 'chapter\'s "one".jsonl', 'avatar': 'hero.png', 'char_name': '测试角色', 'chat_items': 1, 'last_mes': '第一条'}],
+            }
+            assert browser_context.request.post(origin + '/api/bridge/mirror', data=fixture).ok
+            page.locator('.nav [data-tab="novel"]').click()
+            page.locator('#nv-methods [data-method="tavern"]').click()
+            expect(page.locator('#tv-chats-body')).to_be_visible()
+            expect(page.locator('#tv-chats [data-switch]')).to_have_count(1)
+            expect(page.locator('#tv-chat')).to_contain_text('本地测试会话正文')
+            expect(page.locator('#tv-chats-refresh')).to_be_enabled()
+            page.locator('#tv-input').fill('尚未发送的草稿')
+            live = browser_context.request.get(origin + '/api/tavern/live').json()
+            def emit_tavern(data):
+                page.evaluate('(data) => window.__qaTavernEvents.dispatchEvent(new MessageEvent("message", {data: JSON.stringify(data)}))', data)
+            # 曾经空列表后，相同签名的列表可重新显示。
+            emit_tavern({**live, 'chats': []})
+            expect(page.locator('#tv-chats [data-switch]')).to_have_count(0)
+            emit_tavern(live)
+            expect(page.locator('#tv-chats [data-switch]')).to_have_count(1)
+            # 欢迎页仅保留已显示正文，仍更新列表和错误状态。
+            latest = {**live, 'context': {}, 'chats': [*live['chats'], {'file_name': 'new.jsonl', 'avatar': 'second.png', 'char_name': '新角色'}], 'live': {'error': '模拟酒馆错误'}}
+            emit_tavern(latest)
+            expect(page.locator('#tv-chats [data-switch]')).to_have_count(2)
+            expect(page.locator('#tv-chat')).to_contain_text('本地测试会话正文')
+            expect(page.locator('#tv-error-text')).to_have_text('模拟酒馆错误')
+            page.route('**/api/tavern/live', lambda route: route.fulfill(status=503, content_type='application/json', body='{"detail":"模拟断线"}'))
+            page.locator('#tv-chats-refresh').click()
+            expect(page.locator('#tv-chats-state')).to_contain_text('刷新失败')
+            expect(page.locator('#tv-chats [data-switch]')).to_have_count(2)
+            expect(page.locator('#tv-input')).to_have_value('尚未发送的草稿')
+            page.unroute('**/api/tavern/live')
+            page.locator('#tv-chats-toggle').click()
+            expect(page.locator('#tv-chats-body')).not_to_be_visible()
+            page.locator('#tv-chats-refresh').click()
+            expect(page.locator('#tv-chats-body')).to_be_visible()
+            expect(page.locator('#tv-chats [data-switch]')).to_have_count(1)
+            # 迟到的手动读取不能覆盖更新的 SSE。
+            held = []
+            page.route('**/api/tavern/live', lambda route: held.append(route))
+            page.locator('#tv-chats-refresh').click()
+            expect(page.locator('#tv-chats-refresh')).to_be_disabled()
+            assert held
+            emit_tavern(latest)
+            held[-1].fulfill(status=200, content_type='application/json', body=json.dumps(live))
+            expect(page.locator('#tv-chats-refresh')).to_be_enabled()
+            expect(page.locator('#tv-chats [data-switch]')).to_have_count(2)
+            page.unroute('**/api/tavern/live')
+            # 断桥状态仍展示缓存，名字含引号时仍可安全切换。
+            emit_tavern({**live, 'bridge_online': False})
+            expect(page.locator('#tv-chats-state')).to_contain_text('最近未同步')
+            switched = []
+            def capture_switch(route):
+                switched.append(route.request.post_data_json)
+                route.fulfill(status=200, content_type='application/json', body='{"job_id":999,"status":"queued"}')
+            page.route('**/api/tavern/switch', capture_switch)
+            page.locator('#tv-chats [data-switch]').first.click()
+            assert switched[-1]['file_name'] == fixture['chats'][0]['file_name']
+            assert switched[-1]['avatar'] == 'hero.png'
+            for width in (1440, 768, 390):
+                page.set_viewport_size({'width': width, 'height': 1100})
+                page.locator('#tv-chats-refresh').scroll_into_view_if_needed()
+                assert page.evaluate('() => document.documentElement.scrollWidth <= innerWidth + 1'), (width, page.evaluate('() => [...document.querySelectorAll("body *")].filter(el => el.getBoundingClientRect().right > innerWidth+1).map(el => [el.tagName, el.id, el.className]).slice(-15)'))
+                page.screenshot(path=str(screenshots / f'tavern-chat-list-{width}.png'))
             assert not errors, errors
             # 将本次截图复制到调用者指定的独立可写目录，仅用于视觉检查。
             import os
@@ -723,7 +796,7 @@ def main():
                           'export_pdf_cbz_download': 'ok',
                           'mobile_menu_and_project_switch': 'ok',
                           'configuration_assets_persist': 'ok',
-                          'configuration_window_drafts': 'ok', 'project_and_dialog_drafts': 'ok', 'save_failure_and_race': 'ok', 'image_workbench': 'ok',
+                          'configuration_window_drafts': 'ok', 'project_and_dialog_drafts': 'ok', 'save_failure_and_race': 'ok', 'image_workbench': 'ok', 'tavern_chat_list': 'ok',
                           'page_errors': errors}, ensure_ascii=False))
         return 0
     finally:

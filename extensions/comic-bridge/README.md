@@ -11,3 +11,11 @@ Express router，接触不到生成大脑——角色卡格式化、世界书关
 扩展监听 `GENERATION_ENDED` / `MESSAGE_RECEIVED` 抓新段落 → `POST /api/bridge/result` 回传 → 置「待审」。
 
 **前提**：S2 生成期间酒馆标签页保持打开；后端已放行酒馆 origin（`http://localhost:8000`）的 CORS。
+
+## 会话列表同步与更新
+
+扩展周期性读取酒馆 Recent Chats 并推送给漫画后端，正文页的「刷新列表」读取最近推送的快照。应用后端在线不等于酒馆页面或常驻桥在线，正文页会独立显示最近同步状态。
+
+列表读取失败时发送 `chats_error` 并省略 `chats`，后端保留上次成功列表；成功读到空列表才发送 `chats: []`。重新拉取成功会清除错误，生成中的 `live` 状态继续保留。
+
+更新本仓库后，需将本目录文件重新同步至 `<SillyTavern>/data/default-user/extensions/comic-bridge/`，重载酒馆标签页；使用常驻桥时重开该桥，使页面载入新版扩展。此次改动不会自动修改外部酒馆安装目录。

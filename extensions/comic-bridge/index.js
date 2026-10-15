@@ -164,13 +164,14 @@ async function fetchChatList() {
       headers: ctx.getRequestHeaders(),
       body: JSON.stringify({ max: 50 }),
     });
-    if (!res.ok) return [];
+    if (!res.ok) throw new Error('酒馆对话列表接口返回 HTTP ' + res.status);
     const data = await res.json();
+    if (!Array.isArray(data)) throw new Error('酒馆对话列表接口没有返回列表');
     const chars = ctx.characters || [];
     const groups = ctx.groups || [];
     // 接口只给 avatar 文件名，角色名要在这一侧映射（与酒馆前端一致）
     const norm = (s) => String(s || '').trim();
-    return (data || []).map((c) => {
+    const chats = data.map((c) => {
       const avatar = c.avatar || '';
       const groupId = c.group || '';
       // 角色名：优先按 avatar 精确匹配；匹配不上则退回角色索引 / avatar 文件名
@@ -193,8 +194,9 @@ async function fetchChatList() {
         is_group: !!c.is_group,
       };
     }).filter((c) => c.file_name);
+    return { chats };
   } catch (e) {
-    return [];
+    return { chats_error: e.message || '酒馆对话列表读取失败' };
   }
 }
 
@@ -207,7 +209,7 @@ async function pushMirror() {
         context: snapshotContext(),
         messages: snapshotMessages(),
         receipt: currentReceipt,
-        chats: await fetchChatList(),
+        ...await fetchChatList(),
         // 标识推送来源：常驻桥 vs 你手动打开的标签页。后端只认一个来源，避免两边互相覆盖。
         source: (window.__comicBridgeIsHeadless ? 'bridge' : 'tab'),
       }),

@@ -320,6 +320,8 @@ def push_mirror(body: dict, session: Session = Depends(get_session)) -> dict:
     """
     from ...models import TavernMirror
 
+    if "chats" in body and not isinstance(body["chats"], list):
+        raise HTTPException(400, "chats 必须是列表；读取失败时请省略 chats 并传 chats_error")
     row = session.get(TavernMirror, 1)
     if row is None:
         row = TavernMirror(id=1, payload={})
@@ -350,15 +352,22 @@ def push_mirror(body: dict, session: Session = Depends(get_session)) -> dict:
         "context": body.get("context") or {},
         "messages": body.get("messages") or [],
         "receipt": body.get("receipt") or {},
-        "chats": body.get("chats") or [],
+        "mirror_updated_at": now.isoformat(),
     })
+    # 省略表示没有取得新列表，保留上次成功结果；显式 [] 才表示确实没有会话。
+    if "chats" in body:
+        payload["chats"] = body["chats"]
+        payload["chats_updated_at"] = now.isoformat()
+        payload["chats_error"] = ""
+    elif "chats_error" in body:
+        payload["chats_error"] = str(body["chats_error"] or "")[:300]
     row.payload = payload
     session.commit()
     return {
         "ok": True,
         "source": source,
         "messages": len(payload["messages"]),
-        "chats": len(payload["chats"]),
+        "chats": len(payload.get("chats") or []),
         "live_preserved": bool(payload.get("live")),
     }
 
@@ -405,25 +414,37 @@ def tavern_live_clear(session: Session = Depends(get_session)) -> dict:
     return {"ok": True}
 
 
+def _mirror_snapshot(row) -> dict:
+    """HTTP 与 SSE 使用同一状态，后端在线不代表酒馆桥仍在推送。"""
+    p = (row.payload or {}) if row else {}
+    updated_at = row.updated_at.isoformat() if row and row.updated_at else None
+    online = False
+    stamp = p.get("mirror_updated_at") or updated_at
+    if stamp:
+        try:
+            seen = datetime.fromisoformat(stamp)
+            if seen.tzinfo is None:
+                seen = seen.replace(tzinfo=timezone.utc)
+            online = (datetime.now(timezone.utc) - seen).total_seconds() < 30
+        except (TypeError, ValueError):
+            pass
+    return {
+        "available": row is not None,
+        "context": p.get("context") or {}, "messages": p.get("messages") or [],
+        "receipt": p.get("receipt") or {}, "chats": p.get("chats") or [],
+        "live": p.get("live") or {}, "updated_at": updated_at,
+        "bridge_online": online, "chats_error": p.get("chats_error") or "",
+        "chats_updated_at": p.get("chats_updated_at") or (updated_at if p.get("chats") else None),
+    }
+
+
 @router.get("/tavern/live")
 def tavern_live(session: Session = Depends(get_session)) -> dict:
     """酒馆当前对话镜像（前端「酒馆对话」面板读取）。"""
     from ...models import TavernMirror
 
     row = session.get(TavernMirror, 1)
-    if row is None:
-        return {"available": False, "messages": [], "context": {}, "receipt": {}, "chats": [],
-                "live": {}, "updated_at": None}
-    p = row.payload or {}
-    return {
-        "available": True,
-        "context": p.get("context") or {},
-        "messages": p.get("messages") or [],
-        "receipt": p.get("receipt") or {},
-        "chats": p.get("chats") or [],
-        "live": p.get("live") or {},
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-    }
+    return _mirror_snapshot(row)
 
 
 @router.get("/tavern/events")
@@ -443,20 +464,11 @@ async def tavern_events() -> StreamingResponse:
             session = SessionLocal()
             try:
                 row = session.get(TavernMirror, 1)
-                p = (row.payload or {}) if row else {}
-                snap = {
-                    "available": row is not None,
-                    "context": p.get("context") or {},
-                    "messages": p.get("messages") or [],
-                    "receipt": p.get("receipt") or {},
-                    "chats": p.get("chats") or [],
-                    "live": p.get("live") or {},
-                    "updated_at": row.updated_at.isoformat() if (row and row.updated_at) else None,
-                }
+                snap = _mirror_snapshot(row)
                 # 用“内容签名”判断变化：不能算 updated_at，否则扩展每 2.5s 心跳都会让
                 # 快照看起来变了，前端跟着整块重绘，表现就是一闪一闪。
                 signature = json.dumps(
-                    {k: snap[k] for k in ("available", "context", "messages", "receipt", "chats", "live")},
+                    {k: snap[k] for k in ("available", "context", "messages", "receipt", "chats", "live", "bridge_online", "chats_error")},
                     ensure_ascii=False, sort_keys=True,
                 )
             finally:

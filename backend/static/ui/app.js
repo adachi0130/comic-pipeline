@@ -431,7 +431,8 @@ $('#automode').addEventListener('change', async () => {
 });
 
 // ---------- 酒馆对话面板 ----------
-$('#tv-refresh').addEventListener('click', loadTavern);
+$('#tv-refresh').addEventListener('click', () => loadTavern({ expand: true }));
+$('#tv-chats-refresh').addEventListener('click', () => loadTavern({ expand: true }));
 $('#tv-error-close').addEventListener('click', async () => {
   state._errDismissed = $('#tv-error-text').textContent;   // 记住这条，别再弹回
   $('#tv-error').classList.add('hidden');
@@ -483,23 +484,33 @@ function isNoise(m) {
 }
 
 /** 渲染酒馆对话列表（Recent Chats），点一下切换。 */
-function renderChatList(chats, context) {
+function renderChatList(chats, context, snapshot = {}) {
   const box = $('#tv-chats');
   if (!box) return;
+  chats = Array.isArray(chats) ? chats.filter((chat) => chat && typeof chat === 'object' && chat.file_name) : [];
+  $('#tv-chats-count').textContent = chats.length + ' 个';
+  const status = $('#tv-chats-state');
+  const synced = snapshot.chats_updated_at ? new Date(snapshot.chats_updated_at).toLocaleString() : '';
+  const bridge = snapshot.bridge_online === false ? '酒馆桥最近未同步；请确认酒馆标签页或常驻桥已打开、comic-bridge 已启用' : '酒馆桥已同步';
+  status.dataset.status = snapshot.chats_error ? 'failed' : (!snapshot.available || snapshot.bridge_online === false) ? 'dirty' : 'saved';
+  status.textContent = snapshot.chats_error
+    ? `列表拉取失败：${snapshot.chats_error}${chats.length ? '；保留上次成功的 ' + chats.length + ' 个会话' : ''}`
+    : snapshot.available ? `${bridge}${synced ? ' · 列表更新于 ' + synced : ''}` : '尚未收到酒馆桥推送；应用后端在线不代表酒馆桥已连接';
   const cur = $('#tv-cur');
   if (cur) cur.textContent = context.character_name ? `当前：${context.character_name}` : '未选择会话';
   if (!chats.length) {
-    box.innerHTML = '<div class="empty">还没有读到酒馆对话列表——确认酒馆已打开且扩展已启用</div>';
+    state._listSig = null;
+    box.innerHTML = `<div class="empty">${snapshot.chats_error ? '暂时无法获取会话，请恢复酒馆连接后刷新。' : snapshot.available && snapshot.bridge_online !== false ? '酒馆桥本次没有返回会话。请先在酒馆创建或打开已有对话，再点「刷新列表」。' : '等待酒馆桥同步对话列表，可点「刷新列表」重试。'}</div>`;
     return;
   }
   const curAvatar = context.character_avatar || '';
-  const curChat = (context.chat_id || '').replace(/\.jsonl$/, '');
-  const listSig = curAvatar + '|' + curChat + '|' + chats.map((c) => c.file_name + ':' + c.chat_items).join(',');
+  const curChat = String(context.chat_id || '').replace(/\.jsonl$/i, '');
+  const listSig = JSON.stringify([curAvatar, curChat, chats]);
   if (listSig === state._listSig) return;   // 未变则不重绘
   state._listSig = listSig;
-  const groups = {};
-  for (const c of chats) (groups[c.char_name || '(未知角色)'] ||= []).push(c);
-  box.innerHTML = Object.entries(groups).map(([name, list]) => {
+  const groups = new Map();
+  for (const c of chats) { const name = c.char_name || '(未知角色)'; if (!groups.has(name)) groups.set(name, []); groups.get(name).push(c); }
+  box.innerHTML = [...groups].map(([name, list]) => {
     const isCurChar = list.some((c) => c.avatar === curAvatar);
     return `
     <div style="margin-bottom:10px">
@@ -508,10 +519,10 @@ function renderChatList(chats, context) {
         ${isCurChar ? '<span class="pill ok"><i class="dotm"></i>当前角色</span>' : ''}</div>
       <div class="plist">
         ${list.map((c) => {
-          const nm = (c.file_name || '').replace('\.jsonl', '');
+          const nm = String(c.file_name || '').replace(/\.jsonl$/i, '');
           const active = c.avatar === curAvatar && nm === curChat;
-          return `<div class="pitem ${active ? 'sel' : ''}"
-              data-switch='${esc(JSON.stringify({ avatar: c.avatar, file_name: c.file_name, chat_name: nm }))}'>
+          return `<div class="pitem ${active ? 'sel' : ''}" role="button" tabindex="0"
+              data-switch="${esc(JSON.stringify({ avatar: c.avatar, file_name: c.file_name, chat_name: nm }))}">
             <div style="flex:1;min-width:0">
               <b style="font-size:13.5px">${esc(nm)}</b>
               <div class="meta">${c.chat_items != null ? c.chat_items + ' 条 · ' : ''}${esc(c.last_mes || '')}${c.is_group ? ' · 群聊' : ''}</div>
@@ -522,9 +533,10 @@ function renderChatList(chats, context) {
       </div>
     </div>`;
   }).join('');
-  box.querySelectorAll('[data-switch]').forEach((el) => el.addEventListener('click', () => {
-    switchChat(JSON.parse(el.dataset.switch));
-  }));
+  box.querySelectorAll('[data-switch]').forEach((el) => {
+    el.addEventListener('click', () => switchChat(JSON.parse(el.dataset.switch)));
+    el.addEventListener('keydown', (event) => { if (['Enter', ' '].includes(event.key)) { event.preventDefault(); el.click(); } });
+  });
 }
 
 async function switchChat(info) {
@@ -536,24 +548,28 @@ async function switchChat(info) {
 }
 
 // 对话列表折叠
-document.addEventListener('click', (e) => {
-  if (e.target.closest('#tv-chats-toggle')) {
-    const body = $('#tv-chats-body');
-    const arrow = $('#tv-chats-arrow');
-    const hidden = body.classList.toggle('hidden');
-    if (arrow) arrow.textContent = hidden ? '▸' : '▾';
-  }
+function toggleChatList() {
+  const body = $('#tv-chats-body');
+  const arrow = $('#tv-chats-arrow');
+  const hidden = body.classList.toggle('hidden');
+  if (arrow) arrow.textContent = hidden ? '▸' : '▾';
+  $('#tv-chats-toggle').setAttribute('aria-expanded', String(!hidden));
+}
+$('#tv-chats-toggle').addEventListener('click', toggleChatList);
+$('#tv-chats-toggle').addEventListener('keydown', (event) => {
+  if (['Enter', ' '].includes(event.key)) { event.preventDefault(); toggleChatList(); }
 });
 
 // 酒馆镜像 SSE：对话/列表发生变化就刷新（不用手动点刷新）
 let _tvSSE = null;
+let tavernReadRequest = 0, tavernPushEpoch = 0;
 function startTavernSSE() {
   if (_tvSSE) _tvSSE.close();
   _tvSSE = new EventSource(API + '/api/tavern/events');
   _tvSSE.onmessage = (ev) => {
     try {
       const d = JSON.parse(ev.data);
-      if (!d.available) return;
+      tavernPushEpoch++;
       state._tavern = d;
       const tab = document.querySelector('.nav button.active')?.dataset.tab;
       if (tab === 'novel') renderTavern(d);
@@ -565,23 +581,24 @@ function startTavernSSE() {
 function renderTavern(d) {
   const ctx = d.context || {};
   const chats = d.chats || [];
-  // 自洽性校验：镜像偶尔会给出“当前会话不在对话列表里”的过渡状态（酒馆页面内部抖动），
-  // 这类状态直接忽略，保持上一次的显示，避免聊天记录一闪一闪。
-  const curId = String(ctx.chat_id || '').replace(/\.jsonl$/, '');
-  if (curId && chats.length && !chats.some((c) => String(c.file_name || '').replace(/\.jsonl$/, '') === curId)) {
-    return;   // 当前会话不在列表里 -> 过渡态，忽略
-  }
-  // 酒馆的“欢迎页”状态（没有选中角色）不是用户想要的视图，会被酒馆自身的加载循环
-  // 反复推上来，导致聊天记录一闪一闪。已经渲染过真实会话时，直接忽略这种状态。
-  if (!ctx.character_name && state._tavernRendered) {
+  // 最近列表有数量上限，当前会话不在列表里也应正常更新列表与正文。
+  renderChatList(chats, ctx, d);
+  if (!d.available) {
+    $('#tv-meta').textContent = '还没有收到酒馆推送——请打开酒馆并启用 comic-bridge 扩展';
+    $('#tv-chat').innerHTML = '<div class="empty">等待酒馆扩展推送…</div>';
+    $('#tv-live').classList.add('hidden'); $('#tv-error').classList.add('hidden');
+    state._chatSig = null; state._tavernRendered = false;
     return;
   }
+  // 酒馆的“欢迎页”状态（没有选中角色）不是用户想要的视图，会被酒馆自身的加载循环
+  // 反复推上来；保留已显示的聊天正文，但继续刷新列表、连接和错误状态。
+  const keepHistory = !ctx.character_name && state._tavernRendered;
   if (ctx.character_name) state._tavernRendered = true;
-  renderChatList(chats, ctx);
   const c = d.context || {};
   $('#tv-meta').innerHTML = `当前角色：<b>${esc(c.character_name || '—')}</b>
     · 对话 ${c.message_count || 0} 条${c.chat_id ? ` · 会话 ${esc(String(c.chat_id).replace(/\.jsonl$/, ''))}` : ''}
     <span class="mut" style="font-size:12px">（更新于 ${(d.updated_at || '').replace('T', ' ').slice(0, 19)}）</span>`;
+  if (keepHistory) $('#tv-meta').textContent = '酒馆当前未选中角色，暂保留上次会话记录；可从上方列表切换会话';
   const rc = d.receipt || {};
   const bits = [];
   if (rc.character_name) bits.push(`角色卡 ${esc(rc.character_name)}`);
@@ -615,6 +632,7 @@ function renderTavern(d) {
     state._errDismissed = null;
   }
 
+  if (keepHistory) return;
   const msgs = (d.messages || []).filter((m) => !isNoise(m));
   state.chatLenNow = msgs.length;
   const lc = $('#tv-lastcount');
@@ -636,46 +654,27 @@ function renderTavern(d) {
   if (nearBottom) requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; });
 }
 
-async function loadTavern() {
+async function loadTavern({ expand = false } = {}) {
+  const request = ++tavernReadRequest, epoch = tavernPushEpoch;
+  const controls = [['#tv-chats-refresh', '刷新列表'], ['#tv-refresh', '刷新']];
+  if (expand && $('#tv-chats-body').classList.contains('hidden')) toggleChatList();
+  for (const [selector] of controls) { $(selector).disabled = true; $(selector).textContent = '刷新中…'; }
+  $('#tv-chats-state').dataset.status = 'saving';
+  $('#tv-chats-state').textContent = '正在读取最新对话列表…';
   try {
-    const d = await api('/api/tavern/live');
-    renderChatList(d.chats || [], d.context || {});
-    if (!d.available) {
-      $('#tv-meta').textContent = '还没有收到酒馆推送——请打开酒馆并启用 comic-bridge 扩展';
-      $('#tv-chat').innerHTML = '<div class="empty">等待酒馆扩展推送…</div>';
-      return;
-    }
-    const c = d.context || {};
-    $('#tv-meta').innerHTML = `当前角色：<b>${esc(c.character_name || '—')}</b>
-      · 对话 ${c.message_count || 0} 条${c.chat_id ? ` · 会话 ${esc(c.chat_id)}` : ''}
-      <span class="mut" style="font-size:12px">（更新于 ${(d.updated_at || '').replace('T', ' ').slice(0, 19)}）</span>`;
-
-    // 生成依据（简单版：角色卡 / 世界书 / 预设）
-    const rc = d.receipt || {};
-    const bits = [];
-    if (rc.character_name) bits.push(`角色卡 ${rc.character_name}`);
-    if (rc.world_books?.length) bits.push(`世界书 ${rc.world_books.join('、')}${rc.world_count ? `(${rc.world_count}条)` : ''}`);
-    if (rc.preset_name) bits.push(`预设 ${rc.preset_name}`);
-    if (rc.model) bits.push(`模型 ${rc.model}`);
-    $('#tv-receipt').textContent = '生成依据：' + (bits.length ? bits.join(' · ') : '尚未生成');
-
-    const all = d.messages || [];
-    const msgs = all.filter((m) => !isNoise(m));
-    state.chatLenNow = msgs.length;
-    const lc = $('#tv-lastcount');
-    if (lc) lc.textContent = state.chatLenAtSend != null
-      ? `发送前 ${state.chatLenAtSend} 条 · 现在 ${msgs.length} 条`
-      : `当前会话共 ${msgs.length} 条`;
-    const box2 = $('#tv-chat');
-    const nearBottom = box2.scrollHeight - box2.scrollTop - box2.clientHeight < 80;
-    box2.innerHTML = msgs.length ? msgs.map((m) => `
-      <div class="seg" style="margin-bottom:8px">
-        <div class="segh"><b>${esc(m.name || (m.is_user ? '我' : '角色'))}</b>
-          <span class="pill tag">${m.is_user ? '用户' : m.is_system ? '系统' : '角色'}</span>
-          <span class="mut" style="font-size:11.5px">${esc(m.send_date || '')}</span></div>
-        <div class="txt">${esc(m.mes || '')}</div></div>`).join('') : '<div class="empty">对话为空</div>';
-    if (nearBottom) requestAnimationFrame(() => { box2.scrollTop = box2.scrollHeight; });
-  } catch (e) { $('#tv-meta').textContent = '读取失败：' + e.message; }
+    const d = await api('/api/tavern/live', { cache: 'no-store', signal: AbortSignal.timeout(15000) });
+    if (request !== tavernReadRequest || epoch !== tavernPushEpoch) return;
+    state._tavern = d;
+    renderTavern(d);
+  } catch (error) {
+    if (request !== tavernReadRequest || epoch !== tavernPushEpoch) return;
+    const message = error.name === 'TimeoutError' ? '请求超时，请重试' : error.message;
+    $('#tv-chats-state').dataset.status = 'failed';
+    $('#tv-chats-state').textContent = '对话列表刷新失败：' + message + '；已有列表和输入已保留，可再次刷新';
+    $('#tv-meta').textContent = '读取失败：' + message;
+  } finally {
+    if (request === tavernReadRequest) for (const [selector, label] of controls) { $(selector).disabled = false; $(selector).textContent = label; }
+  }
 }
 
 // 通用：点标题折叠（默认收起，不加按钮）
