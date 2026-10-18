@@ -296,8 +296,15 @@ tools/                   start_all.py（一键启动）/ tavern_bridge.py（常�
 
 ## 许可证与第三方
 
-- **Manga Editor Desu**（作者 new-sankaku，https://github.com/new-sankaku/manga-editor-desu ）采用
-  **GPL-3.0**。本项目**不随仓库分发 MED 本体**，而是用 `fetch_editor.*` 按锁定 commit 拉取，
+本项目以 **GNU General Public License v3.0（GPL-3.0-only）** 开源，见根目录 [`LICENSE`](LICENSE)。
+除文件内另有 SPDX 声明外，仓库内全部自研代码均按 GPL-3.0-only 授权：欢迎学习、修改、二次开发与分发，
+但**分发衍生作品时必须同样以 GPL-3.0 开放对应源码**，不得闭源再发布。
+Copyright (C) 2026 adachi0130。
+
+- 选择 GPL-3.0（而非 MIT）的原因之一：本项目通过注入桥直接调用
+  **Manga Editor Desu**（作者 new-sankaku，https://github.com/new-sankaku/manga-editor-desu ，**GPL-3.0**）
+  的内部函数，桥代码本身即 GPL-3.0 衍生作品，整个项目采用 GPL-3.0 可与之一致。
+  本项目**不随仓库分发 MED 本体**，而是用 `fetch_editor.*` 按锁定 commit 拉取，
   以**同源 iframe + 注入桥**调用其内部函数驱动它。
 - 详细的第三方组件、版本与本项目与 MED 的边界说明见 **`THIRD_PARTY_NOTICES.md`**。
 - 若你二次分发（尤其是**把 MED 一起打包**），须遵守 GPL-3.0 的相应义务。
