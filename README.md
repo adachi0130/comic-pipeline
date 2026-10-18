@@ -296,10 +296,12 @@ tools/                   start_all.py（一键启动）/ tavern_bridge.py（常�
 
 ## 许可证与第三方
 
+> **Copyright (C) 2026 adachi0130**
+> 本项目按 **GNU General Public License 第 3 版（仅此版本 / GPL-3.0-only）** 授权发布。
+
 本项目以 **GNU General Public License v3.0（GPL-3.0-only）** 开源，见根目录 [`LICENSE`](LICENSE)。
 除文件内另有 SPDX 声明外，仓库内全部自研代码均按 GPL-3.0-only 授权：欢迎学习、修改、二次开发与分发，
 但**分发衍生作品时必须同样以 GPL-3.0 开放对应源码**，不得闭源再发布。
-Copyright (C) 2026 adachi0130。
 
 - 选择 GPL-3.0（而非 MIT）的原因之一：本项目通过注入桥直接调用
   **Manga Editor Desu**（作者 new-sankaku，https://github.com/new-sankaku/manga-editor-desu ，**GPL-3.0**）
