@@ -157,12 +157,12 @@ class MedComposer:
         tones: list[ToneOp] | None = None,
         right_to_left: bool = True,
         multiplier: int = 1,
-    ) -> ComposeResult:
+    ) -> tuple[ComposeResult, bytes]:
         warnings: list[str] = []
         try:
             n = self.install_template(template_svg, is_landscape)
             if n == 0:
-                return ComposeResult(ok=False, error="装模板后未检测到分镜框")
+                return ComposeResult(ok=False, error="装模板后未检测到分镜框"), b""
             if len(prompts) != n:
                 warnings.append(f"提示词 {len(prompts)} 条与格数 {n} 不一致")
 
@@ -190,9 +190,9 @@ class MedComposer:
                 applied_prompts=applied,
                 placed=placed,
                 warnings=warnings,
-            ), png  # type: ignore[return-value]
+            ), png
         except Exception as e:  # noqa: BLE001
-            return ComposeResult(ok=False, error=str(e), warnings=warnings)
+            return ComposeResult(ok=False, error=str(e), warnings=warnings), b""
 
 
 def _decode_dataurl(dataurl: str) -> bytes:

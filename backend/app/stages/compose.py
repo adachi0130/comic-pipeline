@@ -15,7 +15,6 @@ from sqlalchemy.orm import Session
 from ..artifacts import create, current, set_status
 from ..models import ArtifactKind, ArtifactStatus, Job, Project, Template
 from ..storage import new_output_dir, resolve_project_path, validate_ref, write_new
-from . import select as select_mod
 
 KIND = "compose"
 
@@ -53,44 +52,40 @@ def handle(session: Session, job: Job) -> dict:
     arts: list = []
     inputs = [page_art]
 
-    from ..med.base import PanelArt, ToneOp
+    from ..med.base import PanelArt
     from ..med.composer import MedComposer
 
-    for panel in (page_art.payload or {}).get("panels", []):
+    panels = (page_art.payload or {}).get("panels") or []
+    if not panels:
+        raise ValueError(f"{page_ref} 没有分格，无法合成")
+    orders = [int(panel["panel_order"]) for panel in panels]
+    if sorted(orders) != list(range(1, len(panels) + 1)):
+        raise ValueError(f"{page_ref} 的分格序号不连续或重复，无法安全贴图")
+    for panel in panels:
         order = int(panel["panel_order"])
         pref = f"panel:{page_no}.{order}"
         prompt_art = current(session, project_id, ArtifactKind.PANEL_PROMPT.value, pref)
         prompts.append((prompt_art.payload.get("prompt_pos") if prompt_art else "") or "")
         img_art = current(session, project_id, ArtifactKind.IMAGE.value, pref)
-        if img_art:
-            idx = (img_art.payload or {}).get("selected_index")
-            cands = (img_art.payload or {}).get("candidates") or []
-            if idx is None:
-                idx = select_mod.select_index(cands, project.select_strategy)
-            if idx is not None and 0 <= idx < len(cands):
-                image_path = resolve_project_path(cands[idx]["path"], project_id)
-                arts.append(PanelArt(order=order, image_path=str(image_path), prompt=prompts[-1]))
-                inputs.append(img_art)
-                if prompt_art is not None:
-                    inputs.append(prompt_art)
-
-    tones: list[ToneOp] = []
-    for panel in (page_art.payload or {}).get("panels", []):
-        for name in panel.get("technique", []) or []:
-            if name == "集中线":
-                tones.append(ToneOp(kind="focus", panel_order=int(panel["panel_order"])))
-            elif name == "运动线":
-                tones.append(ToneOp(kind="speed", panel_order=int(panel["panel_order"])))
+        idx = (img_art.payload or {}).get("selected_index") if img_art else None
+        cands = (img_art.payload or {}).get("candidates") or [] if img_art else []
+        if not img_art or img_art.status != ArtifactStatus.APPROVED.value or type(idx) is not int or not 0 <= idx < len(cands):
+            raise ValueError(f"{pref} 尚未采用可用图片，无法合成")
+        image_path = resolve_project_path(cands[idx]["path"], project_id)
+        arts.append(PanelArt(order=order, image_path=str(image_path), prompt=prompts[-1]))
+        inputs.append(img_art)
+        if prompt_art is not None:
+            inputs.append(prompt_art)
 
     composer = MedComposer(_base_url())
-    composer.open()
     try:
+        composer.open()
         result, png_bytes = composer.compose(
             template_svg=svg,
             is_landscape=tpl.dir == "landscape",
             prompts=prompts,
             arts=arts,
-            tones=tones,
+            tones=[],
             right_to_left=True,
             multiplier=1,
         )
@@ -99,6 +94,12 @@ def handle(session: Session, job: Job) -> dict:
 
     if not result.ok:
         raise RuntimeError(f"分页合成失败：{result.error}")
+    if result.panels != len(arts) or result.placed != len(arts):
+        raise RuntimeError(f"分页合成未完成：分格 {len(arts)}，模板 {result.panels}，成功贴图 {result.placed}；请检查版式和图片后重试")
+
+    from .. import jobs as jobq
+    if job.id is not None and jobq.is_cancelled(job.id):
+        return {"page_ref": page_ref, "cancelled": True}
 
     out_dir = new_output_dir(project_id, "pages", ref=page_ref)
     out_path = out_dir / f"{page_ref.replace(':', '_')}.png"
@@ -114,12 +115,13 @@ def handle(session: Session, job: Job) -> dict:
             "panels": result.panels,
             "placed": result.placed,
             "warnings": result.warnings,
+            **({"auto_run": payload["auto_run"]} if "auto_run" in payload else {}),
         },
         path=str(out_path),
         inputs=inputs,
         status=ArtifactStatus.REVIEW.value,
     )
-    if project.review_mode == "auto":
+    if project.review_mode == "auto" or payload.get("auto_approve") is True:
         set_status(session, art, ArtifactStatus.APPROVED.value)
     session.commit()
     return {"page_ref": page_ref, "png": str(out_path), "placed": result.placed, "warnings": result.warnings}

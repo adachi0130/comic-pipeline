@@ -128,6 +128,8 @@ def handle(session: Session, job: Job) -> dict:
     from .. import jobs as jobq
 
     images = generate(req, should_cancel=lambda: jobq.is_cancelled(job.id))
+    if job.id is not None and jobq.is_cancelled(job.id):
+        return {"panel_ref": panel_ref, "cancelled": True}
 
     out_dir = new_output_dir(project_id, "candidates", ref=panel_ref)
     paths = save_images(images, out_dir, stem="cand")
@@ -141,6 +143,7 @@ def handle(session: Session, job: Job) -> dict:
         kind=ArtifactKind.IMAGE.value,
         ref=panel_ref,
         payload={
+            **({"auto_run": payload["auto_run"]} if payload.get("auto_run") else {}),
             "prompt_pos": req.prompt_pos,
             "prompt_neg": req.prompt_neg,
             "params": params,
@@ -153,7 +156,7 @@ def handle(session: Session, job: Job) -> dict:
         status=ArtifactStatus.STALE.value if outdated else ArtifactStatus.REVIEW.value,
         inputs=[s3_art] if s3_art is not None else [],
     )
-    if project.review_mode == "auto" and not outdated:
+    if (project.review_mode == "auto" or payload.get("auto_approve")) and not outdated:
         idx = select_index(candidates, project.select_strategy)
         art.payload = {**art.payload, "selected_index": idx}
         set_status(session, art, ArtifactStatus.APPROVED.value)

@@ -273,6 +273,9 @@ def handle(session: Session, job: Job) -> dict:
             raise ValueError(
                 f"{page.ref} 需 {expected} 格提示词（按该页模板格数），模型给了 {len(prompts.panels)} 格"
             )
+        expected_refs = {f"panel:{page.ref.split(':', 1)[1]}.{panel['panel_order']}" for panel in page_payload.get('panels', [])}
+        if {item.panel_ref for item in prompts.panels} != expected_refs:
+            raise ValueError(f"{page.ref} 返回的提示词页格编号不匹配，请重试。")
 
         # 该页每格的分格脚本（取 characters / panel_order）
         script_by_order = {p.get("panel_order"): p for p in page_payload.get("panels", [])}
@@ -301,6 +304,7 @@ def handle(session: Session, job: Job) -> dict:
                 kind=ArtifactKind.PANEL_PROMPT.value,
                 ref=item.panel_ref,
                 payload={
+                    **({"auto_run": payload["auto_run"]} if payload.get("auto_run") else {}),
                     "prompt_pos": item.prompt_pos,
                     "prompt_neg": item.prompt_neg,
                     "loras": loras,
@@ -313,7 +317,7 @@ def handle(session: Session, job: Job) -> dict:
                 inputs=[page],
                 status=ArtifactStatus.REVIEW.value,
             )
-            if project.review_mode == "auto":
+            if project.review_mode == "auto" or payload.get("auto_approve"):
                 set_status(session, art, ArtifactStatus.APPROVED.value)
             out.append(item.panel_ref)
 

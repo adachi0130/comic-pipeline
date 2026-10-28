@@ -15,6 +15,7 @@ from collections.abc import Callable
 
 from apscheduler.executors.pool import ThreadPoolExecutor as ApsThreadPool
 from apscheduler.schedulers.background import BackgroundScheduler
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal
@@ -40,6 +41,16 @@ def start(max_workers: int = 4) -> None:
     global _scheduler
     if _scheduler is not None:
         return
+    # APScheduler 不持久化执行器任务；进程重启后旧的一键任务需要允许用户按原文继续。
+    session = SessionLocal()
+    try:
+        for job in session.scalars(select(Job).where(Job.kind == 'auto_comic', Job.status.in_(['queued', 'running']))):
+            job.status = JobStatus.FAILED.value
+            job.error = '后端重启导致任务中断，请使用相同正文和页数继续。'
+            job.finished_at = utcnow()
+        session.commit()
+    finally:
+        session.close()
     _scheduler = BackgroundScheduler(
         executors={"default": ApsThreadPool(max_workers=max_workers)},
         job_defaults={"coalesce": True, "max_instances": 1},

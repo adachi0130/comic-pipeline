@@ -352,6 +352,48 @@ class DataSafetyTests(unittest.TestCase):
         browser.assert_not_called()
         self.assertEqual(self.external.read_bytes(), b"external must survive")
 
+    def test_compose_only_places_selected_art_and_auto_approves_complete_page(self):
+        self.composition_inputs()
+        page = A.current(self.session, 1, "page_script", "page:1")
+        page.payload = {**page.payload, "panels": [{"panel_order": 1, "technique": ["集中线", "运动线"]}]}
+        self.session.commit()
+        job = Job(project_id=1, kind="compose", payload={"page_ref": "page:1", "auto_approve": True, "auto_run": "run-1"})
+        composer = Mock()
+        composer.compose.return_value = (ComposeResult(ok=True, panels=1, placed=1), png("red"))
+        with patch("app.med.composer.MedComposer", return_value=composer):
+            compose.handle(self.session, job)
+        self.assertEqual(composer.compose.call_args.kwargs["tones"], [])
+        result = A.current(self.session, 1, "page_image", "page:1")
+        self.assertEqual(result.status, "approved")
+        self.assertEqual(result.payload["auto_run"], "run-1")
+
+    def test_compose_rejects_partial_placement_without_publishing(self):
+        self.composition_inputs()
+        job = Job(project_id=1, kind="compose", payload={"page_ref": "page:1"})
+        composer = Mock()
+        composer.compose.return_value = (ComposeResult(ok=True, panels=1, placed=0, warnings=["贴图失败"]), png("red"))
+        with patch("app.med.composer.MedComposer", return_value=composer), self.assertRaisesRegex(RuntimeError, "未完成"):
+            compose.handle(self.session, job)
+        self.assertIsNone(A.current(self.session, 1, "page_image", "page:1"))
+        composer.close.assert_called_once()
+
+    def test_compose_rejects_unselected_candidate_before_browser(self):
+        self.composition_inputs()
+        image = A.current(self.session, 1, "image", "panel:1.1")
+        image.payload = {**image.payload, "selected_index": None}
+        self.session.commit()
+        with patch("app.med.composer.MedComposer") as browser, self.assertRaisesRegex(ValueError, "尚未采用"):
+            compose.handle(self.session, Job(project_id=1, kind="compose", payload={"page_ref": "page:1"}))
+        browser.assert_not_called()
+
+    def test_composer_reports_template_failure_as_tuple(self):
+        from app.med.composer import MedComposer
+        composer = MedComposer("http://example.invalid")
+        composer.install_template = Mock(return_value=0)
+        result, data = composer.compose(template_svg="<svg/>", is_landscape=False, prompts=[], arts=[])
+        self.assertFalse(result.ok)
+        self.assertEqual(data, b"")
+
     def test_image_regeneration_preserves_previous_candidates(self):
         legacy = self.file("candidates/legacy.png", png("green"))
         old = self.artifact("image", "panel:1.1", payload={"candidates": [self.candidate(legacy)]})

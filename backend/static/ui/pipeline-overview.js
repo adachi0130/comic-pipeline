@@ -6,6 +6,8 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   let refreshTimer, connection = 'connecting', historyOpen = false;
   let actionSignature = '', stepsSignature = '', readProblem = '', lastReadAt = 0;
   let pageFilter = 'all', pageQuery = '', density = 'comfortable', proseOpen;
+  let autoSubmitting = false;
+  const autoDrafts = new Map();
   const targets = {}, targetMissing = {}, counts = {}, submissions = new Map(), cancelling = new Set(), accepted = new Map();
   const visible = () => !$('#tab-pipeline').classList.contains('hidden');
   const scoped = () => board?.project_id === state.projectId;
@@ -13,12 +15,14 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   const matching = (id, ref) => jobs.find((job) => activeJob(job) && jobStage(job)?.id === id && (!job.ref || !ref || job.ref === ref));
 
   function reset() {
+    if (projectId) autoDrafts.set(projectId, { text: $('#ov-auto-text').value, pages: $('#ov-auto-pages').value });
     request++; projectId = null; board = null; jobs = []; stage = ''; artifactSignature = ''; historyOpen = false; accepted.clear();
     clearTimeout(refreshTimer);
     jobsEpoch++;
     actionSignature = ''; stepsSignature = ''; readProblem = ''; lastReadAt = 0;
     pageFilter = 'all'; pageQuery = ''; proseOpen = undefined;
     $('#ov-page-query').value = ''; $('#ov-page-tools').classList.add('hidden');
+    $('#ov-auto-text').value = ''; $('#ov-auto-pages').value = '1'; $('#ov-auto-status').textContent = '';
     for (const map of [targets, targetMissing, counts]) for (const key of Object.keys(map)) delete map[key];
     $('#ov-summary').innerHTML = ''; $('#ov-steps').innerHTML = ''; $('#ov-action').innerHTML = '';
     $('#ov-preview').innerHTML = '<div class="empty">选择项目后显示当前漫画。</div>';
@@ -28,7 +32,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   }
   async function load({ quiet = false } = {}) {
     const id = state.projectId;
-    if (id !== projectId) { reset(); projectId = id; }
+    if (id !== projectId) { reset(); projectId = id; const draft = autoDrafts.get(id); if (draft) { $('#ov-auto-text').value = draft.text; $('#ov-auto-pages').value = draft.pages; } else if (state.project?.target_pages) $('#ov-auto-pages').value = state.project.target_pages; }
     if (!id) { reset(); return; }
     const version = ++request, epoch = jobsEpoch;
     if (!quiet && !board) $('#ov-preview').innerHTML = '<div class="empty">正在读取漫画产物…</div>';
@@ -250,7 +254,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     }
   }
   function taskCard(job) {
-    const active = activeJob(job), step = jobStage(job), cancellingNow = cancelling.has(job.id) || (job.cancel_requested && active);
+    const active = activeJob(job), step = job.kind === 'auto_comic' ? { name: '一键生成', tab: 'pipeline' } : jobStage(job), cancellingNow = cancelling.has(job.id) || (job.cancel_requested && active);
     const amount = job.total > 0 ? Math.min(100, Math.max(0, Math.round(job.progress / job.total * 100))) : null;
     return `<article class="ov-job ${active ? 'active' : ''} ${job.status === 'failed' ? 'failed' : ''}" data-ov-job="${job.id}"><header><span class="pill tag">${esc(step?.name || job.kind)}</span><b>${esc(label(job.ref))}</b><span class="mut">#${job.id}</span>${cancellingNow ? '<span class="pill warn">正在取消</span>' : pill(job.status)}<span class="ov-job-time" data-ov-duration="${job.id}">${duration(job)}</span></header>
       <div class="ov-job-message">${esc(job.error || job.message || (job.status === 'queued' ? '等待后台接手执行' : job.status === 'running' ? '正在处理，等待结果返回' : job.status === 'done' ? '已完成，可查看更新后的产物' : ''))}</div>
@@ -260,6 +264,9 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   function renderJobs() {
     const list = jobs.filter((job) => job.project_id === state.projectId), active = list.filter(activeJob), past = list.filter((job) => !activeJob(job));
     const pending = [...submissions.values()].filter((item) => item.id === state.projectId);
+    const autoActive = list.some((job) => job.kind === 'auto_comic' && activeJob(job));
+    $('#ov-auto-start').disabled = !state.projectId || autoSubmitting || autoActive;
+    $('#ov-auto-status').textContent = autoSubmitting ? '正在提交…' : autoActive ? '任务进行中，可在后台任务区查看或取消' : '';
     $('#ov-live').textContent = connection === 'live' ? '实时同步' : connection === 'polling' ? '实时连接重连中 · 每 5 秒刷新' : '正在连接任务状态…';
     if (readProblem) $('#ov-live').textContent = '任务读取失败，保留上次状态';
     $('#ov-live').dataset.status = readProblem ? 'failed' : connection;
@@ -353,6 +360,22 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     if (changed) scheduleRefresh();
   }
   $('#ov-refresh').onclick = () => { $('#ov-refresh').disabled = true; load(); refreshTasks(); refreshGates(); };
+  $('#ov-auto-start').onclick = async () => {
+    const id = state.projectId, text = $('#ov-auto-text').value.trim(), pages = Number($('#ov-auto-pages').value);
+    if (!id || autoSubmitting) return;
+    if (!text) return toast('请先输入完整故事正文。', 'err');
+    if (!Number.isInteger(pages) || pages < 1 || pages > 100) return toast('目标页数请填写 1 到 100 的整数。', 'err');
+    autoSubmitting = true; renderJobs();
+    try {
+      const result = await api(`/api/projects/${id}/auto-comic`, { method: 'POST', body: JSON.stringify({ text, target_pages: pages }) });
+      if (state.projectId !== id) return;
+      if (result.job) { accepted.set(result.job.id, result.job); jobs = [result.job, ...jobs.filter((job) => job.id !== result.job.id)]; jobsEpoch++; }
+      $('#ov-auto-status').textContent = `任务 #${result.job_id} 已提交`;
+      toast(`一键生成任务 #${result.job_id} 已提交`, 'ok');
+      await refreshTasks(); scheduleRefresh();
+    } catch (error) { if (state.projectId === id) toast('一键生成提交失败：' + error.message, 'err'); }
+    finally { autoSubmitting = false; if (state.projectId === id) renderJobs(); }
+  };
   $('#ov-page-query').addEventListener('input', (event) => { pageQuery = event.target.value; if (scoped()) renderPreview(); });
   $('#ov-page-clear').onclick = clearPageFilter;
   $('#ov-page-density').onclick = () => { density = density === 'compact' ? 'comfortable' : 'compact'; if (scoped()) renderPreview(); };

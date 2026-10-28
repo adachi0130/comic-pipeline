@@ -283,6 +283,7 @@ body.editor-expanded .editor-frame-wrap iframe{height:calc(100dvh - 180px)}
 .ov-target{font-size:11px;color:var(--ink2);min-width:160px;max-width:100%;flex:1}
 .ov-target select{margin-top:4px;font-size:13px}.ov-count{font-size:11px;color:var(--ink2);width:85px}.ov-count input{margin-top:4px}
 .ov-action-hint{font-size:12px;color:var(--muted);margin-top:8px;overflow-wrap:anywhere}.ov-action-hint:empty{display:none}
+.ov-auto{margin:14px 0;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:#f8fafc}.ov-auto summary{cursor:pointer;font-weight:600}.ov-auto textarea{margin-top:10px;min-height:120px}.ov-auto .row{margin-top:10px}.ov-auto label{font-size:12px}.ov-auto input{width:90px}.ov-auto-note{font-size:12px;color:var(--ink2);margin-top:6px}
 .ov-tasks #ov-live{font-size:11px}.ov-idle{font-size:12px;color:var(--muted);padding:14px 0}
 .ov-submitting{font-size:13px;padding:14px;border-left:3px solid var(--accent);margin-top:10px;background:#f1f6ff}
 .ov-job{border:1px solid var(--line);padding:12px 14px;border-radius:9px;margin-top:10px;min-width:0}
@@ -679,6 +680,8 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     <!-- 流水线 -->
     <section id="tab-pipeline" class="hidden">
       <div class="card ov-header"><div class="row"><span class="ov-eyebrow">漫画生产进度</span><span class="spacer"></span><button class="sm" id="ov-refresh">刷新总览</button></div>
+        <details class="ov-auto" id="ov-auto"><summary>一键生成漫画</summary><div class="ov-auto-note">输入完整故事正文，自动分格、生成提示词和画面，并拼成漫画页。请先配置 LLM、版式模板与出图工作流；首次使用请选择空项目，中断后使用相同正文和页数继续。运行期间请等待任务结束后再编辑产物。</div>
+          <textarea id="ov-auto-text" aria-label="漫画故事正文" placeholder="在这里粘贴完整故事正文"></textarea><div class="row"><label>目标页数 <input id="ov-auto-pages" type="number" min="1" max="100" value="1"></label><button class="primary" id="ov-auto-start">开始生成</button><span id="ov-auto-status" class="mut" role="status" aria-live="polite"></span></div></details>
         <div id="ov-summary" class="ov-summary"></div><div id="ov-steps" class="ov-steps" aria-label="选择流水线阶段"></div>
         <div id="ov-action" class="ov-action"></div><div id="ov-feedback" class="save-feedback" role="status" aria-live="polite"></div></div>
       <div class="ov-workspace"><div class="card ov-tasks"><div class="row"><h2>后台任务</h2><span class="pill run" id="ov-task-count">0 进行中</span><span class="spacer"></span><span class="mut" id="ov-live">选择项目后显示任务</span></div>
@@ -871,6 +874,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=88"></script>
+<script type="module" src="/ui/app.js?v=89"></script>
 </body>
 </html>

@@ -8,7 +8,7 @@ S1 正文由酒馆扩展领取生成，不作为普通作业注册。
 from __future__ import annotations
 
 from .. import jobs
-from . import book, compose, image, prompt, script
+from . import auto_comic, book, compose, image, prompt, script
 
 
 def register_all() -> None:
@@ -17,6 +17,7 @@ def register_all() -> None:
     jobs.register(image.KIND, image.handle)
     jobs.register(compose.KIND, compose.handle)
     jobs.register(book.KIND, book.handle)
+    jobs.register(auto_comic.KIND, auto_comic.handle)
 
 
 __all__ = ["register_all"]

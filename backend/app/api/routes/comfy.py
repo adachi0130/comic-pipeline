@@ -764,5 +764,10 @@ def generate_panel(
     if p is None:
         raise HTTPException(404, "项目不存在")
     payload = {**body, "project_id": project_id, "panel_ref": panel_ref}
-    job = jobq.enqueue("image", project_id=project_id, stage="S4", payload=payload)
+    from .pipeline import _submission_lock
+    from ...models import Job
+    with _submission_lock:
+        if session.scalars(select(Job.id).where(Job.project_id == project_id, Job.kind == 'auto_comic', Job.status.in_(['queued', 'running'])).limit(1)).first():
+            raise HTTPException(409, '一键生成正在运行，请先等待或取消。')
+        job = jobq.enqueue("image", project_id=project_id, stage="S4", payload=payload)
     return {"job_id": job.id, "status": job.status}

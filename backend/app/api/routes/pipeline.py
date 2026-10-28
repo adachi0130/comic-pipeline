@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from threading import Lock
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, or_, select
@@ -660,8 +661,11 @@ def run_prompt_page(project_id: int, page_ref: str, session: Session = Depends(g
     info = rd.get("S3") or {}
     if not info.get("ready", True):
         raise HTTPException(400, f"前置条件未满足：{info.get('missing', '请先完成前一阶段')}")
-    job = jobq.enqueue("prompt", project_id=project_id, stage="S3",
-                       payload={"project_id": project_id, "page_ref": page_ref})
+    with _submission_lock:
+        if session.scalars(select(Job.id).where(Job.project_id == project_id, Job.kind == 'auto_comic', Job.status.in_(['queued', 'running'])).limit(1)).first():
+            raise HTTPException(409, '一键生成正在运行，请先等待或取消。')
+        job = jobq.enqueue("prompt", project_id=project_id, stage="S3",
+                           payload={"project_id": project_id, "page_ref": page_ref})
     return {"job_id": job.id, "page_ref": page_ref}
 
 
@@ -795,6 +799,67 @@ def export_board(project_id: int, session: Session = Depends(get_session)) -> di
                     ("" if included else "先在「分页合成」审核至少一页整页成图，再进行导出")}
 
 
+@router.post("/projects/{project_id}/auto-comic")
+def auto_comic(project_id: int, body: dict, session: Session = Depends(get_session)) -> dict:
+    """在空项目创建一次自动漫画，失败或取消后用相同正文继续。"""
+    from .jobs import _brief
+    from ...comfy.store import load_comfy_config, workflow_path
+    from ...stages import promptlib
+    from ...stages.auto_comic import checkpoint
+
+    text = body.get('text')
+    target = body.get('target_pages')
+    if not isinstance(text, str) or not text.strip() or len(text) > 100000:
+        raise HTTPException(400, '请填写不超过 10 万字的正文。')
+    text = text.strip()
+    if type(target) is not int or not 1 <= target <= 100:
+        raise HTTPException(400, '目标页数需为 1 到 100 的整数。')
+    with _submission_lock:
+        project = session.get(Project, project_id)
+        if not project:
+            raise HTTPException(404, '项目不存在')
+        active = session.scalars(select(Job).where(Job.project_id == project_id, Job.status.in_(['queued', 'running']))).all()
+        for old in active:
+            p = old.payload or {}
+            if old.kind == 'auto_comic' and p.get('text') == text and p.get('target_pages') == target:
+                return {'job_id': old.id, 'status': old.status, 'job': _brief(old), 'reused': True}
+        if active:
+            raise HTTPException(409, '项目已有任务运行，请等待结束后再开始一键生成。')
+        if not session.scalars(select(Template.id).limit(1)).first():
+            raise HTTPException(400, '缺少分格模板，请先导入模板菜单。')
+        try:
+            promptlib.resolve_provider(session, 'S2')
+            promptlib.resolve_provider(session, 'S3')
+        except Exception as exc:
+            raise HTTPException(400, f'请先配置并启用 S2/S3 的 LLM 供应商：{exc}') from exc
+        try:
+            cfg = load_comfy_config()
+            if not cfg.workflow_name or not workflow_path(cfg.workflow_name).is_file():
+                raise ValueError('还没有可用工作流')
+        except Exception as exc:
+            raise HTTPException(400, f'请先在出图设置中保存并选用工作流：{exc}') from exc
+        previous = session.scalars(select(Job).where(Job.project_id == project_id, Job.kind == 'auto_comic').order_by(Job.id.desc())).first()
+        existing = A.all_current(session, project_id, 'prose')
+        artifacts = session.scalars(select(Artifact).where(Artifact.project_id == project_id, Artifact.is_current.is_(True))).all()
+        if artifacts:
+            old = previous.payload if previous else {}
+            run_id = old.get('auto_run')
+            if not run_id or old.get('text') != text or old.get('target_pages') != target or len(existing) != 1 or (existing[0].payload or {}).get('text') != text or any((art.payload or {}).get('auto_run') != run_id for art in artifacts):
+                raise HTTPException(409, '项目已有其他故事或产物，请新建项目；继续上次生成需使用相同正文和页数。')
+            if project.target_pages != target:
+                raise HTTPException(409, '项目目标页数已改变，请恢复原页数后继续。')
+            current_state = checkpoint(session, project_id)
+            if any(current_state.get(key) != value for key, value in (old.get('checkpoint') or {}).items()):
+                raise HTTPException(409, '上次自动生成的产物已被修改，请检查项目并新建项目重新生成。')
+        else:
+            run_id = uuid4().hex
+            project.target_pages = target
+            A.create(session, project_id=project_id, kind='prose', ref='seg:1', payload={'text': text, 'mode': 'paste', 'auto_run': run_id}, status='approved')
+            session.commit()
+        job = jobq.enqueue('auto_comic', project_id=project_id, stage='AUTO', payload={'text': text, 'target_pages': target, 'auto_run': run_id, 'checkpoint': checkpoint(session, project_id)})
+    return {'job_id': job.id, 'status': job.status, 'job': _brief(job), 'reused': False}
+
+
 @router.post("/projects/{project_id}/run/{stage}")
 def run_stage(project_id: int, stage: str, body: dict | None = None, session: Session = Depends(get_session)) -> dict:
     """触发某个阶段。"""
@@ -858,6 +923,8 @@ def run_stage(project_id: int, stage: str, body: dict | None = None, session: Se
                     raise HTTPException(400, "所选页需要每格都采用可用的图片后再合成")
     # 相同目标的活动任务复用；不同页/格可分别入队，防止连点造成重复模型调用。
     with _submission_lock:
+        if session.scalars(select(Job.id).where(Job.project_id == project_id, Job.kind == 'auto_comic', Job.status.in_(['queued', 'running'])).limit(1)).first():
+            raise HTTPException(409, '一键生成正在运行，请先等待或取消。')
         active = session.scalars(select(Job).where(Job.project_id == project_id, Job.kind == kinds[stage], Job.status.in_(("queued", "running")))).all()
         for existing in active:
             old = existing.payload or {}

@@ -94,6 +94,8 @@ def handle(session: Session, job: Job) -> dict:
         if jobq.is_cancelled(job.id):
             break
         for page in board.pages:
+            if not start <= page.page_index <= end:
+                raise ValueError(f"模型返回了范围外的页码：{page.page_index}（需要 {start}–{end}）")
             tpl = session.get(Template, page.template_id)
             if tpl is None:
                 raise ValueError(f"模型选了不存在的模板：{page.template_id}")
@@ -109,10 +111,10 @@ def handle(session: Session, job: Job) -> dict:
                 project_id=project_id,
                 kind=ArtifactKind.PAGE_SCRIPT.value,
                 ref=ref,
-                payload={**page.model_dump(), "geometry": tpl.geometry},
+                payload={**page.model_dump(), "geometry": tpl.geometry, **({"auto_run": payload["auto_run"]} if payload.get("auto_run") else {})},
                 status=ArtifactStatus.REVIEW.value,
             )
-            if project.review_mode == "auto":
+            if project.review_mode == "auto" or payload.get("auto_approve"):
                 set_status(session, art, ArtifactStatus.APPROVED.value)
             produced.append({"page": page.page_index, "template": tpl.id, "panels": tpl.panels_count})
             existing.add(ref)
