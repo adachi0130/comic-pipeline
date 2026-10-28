@@ -8,6 +8,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   let pageFilter = 'all', pageQuery = '', density = 'comfortable', proseOpen;
   let autoSubmitting = false;
   let autoConfigRequest = 0;
+  let autoFormEpoch = 0;
   const autoDrafts = new Map();
   const targets = {}, targetMissing = {}, counts = {}, submissions = new Map(), cancelling = new Set(), accepted = new Map();
   const visible = () => !$('#tab-pipeline').classList.contains('hidden');
@@ -24,7 +25,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     pageFilter = 'all'; pageQuery = ''; proseOpen = undefined;
     $('#ov-page-query').value = ''; $('#ov-page-tools').classList.add('hidden');
     $('#ov-auto-text').value = ''; $('#ov-auto-pages').value = '1'; $('#ov-auto-status').textContent = '';
-    autoConfigRequest++; $('#ov-auto-modal').classList.add('hidden');
+    autoConfigRequest++; autoFormEpoch++; $('#ov-auto-modal').classList.add('hidden');
     for (const map of [targets, targetMissing, counts]) for (const key of Object.keys(map)) delete map[key];
     $('#ov-summary').innerHTML = ''; $('#ov-steps').innerHTML = ''; $('#ov-action').innerHTML = '';
     $('#ov-preview').innerHTML = '<div class="empty">选择项目后显示当前漫画。</div>';
@@ -386,17 +387,36 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   }
   $('#ov-auto-open').onclick = async () => {
     if (!state.projectId) return toast('先选择项目', 'err');
-    const id = state.projectId, last = jobs.find((job) => job.kind === 'auto_comic' && ['failed', 'cancelled'].includes(job.status));
+    const id = state.projectId, epoch = ++autoFormEpoch, last = jobs.find((job) => job.kind === 'auto_comic' && ['failed', 'cancelled'].includes(job.status));
     $('#ov-auto-modal').classList.remove('hidden'); loadAutoConfig(); $('#ov-auto-close').focus();
     if (!last || $('#ov-auto-text').value) return;
     try {
       const job = await api(`/api/jobs/${last.id}`);
-      if (id !== state.projectId || $('#ov-auto-modal').classList.contains('hidden') || $('#ov-auto-text').value) return;
+      if (id !== state.projectId || epoch !== autoFormEpoch || $('#ov-auto-modal').classList.contains('hidden') || $('#ov-auto-text').value) return;
       if (typeof job.payload?.text === 'string') $('#ov-auto-text').value = job.payload.text;
       if (Number.isInteger(job.payload?.target_pages)) $('#ov-auto-pages').value = job.payload.target_pages;
     } catch { /* 用户仍可自己输入原正文并继续 */ }
   };
-  $('#ov-auto-close').onclick = () => { autoConfigRequest++; $('#ov-auto-modal').classList.add('hidden'); $('#ov-auto-open').focus(); };
+  $('#ov-auto-close').onclick = () => { autoConfigRequest++; autoFormEpoch++; $('#ov-auto-modal').classList.add('hidden'); $('#ov-auto-open').focus(); };
+  for (const selector of ['#ov-auto-text', '#ov-auto-pages']) $(selector).addEventListener('input', () => { autoFormEpoch++; });
+  $('#ov-auto-outline').onclick = async () => {
+    const id = state.projectId, button = $('#ov-auto-outline');
+    if (!id || button.disabled || autoSubmitting) return;
+    const epoch = ++autoFormEpoch;
+    button.disabled = true; button.textContent = '正在读取…';
+    try {
+      const project = await api(`/api/projects/${id}`);
+      if (id !== state.projectId || epoch !== autoFormEpoch || autoSubmitting || $('#ov-auto-modal').classList.contains('hidden')) return;
+      if (typeof project.outline !== 'string' || !project.outline.trim()) return toast('当前项目还没有已保存的故事大纲，请先在项目详情填写并保存。', 'err');
+      if (!Number.isInteger(project.target_pages) || project.target_pages < 1 || project.target_pages > 100) return toast('项目目标页数需为 1 到 100，请先在项目详情调整。', 'err');
+      $('#ov-auto-text').value = project.outline;
+      $('#ov-auto-pages').value = project.target_pages;
+      autoDrafts.set(id, { text: project.outline, pages: String(project.target_pages) });
+      $('#ov-auto-text').focus();
+      toast('已引用项目大纲和目标页数，可继续修改后确认。', 'ok');
+    } catch (error) { if (id === state.projectId && epoch === autoFormEpoch) toast('读取项目大纲失败：' + error.message, 'err'); }
+    finally { button.disabled = false; button.textContent = '引用故事大纲'; }
+  };
   $('#ov-auto-modal').onclick = (event) => { if (event.target === $('#ov-auto-modal')) $('#ov-auto-close').click(); };
   $('#ov-auto-refresh').onclick = loadAutoConfig;
   $('#ov-auto-prose').onclick = () => { $('#ov-auto-close').click(); switchTab('novel'); };

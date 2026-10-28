@@ -685,7 +685,7 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
         <div class="modal hidden" id="ov-auto-modal"><div class="box ov-auto-dialog" role="dialog" aria-modal="true" aria-labelledby="ov-auto-title"><div class="row"><h2 id="ov-auto-title">确认一键生成</h2><span class="spacer"></span><button class="sm" id="ov-auto-close" aria-label="关闭">×</button></div>
           <div class="ov-auto-note">检查本次配置，再填写正文和页数。首次使用请选择空项目；中断后使用相同正文和页数继续。</div><div id="ov-auto-config" class="ov-auto-config" aria-live="polite">正在读取配置…</div>
           <div class="row"><b>正文来源</b><span>直接输入完整正文</span><button class="sm" id="ov-auto-prose">去正文页使用酒馆 / LLM</button></div><div class="ov-auto-note">当前一键流程使用输入的正文；酒馆和 LLM 生成正文可在正文页操作。</div>
-          <label class="fld" for="ov-auto-text">漫画正文</label><textarea id="ov-auto-text" placeholder="在这里粘贴完整故事正文"></textarea><div class="row"><label>目标页数 <input id="ov-auto-pages" type="number" min="1" max="100" value="1"></label><span class="spacer"></span><button class="sm" id="ov-auto-refresh">重新检查</button><button class="primary" id="ov-auto-start">确认并开始</button></div></div></div>
+          <div class="row"><label class="fld" for="ov-auto-text">漫画正文</label><span class="spacer"></span><button class="sm" id="ov-auto-outline" type="button">引用故事大纲</button></div><div class="ov-auto-note">引用会将项目已保存的大纲和目标页数填入下方，可继续修改。</div><textarea id="ov-auto-text" placeholder="在这里粘贴完整故事正文"></textarea><div class="row"><label>目标页数 <input id="ov-auto-pages" type="number" min="1" max="100" value="1"></label><span class="spacer"></span><button class="sm" id="ov-auto-refresh">重新检查</button><button class="primary" id="ov-auto-start">确认并开始</button></div></div></div>
         <div id="ov-summary" class="ov-summary"></div><div id="ov-steps" class="ov-steps" aria-label="选择流水线阶段"></div>
         <div id="ov-action" class="ov-action"></div><div id="ov-feedback" class="save-feedback" role="status" aria-live="polite"></div></div>
       <div class="ov-workspace"><div class="card ov-tasks"><div class="row"><h2>后台任务</h2><span class="pill run" id="ov-task-count">0 进行中</span><span class="spacer"></span><span class="mut" id="ov-live">选择项目后显示任务</span></div>
@@ -878,6 +878,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=90"></script>
+<script type="module" src="/ui/app.js?v=91"></script>
 </body>
 </html>
