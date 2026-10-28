@@ -806,10 +806,18 @@ def auto_comic(project_id: int, body: dict, session: Session = Depends(get_sessi
     from ...comfy.store import load_comfy_config, workflow_path
     from ...stages import promptlib
     from ...stages.auto_comic import checkpoint
+    from ...stages.prompt import preset_snapshot
 
     text = body.get('text')
     target = body.get('target_pages')
     source = body.get('source', 'text')
+    choices = body.get('preset_ids')
+    if choices is not None and (not isinstance(choices, dict) or any(key not in ('positive', 'negative') for key in choices)):
+        raise HTTPException(400, '正负面预设选择无效。')
+    if choices is not None and any(value is not None and (type(value) is not int or value < 0) for value in choices.values()):
+        raise HTTPException(400, '预设 ID 必须是非负整数。')
+    def same_presets(saved):
+        return choices is None or all(value is None or value == ((saved or {}).get(kind, {}).get('id') or 0) for kind, value in choices.items())
     if source not in ('text', 'outline'):
         raise HTTPException(400, '正文来源需为已有正文或大纲扩写。')
     if not isinstance(text, str) or not text.strip() or len(text) > 100000:
@@ -825,6 +833,8 @@ def auto_comic(project_id: int, body: dict, session: Session = Depends(get_sessi
         for old in active:
             p = old.payload or {}
             if old.kind == 'auto_comic' and p.get('text') == text and p.get('target_pages') == target and p.get('source', 'text') == source:
+                if not same_presets(p.get('prompt_presets')):
+                    raise HTTPException(409, '任务已使用固定预设运行，请等待完成后调整。')
                 return {'job_id': old.id, 'status': old.status, 'job': _brief(old), 'reused': True}
         if active:
             raise HTTPException(409, '项目已有任务运行，请等待结束后再开始一键生成。')
@@ -846,8 +856,16 @@ def auto_comic(project_id: int, body: dict, session: Session = Depends(get_sessi
         previous = session.scalars(select(Job).where(Job.project_id == project_id, Job.kind == 'auto_comic').order_by(Job.id.desc())).first()
         existing = A.all_current(session, project_id, 'prose')
         artifacts = session.scalars(select(Artifact).where(Artifact.project_id == project_id, Artifact.is_current.is_(True))).all()
+        saved_presets = (previous.payload or {}).get('prompt_presets') if artifacts and previous else None
+        try:
+            presets = saved_presets or preset_snapshot(session, project_id, choices)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         if artifacts:
             old = previous.payload if previous else {}
+            saved_presets = old.get('prompt_presets')
+            if saved_presets and not same_presets(saved_presets):
+                raise HTTPException(409, '续跑需沿用原任务预设；修改预设请在新项目生成。')
             run_id = old.get('auto_run')
             if not run_id or old.get('text') != text or old.get('source', 'text') != source or old.get('target_pages') != target or len(existing) != 1 or (existing[0].payload or {}).get('source_text', (existing[0].payload or {}).get('text')) != text or any((art.payload or {}).get('auto_run') != run_id for art in artifacts):
                 raise HTTPException(409, '项目已有其他故事或产物，请新建项目；继续上次生成需使用相同正文和页数。')
@@ -857,12 +875,13 @@ def auto_comic(project_id: int, body: dict, session: Session = Depends(get_sessi
             if any(current_state.get(key) != value for key, value in (old.get('checkpoint') or {}).items()):
                 raise HTTPException(409, '上次自动生成的产物已被修改，请检查项目并新建项目重新生成。')
         else:
+            saved_presets = None
             run_id = uuid4().hex
             project.target_pages = target
             if source == 'text':
                 A.create(session, project_id=project_id, kind='prose', ref='seg:1', payload={'text': text, 'mode': 'paste', 'auto_run': run_id}, status='approved')
             session.commit()
-        job = jobq.enqueue('auto_comic', project_id=project_id, stage='AUTO', payload={'text': text, 'source': source, 'target_pages': target, 'auto_run': run_id, 'checkpoint': checkpoint(session, project_id)})
+        job = jobq.enqueue('auto_comic', project_id=project_id, stage='AUTO', payload={'text': text, 'source': source, 'target_pages': target, 'auto_run': run_id, 'prompt_presets': presets, 'checkpoint': checkpoint(session, project_id)})
     return {'job_id': job.id, 'status': job.status, 'job': _brief(job), 'reused': False}
 
 

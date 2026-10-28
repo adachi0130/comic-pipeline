@@ -13,7 +13,7 @@ _tmp = tempfile.TemporaryDirectory(prefix='auto-import-', dir=Path(__file__).par
 atexit.register(_tmp.cleanup)
 with patch.dict(os.environ, {'COMIC_DATA_DIR': str(Path(_tmp.name) / 'data'), 'COMIC_DB_URL': 'sqlite:///:memory:'}):
     from app import artifacts as A
-    from app.models import Base, Job, Project, Template
+    from app.models import Base, Job, Project, Template, PromptPreset
     from app.api.routes import pipeline
     from app.comfy import store
     from app.stages import auto_comic
@@ -125,6 +125,47 @@ class AutoComicTests(unittest.TestCase):
         with patch.object(auto_comic.jobs, 'is_cancelled', return_value=False):
             with self.assertRaisesRegex(ValueError, '正文或目标页数'):
                 auto_comic.handle(self.session, self.job)
+
+    def test_selected_presets_are_pinned_across_resume(self):
+        self.session.delete(self.job)
+        self.session.delete(A.current(self.session, 1, 'prose', 'seg:1'))
+        self.session.add(Project(id=2, title='预设来源'))
+        self.session.add(Template(id='template', dir='vertical', panels_count=1))
+        preset = PromptPreset(name='旧项目正向', kind='positive', scope='project', project_id=2,
+                              text='masterpiece, detailed', loras=[{'name':'style', 'weight':0}])
+        self.session.add(preset); self.session.commit()
+        def enqueue(kind, *, project_id, stage, payload):
+            job = Job(kind=kind, project_id=project_id, stage=stage, payload=payload, status='queued')
+            self.session.add(job); self.session.commit(); return job
+        with patch.object(store, 'load_comfy_config', return_value=SimpleNamespace(workflow_name='wf')), \
+             patch.object(store, 'workflow_path', return_value=SimpleNamespace(is_file=lambda: True)), \
+             patch.object(auto_comic.prompt.promptlib, 'resolve_provider', return_value=(None, None)), \
+             patch.object(pipeline.jobq, 'enqueue', side_effect=enqueue):
+            result = pipeline.auto_comic(1, {'text':'故事','target_pages':1,'preset_ids':{'positive':preset.id,'negative':0}}, self.session)
+            job = self.session.get(Job, result['job_id'])
+            self.assertEqual(job.payload['prompt_presets']['positive']['loras'][0]['weight'], 0)
+            preset.text = '之后的修改'; job.status = 'failed'; self.session.commit()
+            result = pipeline.resume_auto_comic(1, self.session)
+            resumed = self.session.get(Job, result['job_id'])
+            self.assertEqual(resumed.payload['prompt_presets']['positive']['text'], 'masterpiece, detailed')
+
+    def test_presets_are_included_when_model_omits_them(self):
+        self.assertEqual(auto_comic.prompt.with_preset('quality, style', 'a girl'), 'quality, style, a girl')
+        self.assertEqual(auto_comic.prompt.with_preset('blur', ''), 'blur')
+        self.assertEqual(auto_comic.prompt.with_preset('quality', 'quality, city'), 'quality, city')
+
+    def test_invalid_preset_does_not_create_prose(self):
+        self.session.delete(self.job)
+        self.session.delete(A.current(self.session, 1, 'prose', 'seg:1'))
+        self.session.add(Template(id='template', dir='vertical', panels_count=1)); self.session.commit()
+        with patch.object(store, 'load_comfy_config', return_value=SimpleNamespace(workflow_name='wf')), \
+             patch.object(store, 'workflow_path', return_value=SimpleNamespace(is_file=lambda: True)), \
+             patch.object(auto_comic.prompt.promptlib, 'resolve_provider', return_value=(None, None)), \
+             patch.object(pipeline.jobq, 'enqueue') as enqueue:
+            with self.assertRaisesRegex(Exception, '预设不存在'):
+                pipeline.auto_comic(1, {'text':'故事','target_pages':1,'preset_ids':{'positive':999}}, self.session)
+            self.assertIsNone(A.current(self.session, 1, 'prose', 'seg:1'))
+            enqueue.assert_not_called()
 
     def test_existing_unrelated_story_is_rejected(self):
         self.session.add(Template(id='template', dir='vertical', panels_count=1))

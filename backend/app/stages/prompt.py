@@ -37,23 +37,39 @@ def _characters(session: Session, project_id: int) -> str:
     return json.dumps(data, ensure_ascii=False)
 
 
-def _default_presets(session: Session, project_id: int) -> tuple[str, str]:
-    """取项目默认的正/负向提示词预设（没有就用全局默认，再没有就空）。"""
+def preset_snapshot(session: Session, project_id: int, choices: dict | None = None) -> dict:
+    """固定本次正负面预设；显式选择允许复用其他项目预设。"""
     from ..models import PromptPreset
+    out = {}
+    for kind in ('positive', 'negative'):
+        choice = (choices or {}).get(kind)
+        if choice is not None:
+            if type(choice) is not int or choice < 0:
+                raise ValueError('预设 ID 必须是非负整数')
+            row = session.get(PromptPreset, choice) if choice else None
+            if choice and (row is None or row.kind != kind):
+                raise ValueError('所选正负面预设不存在或类型不匹配')
+        else:
+            row = None
+            for scope in ('project', 'global'):
+                query = select(PromptPreset).where(PromptPreset.kind == kind, PromptPreset.scope == scope, PromptPreset.is_default.is_(True))
+                if scope == 'project':
+                    query = query.where(PromptPreset.project_id == project_id)
+                row = session.scalars(query.order_by(PromptPreset.id).limit(1)).first()
+                if row is not None:
+                    break
+        out[kind] = {'id': row.id, 'name': row.name, 'text': row.text, 'loras': row.loras or [], 'scope': row.scope, 'project_id': row.project_id} if row else {'id': None, 'name': '', 'text': '', 'loras': []}
+    return out
 
-    def pick(kind: str) -> str:
-        for scope in ("project", "global"):
-            stmt = select(PromptPreset).where(
-                PromptPreset.kind == kind, PromptPreset.scope == scope, PromptPreset.is_default.is_(True)
-            )
-            if scope == "project":
-                stmt = stmt.where(PromptPreset.project_id == project_id)
-            row = session.scalars(stmt.limit(1)).first()
-            if row is not None and row.text.strip():
-                return row.text
-        return ""
 
-    return pick("positive"), pick("negative")
+def with_preset(base: str, generated: str) -> str:
+    base, generated = (base or '').strip(), (generated or '').strip()
+    return generated if not base or base in generated else ', '.join(filter(None, [base, generated]))
+
+
+def _default_presets(session: Session, project_id: int) -> tuple[str, str]:
+    presets = preset_snapshot(session, project_id)
+    return presets['positive']['text'], presets['negative']['text']
 
 
 def _project_loras(session: Session, project_id: int) -> list[dict]:
@@ -85,22 +101,8 @@ def _default_gen_params() -> dict:
 
 
 def _preset_loras(session: Session, project_id: int) -> list[dict]:
-    """默认预设（正向+负向）里绑定的 LoRA，生成提示词时一并合入每格。"""
-    from ..models import PromptPreset
-
-    out: list[dict] = []
-    for kind in ("positive", "negative"):
-        for scope in ("project", "global"):
-            stmt = select(PromptPreset).where(
-                PromptPreset.kind == kind, PromptPreset.scope == scope, PromptPreset.is_default.is_(True)
-            )
-            if scope == "project":
-                stmt = stmt.where(PromptPreset.project_id == project_id)
-            row = session.scalars(stmt.limit(1)).first()
-            if row is not None:
-                out.extend(row.loras or [])
-                break
-    return out
+    presets = preset_snapshot(session, project_id)
+    return [lora for kind in ('positive', 'negative') for lora in presets[kind]['loras']]
 
 
 def _character_loras(session: Session, project_id: int, names: list[str]) -> list[dict]:
@@ -246,9 +248,10 @@ def handle(session: Session, job: Job) -> dict:
     chars = _characters(session, project_id)
     techs = _techniques(session)
     default_loras = _project_loras(session, project_id)
-    preset_pos, preset_neg = _default_presets(session, project_id)
+    presets = payload.get('prompt_presets') or preset_snapshot(session, project_id)
+    preset_pos, preset_neg = presets['positive']['text'], presets['negative']['text']
     # 预设自带的 LoRA（主人的“风格预设”里可能绑了 LoRA）
-    preset_loras = _preset_loras(session, project_id)
+    preset_loras = [lora for kind in ('positive', 'negative') for lora in presets[kind].get('loras', [])]
     # 出图参数快照（steps/cfg/sampler/scheduler/denoise/ckpt），写进每格出图时直接套用
     gen_params = _default_gen_params()
 
@@ -325,8 +328,9 @@ def handle(session: Session, job: Job) -> dict:
                 ref=item.panel_ref,
                 payload={
                     **({"auto_run": payload["auto_run"]} if payload.get("auto_run") else {}),
-                    "prompt_pos": item.prompt_pos,
-                    "prompt_neg": item.prompt_neg,
+                    "prompt_pos": with_preset(preset_pos, item.prompt_pos),
+                    "prompt_neg": with_preset(preset_neg, item.prompt_neg),
+                    "preset_ids": {kind: presets[kind].get('id') for kind in ('positive', 'negative')},
                     "loras": loras,
                     "seed": item.seed,
                     "width": width,

@@ -4,7 +4,7 @@ export function createConfigurationCenter({ state, api, $, esc, toast, switchTab
   let displayedAssetsProject = undefined;
   let assetsRequest = 0;
   let templatesRequest = 0;
-  const validSections = { settings: ['providers', 'comfy', 'models'], assets: ['characters', 'presets', 'style'] };
+  const validSections = { settings: ['providers', 'comfy'], assets: ['presets', 'characters'] };
 
   function sectionFor(tab, requested) {
     const allowed = validSections[tab];
@@ -13,6 +13,8 @@ export function createConfigurationCenter({ state, api, $, esc, toast, switchTab
     if (!section) {
       try { section = localStorage.getItem('comic.' + tab + 'Section'); } catch { /* 私密浏览 */ }
     }
+    if (tab === 'settings' && section === 'models') section = 'providers';
+    if (tab === 'assets' && section === 'style') section = 'presets';
     if (!allowed.includes(section)) section = allowed[0];
     state[tab + 'Section'] = section;
     try { localStorage.setItem('comic.' + tab + 'Section', section); } catch { /* 私密浏览 */ }
@@ -21,7 +23,7 @@ export function createConfigurationCenter({ state, api, $, esc, toast, switchTab
 
   function syncAssets() {
     const section = state.assetsSection || 'characters';
-    document.querySelectorAll('[data-assets-card]').forEach((card) => card.classList.toggle('hidden', (card.dataset.assetsCard === 'style') !== (section === 'style')));
+    document.querySelectorAll('[data-assets-card]').forEach((card) => card.classList.toggle('hidden', card.dataset.assetsCard === 'style' && section !== 'presets'));
     document.querySelectorAll('[data-asset-part]').forEach((part) => part.classList.toggle('hidden', part.dataset.assetPart !== section));
     document.querySelectorAll('[data-character-control]').forEach((control) => {
       control.classList.toggle('hidden', section !== 'characters'); control.disabled = !state.projectId;
@@ -32,9 +34,10 @@ export function createConfigurationCenter({ state, api, $, esc, toast, switchTab
       ? '全局预设可被所有项目使用；本项目默认预设优先，其他项目的默认项保留。'
       : (state.projectId ? `当前项目：${state.project?.title || ''}；角色和画风只用于这部漫画。` : '先选择一个漫画项目，再管理角色和画风。');
     $('#pr-style-save').disabled = !state.projectId; $('#pr-addstyle').disabled = !state.projectId;
-    const id = section === 'style' ? 'pr-style-wrap' : 'pr-chars-wrap';
+    const id = 'pr-chars-wrap';
     $('#' + id).classList.remove('hidden');
     document.querySelector(`[data-fold="${id}"]`).classList.remove('closed');
+    if (section === 'presets') { $('#pr-style-wrap').classList.remove('hidden'); document.querySelector('[data-fold="pr-style-wrap"]').classList.remove('closed'); }
     const hint = $('#pr-chars-wrap .h2sub');
     if (hint) hint.textContent = section === 'presets'
       ? '管理常用正负面词块和预设 LoRA，勾选默认后作为该作用域生成提示词的基础。'
@@ -95,9 +98,8 @@ export function createConfigurationCenter({ state, api, $, esc, toast, switchTab
       button.classList.toggle('active', selected); button.setAttribute('aria-pressed', String(selected));
     });
     if (tab === 'settings') {
-      document.querySelectorAll('[data-settings-panel]').forEach((panel) => panel.classList.toggle('hidden', panel.dataset.settingsPanel !== section));
-      if (section === 'providers') await loadProviders();
-      else if (section === 'models') await loadStageBinding();
+      document.querySelectorAll('[data-settings-panel]').forEach((panel) => panel.classList.toggle('hidden', panel.dataset.settingsPanel !== section && !(section === 'providers' && panel.dataset.settingsPanel === 'models')));
+      if (section === 'providers') await Promise.all([loadProviders(), loadStageBinding()]);
       else await loadComfyOverview();
     } else if (tab === 'assets') { await loadAssets(); ensureLoraDatalist(); }
     else if (tab === 'templates') await refreshTemplates();

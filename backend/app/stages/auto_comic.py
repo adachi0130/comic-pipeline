@@ -68,7 +68,7 @@ def handle(session, job):
         if not check():
             return False
         # 同步调用阶段处理器，不创建并等待子作业，避免占满作业线程池。
-        fake = SimpleNamespace(id=job.id, project_id=project_id, payload={'project_id': project_id, 'auto_approve': True, 'auto_run': run_id, **fields}, progress=0, total=0, message='')
+        fake = SimpleNamespace(id=job.id, project_id=project_id, payload={'project_id': project_id, 'auto_approve': True, 'auto_run': run_id, 'prompt_presets': data.get('prompt_presets'), **fields}, progress=0, total=0, message='')
         try:
             handler(session, fake)
         except Exception as exc:

@@ -1,7 +1,7 @@
 import { STAGES, PAGE_FILTERS, pageTodo, pageMatches, activeJob, jobStage, shapeTitle, suggestedStage, panelBox, duration } from './pipeline-overview-model.js';
 
 export function createPipelineOverview({ state, api, $, esc, pill, toast, switchTab, refreshGates,
-  pageLabel, panelFullLabel, openPageDetail, openStageArtifacts, focusImage, focusWorkbench }) {
+  pageLabel, panelFullLabel, openPageDetail, openStageArtifacts, focusImage, focusWorkbench, editConfiguration }) {
   let board = null, projectId = null, request = 0, jobsEpoch = 0, jobs = [], stage = '', artifactSignature = '';
   let refreshTimer, connection = 'connecting', historyOpen = false;
   let actionSignature = '', stepsSignature = '', readProblem = '', lastReadAt = 0;
@@ -11,6 +11,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   let autoFormEpoch = 0;
   const autoDrafts = new Map();
   const failureNotices = new Set();
+  let presetCatalogue = null, presetChoices = { positive: 'auto', negative: 'auto' };
   const targets = {}, targetMissing = {}, counts = {}, submissions = new Map(), cancelling = new Set(), accepted = new Map();
   const visible = () => !$('#tab-pipeline').classList.contains('hidden');
   const scoped = () => board?.project_id === state.projectId;
@@ -18,7 +19,8 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   const matching = (id, ref) => jobs.find((job) => activeJob(job) && jobStage(job)?.id === id && (!job.ref || !ref || job.ref === ref));
 
   function reset() {
-    if (projectId) autoDrafts.set(projectId, { text: $('#ov-auto-text').value, pages: $('#ov-auto-pages').value, source: $('#ov-auto-source').value });
+    if (projectId) autoDrafts.set(projectId, { text: $('#ov-auto-text').value, pages: $('#ov-auto-pages').value, source: $('#ov-auto-source').value, presets: { ...presetChoices } });
+    presetCatalogue = null; presetChoices = { positive: 'auto', negative: 'auto' };
     request++; projectId = null; board = null; jobs = []; stage = ''; artifactSignature = ''; historyOpen = false; accepted.clear();
     clearTimeout(refreshTimer);
     jobsEpoch++;
@@ -37,7 +39,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   }
   async function load({ quiet = false } = {}) {
     const id = state.projectId;
-    if (id !== projectId) { reset(); projectId = id; const draft = autoDrafts.get(id); if (draft) { $('#ov-auto-text').value = draft.text; $('#ov-auto-pages').value = draft.pages; $('#ov-auto-source').value = draft.source || 'text'; } else if (state.project?.target_pages) $('#ov-auto-pages').value = state.project.target_pages; }
+    if (id !== projectId) { reset(); projectId = id; const draft = autoDrafts.get(id); if (draft) { $('#ov-auto-text').value = draft.text; $('#ov-auto-pages').value = draft.pages; $('#ov-auto-source').value = draft.source || 'text'; presetChoices = draft.presets || presetChoices; } else if (state.project?.target_pages) $('#ov-auto-pages').value = state.project.target_pages; }
     if (!id) { reset(); return; }
     const version = ++request, epoch = jobsEpoch;
     if (!quiet && !board) $('#ov-preview').innerHTML = '<div class="empty">正在读取漫画产物…</div>';
@@ -396,10 +398,12 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     $('#ov-auto-text').placeholder = outlineMode ? '输入故事大纲，或引用项目大纲' : '粘贴已完成的故事正文';
     const id = state.projectId, request = ++autoConfigRequest;
     const box = $('#ov-auto-config'); box.textContent = '正在读取配置…';
-    const [providersResult, modelsResult, configResult, statusResult, tavernResult] = await Promise.allSettled([
-      api('/api/providers'), api('/api/stage-models'), api('/api/comfy/config'), api('/api/comfy/status'), api('/api/tavern/live')
+    const [providersResult, modelsResult, configResult, statusResult, tavernResult, presetsResult] = await Promise.allSettled([
+      api('/api/providers'), api('/api/stage-models'), api('/api/comfy/config'), api('/api/comfy/status'), api('/api/tavern/live'), api(`/api/prompt-presets?project_id=${id}&include_other_projects=true`)
     ]);
     if (id !== state.projectId || request !== autoConfigRequest) return;
+    presetCatalogue = presetsResult.status === 'fulfilled' ? presetsResult.value : null;
+    renderAutoPresets();
     const providers = providersResult.status === 'fulfilled' ? providersResult.value : [], models = modelsResult.status === 'fulfilled' ? modelsResult.value : null;
     const modelName = (stage) => {
       const p = providers.find((item) => item.id === (models?.bindings?.[stage] || models?.fallback_provider_id) && item.enabled);
@@ -412,8 +416,26 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     const info = [ ['正文生成', $('#ov-auto-source').value === 'outline' ? `LLM 扩写 · ${modelName('S1')}` : `已有完整正文 · ${bridge}`], ['分格模型', modelName('S2')], ['分镜提示词模型', modelName('S3')],
       ['出图后端', cfg ? `${cfg.backend === 'local' ? '本机 ComfyUI' : '云端 ComfyUI'} · ${status ? status[cfg.backend]?.reachable ? '已连接' : '未连接' : '连接状态未知'}` : '配置读取失败'],
       ['工作流', cfg?.workflow_name || '未选择'], ['出图默认参数', settings + '；每格尺寸和提示词可覆盖'] ];
-    box.innerHTML = info.map(([name, value]) => `<div><b>${esc(name)}</b>${esc(value)}</div>`).join('');
+    const destinations = [['settings', 'providers'], ['settings', 'providers'], ['settings', 'providers'], ['settings', 'comfy'], ['settings', 'comfy'], ['settings', 'comfy']];
+    box.innerHTML = info.map(([name, value], index) => `<div><b>${esc(name)}</b>${esc(value)}<div style="margin-top:8px"><button class="sm" data-auto-config="${index}">编辑${index < 3 ? '模型' : '出图设置'}</button></div></div>`).join('');
+    box.querySelectorAll('[data-auto-config]').forEach((button) => button.onclick = () => { $('#ov-auto-close').click(); editConfiguration(...destinations[Number(button.dataset.autoConfig)]); });
   }
+  function renderAutoPresets() {
+    const labels = [];
+    for (const kind of ['positive', 'negative']) {
+      const select = $('#ov-auto-' + kind), rows = presetCatalogue?.[kind] || [];
+      select.innerHTML = '<option value="auto">自动使用本项目 / 全局默认</option><option value="0">不使用预设</option>' + rows.map((row) => `<option value="${row.id}">${esc(row.name || '未命名')} · ${row.scope === 'global' ? '全局' : row.project_id === state.projectId ? '本项目' : '项目 ' + row.project_id}${row.is_default ? ' · 默认' : ''}</option>`).join('');
+      if (!['auto', '0'].includes(presetChoices[kind]) && !rows.some((row) => String(row.id) === presetChoices[kind])) select.insertAdjacentHTML('beforeend', `<option value="${esc(presetChoices[kind])}">原预设已不可用</option>`);
+      select.value = presetChoices[kind];
+      const row = presetChoices[kind] === 'auto' ? rows.find((row) => row.scope === 'project' && row.project_id === state.projectId && row.is_default) || rows.find((row) => row.scope === 'global' && row.is_default) : rows.find((row) => String(row.id) === presetChoices[kind]);
+      $('#ov-auto-' + kind + '-preview').value = row?.text || '';
+      select.title = row ? `${row.name || '未命名'} · ${(row.loras || []).length} 个 LoRA` : '没有生效的预设';
+      labels.push(`${kind === 'positive' ? '正向' : '负向'}：${row ? (row.name || '未命名') + '（' + (row.loras || []).length + ' 个 LoRA）' : '未设置'}`);
+    }
+    $('#ov-auto-preset-status').textContent = presetCatalogue ? labels.join('；') + '。可选择其他项目的预设用于本次任务。' : '预设读取失败，请重新检查后提交。';
+  }
+  for (const kind of ['positive', 'negative']) $('#ov-auto-' + kind).onchange = (event) => { autoFormEpoch++; presetChoices[kind] = event.target.value; renderAutoPresets(); };
+  $('#ov-auto-edit-presets').onclick = () => { $('#ov-auto-close').click(); editConfiguration('assets', 'presets'); };
   $('#ov-auto-open').onclick = async () => {
     if (!state.projectId) return toast('先选择项目', 'err');
     const id = state.projectId, epoch = ++autoFormEpoch, last = jobs.find((job) => job.kind === 'auto_comic' && ['failed', 'cancelled'].includes(job.status));
@@ -425,6 +447,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
       if (typeof job.payload?.text === 'string') $('#ov-auto-text').value = job.payload.text;
       if (Number.isInteger(job.payload?.target_pages)) $('#ov-auto-pages').value = job.payload.target_pages;
       $('#ov-auto-source').value = job.payload?.source || 'text';
+      if (job.payload?.prompt_presets) { for (const kind of ['positive', 'negative']) presetChoices[kind] = String(job.payload.prompt_presets[kind]?.id || 0); renderAutoPresets(); }
     } catch { /* 用户仍可自己输入原正文并继续 */ }
   };
   $('#ov-auto-close').onclick = () => { autoConfigRequest++; autoFormEpoch++; $('#ov-auto-modal').classList.add('hidden'); $('#ov-auto-open').focus(); };
@@ -443,7 +466,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
       $('#ov-auto-text').value = project.outline;
       $('#ov-auto-pages').value = project.target_pages;
       $('#ov-auto-source').value = 'outline'; loadAutoConfig();
-      autoDrafts.set(id, { text: project.outline, pages: String(project.target_pages), source: 'outline' });
+      autoDrafts.set(id, { text: project.outline, pages: String(project.target_pages), source: 'outline', presets: { ...presetChoices } });
       $('#ov-auto-text').focus();
       toast('已引用项目大纲和目标页数，可继续修改后确认。', 'ok');
     } catch (error) { if (id === state.projectId && epoch === autoFormEpoch) toast('读取项目大纲失败：' + error.message, 'err'); }
@@ -471,10 +494,12 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     const id = state.projectId, text = $('#ov-auto-text').value.trim(), pages = Number($('#ov-auto-pages').value);
     if (!id || autoSubmitting) return;
     if (!text) return toast('请先输入完整故事正文。', 'err');
+    if (!presetCatalogue) return toast('请先重新检查，成功读取正负面预设后再提交。', 'err');
     if (!Number.isInteger(pages) || pages < 1 || pages > 100) return toast('目标页数请填写 1 到 100 的整数。', 'err');
     autoSubmitting = true; renderJobs();
     try {
-      const result = await api(`/api/projects/${id}/auto-comic`, { method: 'POST', body: JSON.stringify({ text, target_pages: pages, source: $('#ov-auto-source').value }) });
+      const preset_ids = Object.fromEntries(Object.entries(presetChoices).map(([kind, value]) => [kind, value === 'auto' ? null : Number(value)]));
+      const result = await api(`/api/projects/${id}/auto-comic`, { method: 'POST', body: JSON.stringify({ text, target_pages: pages, source: $('#ov-auto-source').value, preset_ids }) });
       if (state.projectId !== id) return;
       if (result.job) { accepted.set(result.job.id, result.job); jobs = [result.job, ...jobs.filter((job) => job.id !== result.job.id)]; jobsEpoch++; }
       reportAutoFailure(result.job);

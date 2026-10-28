@@ -50,13 +50,13 @@ def delete_character(character_id: int, session: Session = Depends(get_session))
 
 # ---------------- 提示词预设（主人常用的正/负向提示词）----------------
 @router.get("/prompt-presets")
-def list_presets(project_id: int | None = None, session: Session = Depends(get_session)) -> dict:
+def list_presets(project_id: int | None = None, include_other_projects: bool = False, session: Session = Depends(get_session)) -> dict:
     """列出全局预设 + 指定项目的预设。"""
     cond = [PromptPreset.scope == "global"]
     if project_id:
         cond.append((PromptPreset.scope == "project") & (PromptPreset.project_id == project_id))
     rows = session.scalars(
-        select(PromptPreset).where(or_(*cond)).order_by(PromptPreset.kind, PromptPreset.scope, PromptPreset.id)
+        select(PromptPreset).where(True if include_other_projects else or_(*cond)).order_by(PromptPreset.kind, PromptPreset.scope, PromptPreset.id)
     ).all()
     return {
         "positive": [_preset(p) for p in rows if p.kind == "positive"],

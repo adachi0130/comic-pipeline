@@ -6,12 +6,12 @@
 import { createEditorWorkbench } from './editor-workbench.js';
 import { createExportCenter } from './export-center.js';
 import { createWorkbenchNavigation } from './workbench-navigation.js';
-import { createConfigurationCenter } from './configuration-center.js';
+import { createConfigurationCenter } from './configuration-center.js?v=93';
 import { createEditFeedback } from './edit-feedback.js';
-import { createProviderManager } from './provider-manager.js';
+import { createProviderManager } from './provider-manager.js?v=93';
 import { createComfySettings } from './comfy-settings.js';
 import { createImageWorkbench } from './image-workbench.js';
-import { createPipelineOverview } from './pipeline-overview.js?v=92';
+import { createPipelineOverview } from './pipeline-overview.js?v=93';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
@@ -60,7 +60,7 @@ const configuration = createConfigurationCenter({ state, api, $, esc, toast, swi
   loadProviders, loadStageBinding, loadCharacterPresetPanel, loadStyleLoras, ensureLoraDatalist, editFeedback });
 const imageWorkbench = createImageWorkbench({ state, api, $, esc, pill, toast, editFeedback, refreshGates, openComfySettings, switchTab, pageLabel, panelFullLabel, attachLoraCombos, ensureLoraDatalist });
 const pipelineOverview = createPipelineOverview({ state, api, $, esc, pill, toast, switchTab, refreshGates,
-  pageLabel, panelFullLabel, openPageDetail, openStageArtifacts, focusWorkbench,
+  pageLabel, panelFullLabel, openPageDetail, openStageArtifacts, focusWorkbench, editConfiguration: editAutoConfiguration,
   focusImage: (ref) => { switchTab('images'); imageWorkbench.focus(ref); } });
 let projectPickRequest = 0;
 let assetCardsRequest = 0, styleRequest = 0, styleEditor = null;
@@ -68,7 +68,29 @@ let assetMutationInFlight = false;
 let projectDetailRequest = 0, projectDetailId = null;
 let projectWriteEpoch = 0;
 let pagesRequest = 0, promptsRequest = 0, pendingWorkbenchFocus = null;
+let autoConfigReturnProject = null;
 const assetEditors = new WeakMap();
+
+function editAutoConfiguration(tab, section) {
+  autoConfigReturnProject = state.projectId;
+  switchTab(tab, section);
+  $('#auto-config-return').classList.remove('hidden');
+}
+$('#auto-config-save-return').onclick = async () => {
+  const button = $('#auto-config-save-return'), id = autoConfigReturnProject;
+  if (button.disabled) return;
+  if (!id || id !== state.projectId) { autoConfigReturnProject = null; $('#auto-config-return').classList.add('hidden'); return; }
+  button.disabled = true;
+  try {
+    if (modelWrites || editFeedback.unsettled('project-dialog')) return toast('请先完成当前窗口或模型绑定的保存。', 'err');
+    if (!(await editFeedback.flush('asset-cards'))) return;
+    if (editFeedback.unsettled('provider-form') && !(await providerManager.save())) return;
+    if (editFeedback.unsettled('asset-style') && styleEditor && !(await styleEditor.flush())) return;
+    if (id !== state.projectId) return;
+    autoConfigReturnProject = null; $('#auto-config-return').classList.add('hidden');
+    switchTab('pipeline'); $('#ov-auto-open').click();
+  } finally { button.disabled = false; }
+};
 
 function focusWorkbench(tab, pageRef, panelRef) {
   pendingWorkbenchFocus = { projectId: state.projectId, tab, pageRef, panelRef };
@@ -100,7 +122,7 @@ const TITLES = {
   editor: ['漫画编辑器', '在当前工作台精修漫画页，保存后继续编辑'],
   exports: ['整册导出', '预览页序，导出 PDF / CBZ，下载历史版本'],
   settings: ['设置', 'LLM 供应商 / ComfyUI / 阶段绑定'],
-  assets: ['角色与画风', '管理本项目的角色、预设和画风 LoRA'],
+  assets: ['角色、预设与画风', '管理本项目的角色、正负面预设和画风 LoRA'],
   templates: ['系统提示词', '查看与编辑三个阶段实际使用的系统和用户模板'],
 };
 $$('.nav button[data-tab]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab, b.dataset.section)));
@@ -128,6 +150,7 @@ document.addEventListener('click', (e) => {
   setFold(h.dataset.fold, hidden);
 });
 function switchTab(tab, requestedSection) {
+  if (autoConfigReturnProject && autoConfigReturnProject !== state.projectId) { autoConfigReturnProject = null; $('#auto-config-return').classList.add('hidden'); }
   if (pendingWorkbenchFocus && pendingWorkbenchFocus.tab !== tab) pendingWorkbenchFocus = null;
   const section = configuration.sectionFor(tab, requestedSection);
   $$('.nav button[data-tab]').forEach((x) => x.classList.toggle('active', x.dataset.tab === tab && (!x.dataset.section || x.dataset.section === section)));

@@ -84,5 +84,5 @@ export function createProviderManager({ api, $, esc, toast, editFeedback, refres
       toast(`已导入：${imported.model}`, 'ok'); await load(); refreshBindings();
     } catch (error) { toast('导入失败：' + error.message, 'err'); }
   }));
-  return { load };
+  return { load, save: async () => !busy && await draft.flush() };
 }
