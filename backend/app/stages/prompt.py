@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import re
+
 import json
 
 from sqlalchemy import select
@@ -201,6 +203,24 @@ def _techniques(session: Session) -> str:
     return json.dumps({t.name: t.prompt_block for t in rows}, ensure_ascii=False)
 
 
+def normalize_panel_refs(prompts: PagePrompts, page_ref: str, expected_refs: list[str]) -> None:
+    """模型页号一致但写错时，仅按唯一格序纠正；含重复或混合页号则拒绝。"""
+    refs = [item.panel_ref for item in prompts.panels]
+    if len(refs) != len(expected_refs) or len(set(refs)) != len(refs):
+        raise ValueError(f"{page_ref} 返回的提示词格号重复或数量不匹配，请重试。")
+    if set(refs) == set(expected_refs):
+        return
+    parsed = [re.fullmatch(r'panel:(\d+)\.(\d+)', ref) for ref in refs]
+    expected = [re.fullmatch(r'panel:(\d+)\.(\d+)', ref) for ref in expected_refs]
+    if (not all(parsed) or not all(expected) or len({m.group(1) for m in parsed}) != 1
+            or {m.group(2) for m in parsed} != {m.group(2) for m in expected}):
+        raise ValueError(f"{page_ref} 返回的提示词页格编号不匹配，请重试。")
+    page_number = page_ref.split(':', 1)[1]
+    for item, match in zip(prompts.panels, parsed):
+        item.panel_ref = f"panel:{page_number}.{match.group(2)}"
+    prompts.page_ref = page_ref
+
+
 def handle(session: Session, job: Job) -> dict:
     payload = job.payload or {}
     project_id = int(payload.get("project_id") or job.project_id or 0)
@@ -259,6 +279,8 @@ def handle(session: Session, job: Job) -> dict:
                 "PRESET_NEGATIVE": preset_neg or "（无，按系统提示词默认）",
             },
         )
+        expected_refs = [f"panel:{page.ref.split(':', 1)[1]}.{panel['panel_order']}" for panel in page_payload.get('panels', [])]
+        user += "\n\n【本次必须输出的页格编号】\n当前页：" + page.ref + "\n逐格编号：" + ", ".join(expected_refs) + "\n请严格按这些编号输出，不要沿用其他页的编号。"
         prompts: PagePrompts = client.structured(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             PagePrompts,
@@ -273,9 +295,7 @@ def handle(session: Session, job: Job) -> dict:
             raise ValueError(
                 f"{page.ref} 需 {expected} 格提示词（按该页模板格数），模型给了 {len(prompts.panels)} 格"
             )
-        expected_refs = {f"panel:{page.ref.split(':', 1)[1]}.{panel['panel_order']}" for panel in page_payload.get('panels', [])}
-        if {item.panel_ref for item in prompts.panels} != expected_refs:
-            raise ValueError(f"{page.ref} 返回的提示词页格编号不匹配，请重试。")
+        normalize_panel_refs(prompts, page.ref, expected_refs)
 
         # 该页每格的分格脚本（取 characters / panel_order）
         script_by_order = {p.get("panel_order"): p for p in page_payload.get("panels", [])}

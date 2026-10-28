@@ -7,6 +7,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   let actionSignature = '', stepsSignature = '', readProblem = '', lastReadAt = 0;
   let pageFilter = 'all', pageQuery = '', density = 'comfortable', proseOpen;
   let autoSubmitting = false;
+  let autoConfigRequest = 0;
   const autoDrafts = new Map();
   const targets = {}, targetMissing = {}, counts = {}, submissions = new Map(), cancelling = new Set(), accepted = new Map();
   const visible = () => !$('#tab-pipeline').classList.contains('hidden');
@@ -23,6 +24,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     pageFilter = 'all'; pageQuery = ''; proseOpen = undefined;
     $('#ov-page-query').value = ''; $('#ov-page-tools').classList.add('hidden');
     $('#ov-auto-text').value = ''; $('#ov-auto-pages').value = '1'; $('#ov-auto-status').textContent = '';
+    autoConfigRequest++; $('#ov-auto-modal').classList.add('hidden');
     for (const map of [targets, targetMissing, counts]) for (const key of Object.keys(map)) delete map[key];
     $('#ov-summary').innerHTML = ''; $('#ov-steps').innerHTML = ''; $('#ov-action').innerHTML = '';
     $('#ov-preview').innerHTML = '<div class="empty">选择项目后显示当前漫画。</div>';
@@ -266,6 +268,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     const pending = [...submissions.values()].filter((item) => item.id === state.projectId);
     const autoActive = list.some((job) => job.kind === 'auto_comic' && activeJob(job));
     $('#ov-auto-start').disabled = !state.projectId || autoSubmitting || autoActive;
+    $('#ov-auto-open').disabled = !state.projectId;
     $('#ov-auto-status').textContent = autoSubmitting ? '正在提交…' : autoActive ? '任务进行中，可在后台任务区查看或取消' : '';
     $('#ov-live').textContent = connection === 'live' ? '实时同步' : connection === 'polling' ? '实时连接重连中 · 每 5 秒刷新' : '正在连接任务状态…';
     if (readProblem) $('#ov-live').textContent = '任务读取失败，保留上次状态';
@@ -360,6 +363,44 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     if (changed) scheduleRefresh();
   }
   $('#ov-refresh').onclick = () => { $('#ov-refresh').disabled = true; load(); refreshTasks(); refreshGates(); };
+  async function loadAutoConfig() {
+    const id = state.projectId, request = ++autoConfigRequest;
+    const box = $('#ov-auto-config'); box.textContent = '正在读取配置…';
+    const [providersResult, modelsResult, configResult, statusResult, tavernResult] = await Promise.allSettled([
+      api('/api/providers'), api('/api/stage-models'), api('/api/comfy/config'), api('/api/comfy/status'), api('/api/tavern/live')
+    ]);
+    if (id !== state.projectId || request !== autoConfigRequest) return;
+    const providers = providersResult.status === 'fulfilled' ? providersResult.value : [], models = modelsResult.status === 'fulfilled' ? modelsResult.value : null;
+    const modelName = (stage) => {
+      const p = providers.find((item) => item.id === (models?.bindings?.[stage] || models?.fallback_provider_id) && item.enabled);
+      return p ? `${p.name} · ${p.model}` : '未配置可用供应商';
+    };
+    const cfg = configResult.status === 'fulfilled' ? configResult.value : null, status = statusResult.status === 'fulfilled' ? statusResult.value : null;
+    const params = cfg?.default_params || {}, fields = [['width','宽'],['height','高'],['steps','步数'],['cfg','CFG'],['sampler','采样器'],['scheduler','调度器'],['denoise','降噪']];
+    const settings = fields.filter(([key]) => params[key] != null && params[key] !== '').map(([key, name]) => `${name} ${params[key]}`).join(' · ') || '使用工作流 / 每格设置';
+    const bridge = tavernResult.status === 'fulfilled' ? (tavernResult.value.bridge_online ? '酒馆桥在线' : '酒馆桥未连接') : '酒馆桥状态读取失败';
+    const info = [ ['正文来源', `直接输入 · ${bridge}`], ['分格模型', modelName('S2')], ['分镜提示词模型', modelName('S3')],
+      ['出图后端', cfg ? `${cfg.backend === 'local' ? '本机 ComfyUI' : '云端 ComfyUI'} · ${status ? status[cfg.backend]?.reachable ? '已连接' : '未连接' : '连接状态未知'}` : '配置读取失败'],
+      ['工作流', cfg?.workflow_name || '未选择'], ['出图默认参数', settings + '；每格尺寸和提示词可覆盖'] ];
+    box.innerHTML = info.map(([name, value]) => `<div><b>${esc(name)}</b>${esc(value)}</div>`).join('');
+  }
+  $('#ov-auto-open').onclick = async () => {
+    if (!state.projectId) return toast('先选择项目', 'err');
+    const id = state.projectId, last = jobs.find((job) => job.kind === 'auto_comic' && ['failed', 'cancelled'].includes(job.status));
+    $('#ov-auto-modal').classList.remove('hidden'); loadAutoConfig(); $('#ov-auto-close').focus();
+    if (!last || $('#ov-auto-text').value) return;
+    try {
+      const job = await api(`/api/jobs/${last.id}`);
+      if (id !== state.projectId || $('#ov-auto-modal').classList.contains('hidden') || $('#ov-auto-text').value) return;
+      if (typeof job.payload?.text === 'string') $('#ov-auto-text').value = job.payload.text;
+      if (Number.isInteger(job.payload?.target_pages)) $('#ov-auto-pages').value = job.payload.target_pages;
+    } catch { /* 用户仍可自己输入原正文并继续 */ }
+  };
+  $('#ov-auto-close').onclick = () => { autoConfigRequest++; $('#ov-auto-modal').classList.add('hidden'); $('#ov-auto-open').focus(); };
+  $('#ov-auto-modal').onclick = (event) => { if (event.target === $('#ov-auto-modal')) $('#ov-auto-close').click(); };
+  $('#ov-auto-refresh').onclick = loadAutoConfig;
+  $('#ov-auto-prose').onclick = () => { $('#ov-auto-close').click(); switchTab('novel'); };
+  window.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !$('#ov-auto-modal').classList.contains('hidden')) $('#ov-auto-close').click(); });
   $('#ov-auto-start').onclick = async () => {
     const id = state.projectId, text = $('#ov-auto-text').value.trim(), pages = Number($('#ov-auto-pages').value);
     if (!id || autoSubmitting) return;
@@ -370,6 +411,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
       const result = await api(`/api/projects/${id}/auto-comic`, { method: 'POST', body: JSON.stringify({ text, target_pages: pages }) });
       if (state.projectId !== id) return;
       if (result.job) { accepted.set(result.job.id, result.job); jobs = [result.job, ...jobs.filter((job) => job.id !== result.job.id)]; jobsEpoch++; }
+      $('#ov-auto-close').click();
       $('#ov-auto-status').textContent = `任务 #${result.job_id} 已提交`;
       toast(`一键生成任务 #${result.job_id} 已提交`, 'ok');
       await refreshTasks(); scheduleRefresh();
