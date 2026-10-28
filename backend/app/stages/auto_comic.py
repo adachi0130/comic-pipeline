@@ -13,6 +13,33 @@ from . import compose, image, prompt, script
 KIND = 'auto_comic'
 
 
+def expand_story(session, job, project, text, run_id):
+    from ..llm import LLMClient, LLMLogContext
+    from . import promptlib, prose
+    provider, cfg = promptlib.resolve_provider(session, 'S1')
+    system, template = promptlib.get_prompt(session, 's1_prose')
+    mapping = prose.llm_user_mapping(title=project.title, outline=text,
+        instruction=f'把大纲扩写成适合改编为 {project.target_pages} 页漫画的完整故事正文，包含开端、发展与结尾、人物动作和对话。不要只复述大纲。')
+    messages = [{'role': 'system', 'content': system}, {'role': 'user', 'content': promptlib.render(template, mapping)}]
+    client = LLMClient(cfg)
+    log = LLMLogContext(session=session, stage='S1', project_id=project.id, provider_id=provider.id)
+    try:
+        result = client.chat(messages, should_cancel=lambda: jobs.is_cancelled(job.id))
+    except Exception as exc:
+        log.record(client, messages, '', {}, str(exc)); session.commit()
+        raise RuntimeError(f'正文扩写模型调用失败：{exc}') from exc
+    log.record(client, messages, result.text or '', result.usage or {}, '')
+    session.commit()
+    if jobs.is_cancelled(job.id):
+        return
+    story = (result.text or '').strip()
+    if not story or story == text.strip():
+        raise ValueError('正文扩写未成功：模型返回为空或仅返回原大纲，请检查 S1 模型后续跑。')
+    A.create(session, project_id=project.id, kind='prose', ref='seg:1',
+        payload={'text': story, 'source_text': text, 'mode': 'llm', 'auto_run': run_id}, status='approved')
+    session.commit()
+
+
 def checkpoint(session, project_id):
     rows = session.scalars(select(Artifact).where(Artifact.project_id == project_id, Artifact.is_current.is_(True))).all()
     return {f'{a.kind}/{a.ref}': hashlib.sha256(json.dumps([a.id, a.status, a.path, a.payload], sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest() for a in rows}
@@ -29,7 +56,8 @@ def handle(session, job):
         session.expire_all()
         project = session.get(Project, project_id)
         prose = A.current(session, project_id, 'prose', 'seg:1')
-        if not project or project.target_pages != target or not prose or (prose.payload or {}).get('text') != text or (prose.payload or {}).get('auto_run') != run_id:
+        missing_outline = prose is None and data.get('source') == 'outline' and not job.payload.get('checkpoint', {}).get('prose/seg:1')
+        if not project or project.target_pages != target or (not missing_outline and (not prose or (prose.payload or {}).get('source_text', (prose.payload or {}).get('text')) != text or (prose.payload or {}).get('auto_run') != run_id)):
             raise ValueError('项目正文或目标页数在运行中发生变化，请检查后重试。')
         actual = checkpoint(session, project_id)
         if any(actual.get(key) != value for key, value in (job.payload.get('checkpoint') or {}).items() if key not in ignore):
@@ -41,7 +69,10 @@ def handle(session, job):
             return False
         # 同步调用阶段处理器，不创建并等待子作业，避免占满作业线程池。
         fake = SimpleNamespace(id=job.id, project_id=project_id, payload={'project_id': project_id, 'auto_approve': True, 'auto_run': run_id, **fields}, progress=0, total=0, message='')
-        handler(session, fake)
+        try:
+            handler(session, fake)
+        except Exception as exc:
+            raise RuntimeError(f'{job.message}失败：{exc}') from exc
         allowed = []
         if handler is image.handle:
             allowed = [f"image/{fields['panel_ref']}"]
@@ -68,6 +99,15 @@ def handle(session, job):
         job.payload = {**job.payload, 'checkpoint': checkpoint(session, project_id)}
         session.commit()
 
+    if data.get('source') == 'outline' and A.current(session, project_id, 'prose', 'seg:1') is None:
+        update('正在调用 S1 模型扩写故事正文', 0, target * 3 + 1)
+        if not check():
+            return {'cancelled': True}
+        expand_story(session, job, session.get(Project, project_id), text, run_id)
+        if not check():
+            return {'cancelled': True}
+        job.payload = {**job.payload, 'checkpoint': checkpoint(session, project_id)}
+        session.commit()
     update('正在将正文分成漫画页', 0, target * 3 + 1)
     if not child(script.handle):
         return {'cancelled': True}

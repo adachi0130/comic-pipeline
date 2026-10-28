@@ -66,6 +66,58 @@ class AutoComicTests(unittest.TestCase):
         self.assertEqual(calls, ['script', 'prompt', 'panel:1.1', 'panel:1.2', 'panel:1.2', 'compose'])
         self.assertEqual(self.session.get(Project, 1).review_mode, 'manual')
 
+    def test_outline_is_expanded_once_and_reused_on_resume(self):
+        self.session.delete(A.current(self.session, 1, 'prose', 'seg:1'))
+        self.job.payload = {**self.job.payload, 'source': 'outline', 'checkpoint': {}}
+        self.session.commit()
+        from app import llm
+        provider = SimpleNamespace(id=1)
+        with patch.object(auto_comic.prompt.promptlib, 'resolve_provider', return_value=(provider, None)), \
+             patch.object(llm, 'LLMClient') as client, patch.object(llm, 'LLMLogContext'), \
+             patch.object(auto_comic.jobs, 'is_cancelled', return_value=False):
+            client.return_value.chat.return_value = SimpleNamespace(text='扩写后的完整故事，人物出门并解决了难题。', usage={})
+            auto_comic.expand_story(self.session, self.job, self.session.get(Project, 1), '故事', 'run')
+            art = A.current(self.session, 1, 'prose', 'seg:1')
+            self.assertEqual(art.payload['source_text'], '故事')
+            self.assertNotEqual(art.payload['text'], '故事')
+            with patch.object(auto_comic, 'expand_story') as expand, patch.object(auto_comic.script, 'handle', side_effect=RuntimeError('stop after prose')):
+                with self.assertRaisesRegex(RuntimeError, 'stop after prose'):
+                    auto_comic.handle(self.session, self.job)
+                expand.assert_not_called()
+
+    def test_empty_expansion_does_not_publish_outline_as_prose(self):
+        self.session.delete(A.current(self.session, 1, 'prose', 'seg:1'))
+        self.session.commit()
+        from app import llm
+        with patch.object(auto_comic.prompt.promptlib, 'resolve_provider', return_value=(SimpleNamespace(id=1), None)), \
+             patch.object(llm, 'LLMClient') as client, patch.object(llm, 'LLMLogContext'), \
+             patch.object(auto_comic.jobs, 'is_cancelled', return_value=False):
+            for text in ('', '故事'):
+                client.return_value.chat.return_value = SimpleNamespace(text=text, usage={})
+                with self.assertRaisesRegex(ValueError, '正文扩写未成功'):
+                    auto_comic.expand_story(self.session, self.job, self.session.get(Project, 1), '故事', 'run')
+                self.assertIsNone(A.current(self.session, 1, 'prose', 'seg:1'))
+
+    def test_resume_uses_saved_request(self):
+        self.job.status = 'failed'
+        self.job.payload = {**self.job.payload, 'source': 'outline'}
+        self.session.commit()
+        with patch.object(pipeline, 'auto_comic', return_value={'job_id': 2}) as submit:
+            self.assertEqual(pipeline.resume_auto_comic(1, self.session), {'job_id': 2})
+            self.assertEqual(submit.call_args.args[1], {'text': '故事', 'target_pages': 1, 'source': 'outline'})
+
+    def test_outline_failure_stops_before_pagination(self):
+        self.session.delete(A.current(self.session, 1, 'prose', 'seg:1'))
+        self.job.payload = {**self.job.payload, 'source': 'outline', 'checkpoint': {}}
+        self.session.commit()
+        with patch.object(auto_comic.jobs, 'is_cancelled', return_value=False), \
+             patch.object(auto_comic, 'expand_story', side_effect=RuntimeError('正文模型连接失败')), \
+             patch.object(auto_comic.script, 'handle') as script:
+            with self.assertRaisesRegex(RuntimeError, '正文模型连接失败'):
+                auto_comic.handle(self.session, self.job)
+            script.assert_not_called()
+            self.assertIsNone(A.current(self.session, 1, 'prose', 'seg:1'))
+
     def test_changed_prose_stops_run(self):
         art = A.current(self.session, 1, 'prose', 'seg:1')
         art.payload = {'text':'另一个故事', 'auto_run':'run'}

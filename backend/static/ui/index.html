@@ -285,6 +285,7 @@ body.editor-expanded .editor-frame-wrap iframe{height:calc(100dvh - 180px)}
 .ov-action-hint{font-size:12px;color:var(--muted);margin-top:8px;overflow-wrap:anywhere}.ov-action-hint:empty{display:none}
 .ov-auto{margin:14px 0;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:#f8fafc}.ov-auto summary{cursor:pointer;font-weight:600}.ov-auto textarea{margin-top:10px;min-height:120px}.ov-auto .row{margin-top:10px}.ov-auto label{font-size:12px}.ov-auto input{width:90px}.ov-auto-note{font-size:12px;color:var(--ink2);margin-top:6px}
 .ov-auto-dialog{width:min(760px,94vw);max-height:90vh;overflow:auto}.ov-auto-config{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:8px;margin:12px 0}.ov-auto-config>div{border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;overflow-wrap:anywhere}.ov-auto-config b{display:block;color:var(--ink2);margin-bottom:3px}.ov-auto-dialog textarea{min-height:110px}.ov-auto-dialog input[type=number]{width:90px}
+.ov-layout{padding:3px 6px;border-radius:6px;display:inline-flex;align-items:center;gap:5px;font-size:11px}.ov-layout img{width:30px;height:40px;object-fit:contain}.ov-layout-preview{max-height:65vh;max-width:100%;margin:10px auto}.ov-auto-notice{padding:12px;margin-top:12px;background:var(--errbg);color:var(--err);border-radius:8px;font-size:12px}
 .ov-tasks #ov-live{font-size:11px}.ov-idle{font-size:12px;color:var(--muted);padding:14px 0}
 .ov-submitting{font-size:13px;padding:14px;border-left:3px solid var(--accent);margin-top:10px;background:#f1f6ff}
 .ov-job{border:1px solid var(--line);padding:12px 14px;border-radius:9px;margin-top:10px;min-width:0}
@@ -681,10 +682,10 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     <!-- 流水线 -->
     <section id="tab-pipeline" class="hidden">
       <div class="card ov-header"><div class="row"><span class="ov-eyebrow">漫画生产进度</span><span class="spacer"></span><button class="sm" id="ov-refresh">刷新总览</button></div>
-        <div class="row"><button class="primary" id="ov-auto-open">一键生成漫画</button><span id="ov-auto-status" class="mut" role="status" aria-live="polite"></span></div>
+        <div class="row"><button class="primary" id="ov-auto-open">一键生成漫画</button><button id="ov-auto-resume" class="sm hidden">继续流水线</button><span id="ov-auto-status" class="mut" role="status" aria-live="polite"></span></div><div id="ov-auto-notice" class="ov-auto-notice hidden" role="alert"></div>
         <div class="modal hidden" id="ov-auto-modal"><div class="box ov-auto-dialog" role="dialog" aria-modal="true" aria-labelledby="ov-auto-title"><div class="row"><h2 id="ov-auto-title">确认一键生成</h2><span class="spacer"></span><button class="sm" id="ov-auto-close" aria-label="关闭">×</button></div>
           <div class="ov-auto-note">检查本次配置，再填写正文和页数。首次使用请选择空项目；中断后使用相同正文和页数继续。</div><div id="ov-auto-config" class="ov-auto-config" aria-live="polite">正在读取配置…</div>
-          <div class="row"><b>正文来源</b><span>直接输入完整正文</span><button class="sm" id="ov-auto-prose">去正文页使用酒馆 / LLM</button></div><div class="ov-auto-note">当前一键流程使用输入的正文；酒馆和 LLM 生成正文可在正文页操作。</div>
+          <div class="row"><label for="ov-auto-source"><b>输入内容</b></label><select id="ov-auto-source" style="width:auto;max-width:100%"><option value="outline">故事大纲，先用 LLM 扩写正文</option><option value="text">已有完整正文，直接分格</option></select><button class="sm" id="ov-auto-prose">去正文页使用酒馆</button></div><div class="ov-auto-note">大纲模式先调用 S1 模型写完整正文，再分格出图；已有正文模式直接使用输入内容。</div>
           <div class="row"><label class="fld" for="ov-auto-text">漫画正文</label><span class="spacer"></span><button class="sm" id="ov-auto-outline" type="button">引用故事大纲</button></div><div class="ov-auto-note">引用会将项目已保存的大纲和目标页数填入下方，可继续修改。</div><textarea id="ov-auto-text" placeholder="在这里粘贴完整故事正文"></textarea><div class="row"><label>目标页数 <input id="ov-auto-pages" type="number" min="1" max="100" value="1"></label><span class="spacer"></span><button class="sm" id="ov-auto-refresh">重新检查</button><button class="primary" id="ov-auto-start">确认并开始</button></div></div></div>
         <div id="ov-summary" class="ov-summary"></div><div id="ov-steps" class="ov-steps" aria-label="选择流水线阶段"></div>
         <div id="ov-action" class="ov-action"></div><div id="ov-feedback" class="save-feedback" role="status" aria-live="polite"></div></div>
@@ -878,6 +879,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=91"></script>
+<script type="module" src="/ui/app.js?v=92"></script>
 </body>
 </html>

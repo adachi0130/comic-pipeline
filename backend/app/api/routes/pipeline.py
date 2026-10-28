@@ -809,6 +809,9 @@ def auto_comic(project_id: int, body: dict, session: Session = Depends(get_sessi
 
     text = body.get('text')
     target = body.get('target_pages')
+    source = body.get('source', 'text')
+    if source not in ('text', 'outline'):
+        raise HTTPException(400, '正文来源需为已有正文或大纲扩写。')
     if not isinstance(text, str) or not text.strip() or len(text) > 100000:
         raise HTTPException(400, '请填写不超过 10 万字的正文。')
     text = text.strip()
@@ -821,17 +824,19 @@ def auto_comic(project_id: int, body: dict, session: Session = Depends(get_sessi
         active = session.scalars(select(Job).where(Job.project_id == project_id, Job.status.in_(['queued', 'running']))).all()
         for old in active:
             p = old.payload or {}
-            if old.kind == 'auto_comic' and p.get('text') == text and p.get('target_pages') == target:
+            if old.kind == 'auto_comic' and p.get('text') == text and p.get('target_pages') == target and p.get('source', 'text') == source:
                 return {'job_id': old.id, 'status': old.status, 'job': _brief(old), 'reused': True}
         if active:
             raise HTTPException(409, '项目已有任务运行，请等待结束后再开始一键生成。')
         if not session.scalars(select(Template.id).limit(1)).first():
             raise HTTPException(400, '缺少分格模板，请先导入模板菜单。')
         try:
+            if source == 'outline':
+                promptlib.resolve_provider(session, 'S1')
             promptlib.resolve_provider(session, 'S2')
             promptlib.resolve_provider(session, 'S3')
         except Exception as exc:
-            raise HTTPException(400, f'请先配置并启用 S2/S3 的 LLM 供应商：{exc}') from exc
+            raise HTTPException(400, f'请先配置并启用正文/分格/提示词所需的 LLM 供应商：{exc}') from exc
         try:
             cfg = load_comfy_config()
             if not cfg.workflow_name or not workflow_path(cfg.workflow_name).is_file():
@@ -844,7 +849,7 @@ def auto_comic(project_id: int, body: dict, session: Session = Depends(get_sessi
         if artifacts:
             old = previous.payload if previous else {}
             run_id = old.get('auto_run')
-            if not run_id or old.get('text') != text or old.get('target_pages') != target or len(existing) != 1 or (existing[0].payload or {}).get('text') != text or any((art.payload or {}).get('auto_run') != run_id for art in artifacts):
+            if not run_id or old.get('text') != text or old.get('source', 'text') != source or old.get('target_pages') != target or len(existing) != 1 or (existing[0].payload or {}).get('source_text', (existing[0].payload or {}).get('text')) != text or any((art.payload or {}).get('auto_run') != run_id for art in artifacts):
                 raise HTTPException(409, '项目已有其他故事或产物，请新建项目；继续上次生成需使用相同正文和页数。')
             if project.target_pages != target:
                 raise HTTPException(409, '项目目标页数已改变，请恢复原页数后继续。')
@@ -854,10 +859,20 @@ def auto_comic(project_id: int, body: dict, session: Session = Depends(get_sessi
         else:
             run_id = uuid4().hex
             project.target_pages = target
-            A.create(session, project_id=project_id, kind='prose', ref='seg:1', payload={'text': text, 'mode': 'paste', 'auto_run': run_id}, status='approved')
+            if source == 'text':
+                A.create(session, project_id=project_id, kind='prose', ref='seg:1', payload={'text': text, 'mode': 'paste', 'auto_run': run_id}, status='approved')
             session.commit()
-        job = jobq.enqueue('auto_comic', project_id=project_id, stage='AUTO', payload={'text': text, 'target_pages': target, 'auto_run': run_id, 'checkpoint': checkpoint(session, project_id)})
+        job = jobq.enqueue('auto_comic', project_id=project_id, stage='AUTO', payload={'text': text, 'source': source, 'target_pages': target, 'auto_run': run_id, 'checkpoint': checkpoint(session, project_id)})
     return {'job_id': job.id, 'status': job.status, 'job': _brief(job), 'reused': False}
+
+
+@router.post('/projects/{project_id}/auto-comic/resume')
+def resume_auto_comic(project_id: int, session: Session = Depends(get_session)) -> dict:
+    previous = session.scalars(select(Job).where(Job.project_id == project_id, Job.kind == 'auto_comic').order_by(Job.id.desc())).first()
+    if previous is None or previous.status not in ('failed', 'cancelled'):
+        raise HTTPException(409, '当前没有中断的一键任务可继续。')
+    data = previous.payload or {}
+    return auto_comic(project_id, {'text': data.get('text'), 'target_pages': data.get('target_pages'), 'source': data.get('source', 'text')}, session)
 
 
 @router.post("/projects/{project_id}/run/{stage}")

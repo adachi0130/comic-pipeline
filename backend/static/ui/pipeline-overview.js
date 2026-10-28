@@ -10,6 +10,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   let autoConfigRequest = 0;
   let autoFormEpoch = 0;
   const autoDrafts = new Map();
+  const failureNotices = new Set();
   const targets = {}, targetMissing = {}, counts = {}, submissions = new Map(), cancelling = new Set(), accepted = new Map();
   const visible = () => !$('#tab-pipeline').classList.contains('hidden');
   const scoped = () => board?.project_id === state.projectId;
@@ -17,7 +18,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   const matching = (id, ref) => jobs.find((job) => activeJob(job) && jobStage(job)?.id === id && (!job.ref || !ref || job.ref === ref));
 
   function reset() {
-    if (projectId) autoDrafts.set(projectId, { text: $('#ov-auto-text').value, pages: $('#ov-auto-pages').value });
+    if (projectId) autoDrafts.set(projectId, { text: $('#ov-auto-text').value, pages: $('#ov-auto-pages').value, source: $('#ov-auto-source').value });
     request++; projectId = null; board = null; jobs = []; stage = ''; artifactSignature = ''; historyOpen = false; accepted.clear();
     clearTimeout(refreshTimer);
     jobsEpoch++;
@@ -25,6 +26,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     pageFilter = 'all'; pageQuery = ''; proseOpen = undefined;
     $('#ov-page-query').value = ''; $('#ov-page-tools').classList.add('hidden');
     $('#ov-auto-text').value = ''; $('#ov-auto-pages').value = '1'; $('#ov-auto-status').textContent = '';
+    $('#ov-auto-source').value = 'outline'; $('#ov-auto-resume').classList.add('hidden'); $('#ov-auto-notice').classList.add('hidden');
     autoConfigRequest++; autoFormEpoch++; $('#ov-auto-modal').classList.add('hidden');
     for (const map of [targets, targetMissing, counts]) for (const key of Object.keys(map)) delete map[key];
     $('#ov-summary').innerHTML = ''; $('#ov-steps').innerHTML = ''; $('#ov-action').innerHTML = '';
@@ -35,7 +37,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   }
   async function load({ quiet = false } = {}) {
     const id = state.projectId;
-    if (id !== projectId) { reset(); projectId = id; const draft = autoDrafts.get(id); if (draft) { $('#ov-auto-text').value = draft.text; $('#ov-auto-pages').value = draft.pages; } else if (state.project?.target_pages) $('#ov-auto-pages').value = state.project.target_pages; }
+    if (id !== projectId) { reset(); projectId = id; const draft = autoDrafts.get(id); if (draft) { $('#ov-auto-text').value = draft.text; $('#ov-auto-pages').value = draft.pages; $('#ov-auto-source').value = draft.source || 'text'; } else if (state.project?.target_pages) $('#ov-auto-pages').value = state.project.target_pages; }
     if (!id) { reset(); return; }
     const version = ++request, epoch = jobsEpoch;
     if (!quiet && !board) $('#ov-preview').innerHTML = '<div class="empty">正在读取漫画产物…</div>';
@@ -177,12 +179,22 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
             ${panel.image_url ? `<span class="ov-cell-tag">${panel.order} · ${stale ? '需更新' : panel.preview_kind === 'candidate' ? '候选待采用' : '已采用'}</span>` : ''}<span class="ov-cell-live hidden" data-ov-cell-task></span></button>`;
         }).join('') || '<div class="empty">缺少分格记录</div>'}</div>
         <footer><span>${page.panels.filter((panel) => panel.image_url).length}/${page.panels.length} 格有画面 · ${page.panels.filter((panel) => panel.approved_image).length} 已采用</span><div class="row">
-          <button class="sm ${todo.key === 'done' ? '' : 'primary'}" data-ov-next="${esc(page.ref)}">${esc(todo.label)}</button>${page.script ? `<button class="sm" data-ov-edit="${esc(page.ref)}">查看分格</button>` : ''}</div><div class="ov-page-hint">${esc(todo.hint)}</div></footer></article>`;
+          <button class="sm ${todo.key === 'done' ? '' : 'primary'}" data-ov-next="${esc(page.ref)}">${esc(todo.label)}</button>${page.script ? `<button class="sm" data-ov-edit="${esc(page.ref)}">查看分格</button>` : ''}${page.template_id ? `<button class="ov-layout" data-ov-layout="${esc(page.ref)}" aria-label="${esc(pageLabel(page.ref))}版式预览"><img src="/api/templates/${encodeURIComponent(page.template_id)}/svg" alt="漫画版式" loading="lazy"></button>` : ''}</div><div class="ov-page-hint">${esc(todo.hint)}</div></footer></article>`;
     }).join('');
     $('#ov-preview').innerHTML = book + (pages ? `<div class="ov-legend"><span>空格：等待画面</span><span>虚线画面：候选未采用</span><span>实线画面：已采用</span><span>紫色：上游已修改</span></div><div class="ov-page-grid ${density === 'compact' ? 'compact' : ''}">${pages}</div>` : board.pages.length ? '<div class="empty">没有符合条件的漫画页。<button class="sm" data-ov-clear>清除筛选</button></div>' : '') + novel
       || '<div class="empty">还没有产物，先写正文或粘贴已有故事。</div>';
     $('#ov-preview').querySelectorAll('[data-ov-panel]').forEach((button) => button.onclick = () => focusImage(button.dataset.ovPanel));
     $('#ov-preview').querySelectorAll('[data-ov-edit]').forEach((button) => button.onclick = () => openPageDetail(button.dataset.ovEdit));
+    $('#ov-preview').querySelectorAll('[data-ov-layout]').forEach((button) => button.onclick = () => {
+      const page = board.pages.find((item) => item.ref === button.dataset.ovLayout);
+      const dialog = document.createElement('div'); dialog.className = 'modal';
+      dialog.innerHTML = `<div class="box" role="dialog" aria-modal="true" aria-label="漫画版式预览"><h3>${esc(pageLabel(page.ref))} · 漫画版式</h3><p>${esc(page.layout_desc || '')}</p><img class="ov-layout-preview" src="/api/templates/${encodeURIComponent(page.template_id)}/svg" alt="漫画版式"><button data-close>关闭</button></div>`;
+      document.body.appendChild(dialog);
+      const close = () => { dialog.remove(); window.removeEventListener('keydown', escape); button.focus(); };
+      const escape = (event) => { if (event.key === 'Escape') close(); };
+      dialog.querySelector('[data-close]').onclick = close; dialog.onclick = (event) => { if (event.target === dialog) close(); };
+      window.addEventListener('keydown', escape); dialog.querySelector('[data-close]').focus();
+    });
     $('#ov-preview').querySelectorAll('[data-ov-compose]').forEach((button) => button.onclick = () => { state._composeSelected = button.dataset.ovCompose; switchTab('compose'); });
     $('#ov-preview').querySelectorAll('[data-ov-next]').forEach((button) => button.onclick = () => {
       const page = board.pages.find((item) => item.ref === button.dataset.ovNext);
@@ -268,6 +280,11 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     const list = jobs.filter((job) => job.project_id === state.projectId), active = list.filter(activeJob), past = list.filter((job) => !activeJob(job));
     const pending = [...submissions.values()].filter((item) => item.id === state.projectId);
     const autoActive = list.some((job) => job.kind === 'auto_comic' && activeJob(job));
+    const latestAuto = list.find((job) => job.kind === 'auto_comic'), interrupted = latestAuto && ['failed', 'cancelled'].includes(latestAuto.status);
+    $('#ov-auto-resume').classList.toggle('hidden', !interrupted);
+    $('#ov-auto-resume').disabled = autoSubmitting || autoActive;
+    $('#ov-auto-notice').classList.toggle('hidden', !interrupted);
+    $('#ov-auto-notice').textContent = interrupted ? `任务 #${latestAuto.id} 已中断：${latestAuto.error || latestAuto.message || '已取消'}。处理原因后点击“继续流水线”，保留已完成成果。` : '';
     $('#ov-auto-start').disabled = !state.projectId || autoSubmitting || autoActive;
     $('#ov-auto-open').disabled = !state.projectId;
     $('#ov-auto-status').textContent = autoSubmitting ? '正在提交…' : autoActive ? '任务进行中，可在后台任务区查看或取消' : '';
@@ -311,11 +328,12 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
       const job = await api(`/api/jobs/${id}`);
       if (origin !== state.projectId) return;
       const dialog = document.createElement('div'); dialog.className = 'modal';
-      dialog.innerHTML = `<div class="box ov-error-dialog"><h3>任务 #${id} · ${esc(jobStage(job)?.name || job.kind)}失败</h3><div class="txt">${esc((job.error || '').split('\n')[0] || '没有记录错误详情')}</div><details><summary>技术详情</summary><pre>${esc(job.error || '')}</pre></details><div class="row"><button class="sm" data-close>关闭</button></div></div>`;
+      dialog.innerHTML = `<div class="box ov-error-dialog"><h3>任务 #${id} · ${esc(job.kind === 'auto_comic' ? '一键生成' : jobStage(job)?.name || job.kind)}失败</h3><div class="txt">${esc((job.error || '').split('\n')[0] || '没有记录错误详情')}</div><details><summary>技术详情</summary><pre>${esc(job.error || '')}</pre></details><div class="row"><button class="sm" data-close>关闭</button>${job.kind === 'auto_comic' ? '<button class="sm primary" data-resume>继续流水线</button>' : ''}</div></div>`;
       document.body.appendChild(dialog);
       const close = () => { dialog.remove(); window.removeEventListener('keydown', escape); };
       const escape = (event) => { if (event.key === 'Escape') close(); };
       dialog.querySelector('[data-close]').onclick = close; dialog.onclick = (event) => { if (event.target === dialog) close(); }; window.addEventListener('keydown', escape);
+      dialog.querySelector('[data-resume]')?.addEventListener('click', () => { close(); $('#ov-auto-resume').click(); });
     } catch (error) { toast('读取失败：' + error.message, 'err'); }
   }
   async function cancel(id) {
@@ -345,6 +363,9 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     const next = list.filter((job) => job.project_id === state.projectId);
     for (let index = 0; index < next.length; index++) {
       const incoming = next[index], previous = jobs.find((job) => job.id === incoming.id);
+      if (incoming.kind === 'auto_comic' && incoming.status === 'failed' && previous && activeJob(previous) && !failureNotices.has(incoming.id)) {
+        reportAutoFailure(incoming);
+      }
       accepted.delete(incoming.id);
       if (previous && ((!activeJob(previous) && activeJob(incoming)) || (previous.status === 'running' && incoming.status === 'queued'))) next[index] = previous;
     }
@@ -356,6 +377,11 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     if (changed) scheduleRefresh();
   }
   function onConnection(value) { connection = value; renderJobs(); }
+  function reportAutoFailure(job) {
+    if (job?.kind !== 'auto_comic' || job.status !== 'failed' || failureNotices.has(job.id)) return;
+    failureNotices.add(job.id);
+    toast(`一键生成失败：${job.error || '请查看失败原因'}`, 'err'); showFailure(job.id);
+  }
   function onReadError(message) { readProblem = message || '读取失败，可刷新重试'; renderJobs(); }
   function onGates(stages) {
     if (!scoped()) return;
@@ -365,6 +391,9 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   }
   $('#ov-refresh').onclick = () => { $('#ov-refresh').disabled = true; load(); refreshTasks(); refreshGates(); };
   async function loadAutoConfig() {
+    const outlineMode = $('#ov-auto-source').value === 'outline';
+    $('label[for="ov-auto-text"]').textContent = outlineMode ? '故事大纲（先扩写正文）' : '完整漫画正文';
+    $('#ov-auto-text').placeholder = outlineMode ? '输入故事大纲，或引用项目大纲' : '粘贴已完成的故事正文';
     const id = state.projectId, request = ++autoConfigRequest;
     const box = $('#ov-auto-config'); box.textContent = '正在读取配置…';
     const [providersResult, modelsResult, configResult, statusResult, tavernResult] = await Promise.allSettled([
@@ -380,7 +409,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     const params = cfg?.default_params || {}, fields = [['width','宽'],['height','高'],['steps','步数'],['cfg','CFG'],['sampler','采样器'],['scheduler','调度器'],['denoise','降噪']];
     const settings = fields.filter(([key]) => params[key] != null && params[key] !== '').map(([key, name]) => `${name} ${params[key]}`).join(' · ') || '使用工作流 / 每格设置';
     const bridge = tavernResult.status === 'fulfilled' ? (tavernResult.value.bridge_online ? '酒馆桥在线' : '酒馆桥未连接') : '酒馆桥状态读取失败';
-    const info = [ ['正文来源', `直接输入 · ${bridge}`], ['分格模型', modelName('S2')], ['分镜提示词模型', modelName('S3')],
+    const info = [ ['正文生成', $('#ov-auto-source').value === 'outline' ? `LLM 扩写 · ${modelName('S1')}` : `已有完整正文 · ${bridge}`], ['分格模型', modelName('S2')], ['分镜提示词模型', modelName('S3')],
       ['出图后端', cfg ? `${cfg.backend === 'local' ? '本机 ComfyUI' : '云端 ComfyUI'} · ${status ? status[cfg.backend]?.reachable ? '已连接' : '未连接' : '连接状态未知'}` : '配置读取失败'],
       ['工作流', cfg?.workflow_name || '未选择'], ['出图默认参数', settings + '；每格尺寸和提示词可覆盖'] ];
     box.innerHTML = info.map(([name, value]) => `<div><b>${esc(name)}</b>${esc(value)}</div>`).join('');
@@ -395,10 +424,12 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
       if (id !== state.projectId || epoch !== autoFormEpoch || $('#ov-auto-modal').classList.contains('hidden') || $('#ov-auto-text').value) return;
       if (typeof job.payload?.text === 'string') $('#ov-auto-text').value = job.payload.text;
       if (Number.isInteger(job.payload?.target_pages)) $('#ov-auto-pages').value = job.payload.target_pages;
+      $('#ov-auto-source').value = job.payload?.source || 'text';
     } catch { /* 用户仍可自己输入原正文并继续 */ }
   };
   $('#ov-auto-close').onclick = () => { autoConfigRequest++; autoFormEpoch++; $('#ov-auto-modal').classList.add('hidden'); $('#ov-auto-open').focus(); };
-  for (const selector of ['#ov-auto-text', '#ov-auto-pages']) $(selector).addEventListener('input', () => { autoFormEpoch++; });
+  for (const selector of ['#ov-auto-text', '#ov-auto-pages', '#ov-auto-source']) $(selector).addEventListener('input', () => { autoFormEpoch++; });
+  $('#ov-auto-source').onchange = loadAutoConfig;
   $('#ov-auto-outline').onclick = async () => {
     const id = state.projectId, button = $('#ov-auto-outline');
     if (!id || button.disabled || autoSubmitting) return;
@@ -411,7 +442,8 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
       if (!Number.isInteger(project.target_pages) || project.target_pages < 1 || project.target_pages > 100) return toast('项目目标页数需为 1 到 100，请先在项目详情调整。', 'err');
       $('#ov-auto-text').value = project.outline;
       $('#ov-auto-pages').value = project.target_pages;
-      autoDrafts.set(id, { text: project.outline, pages: String(project.target_pages) });
+      $('#ov-auto-source').value = 'outline'; loadAutoConfig();
+      autoDrafts.set(id, { text: project.outline, pages: String(project.target_pages), source: 'outline' });
       $('#ov-auto-text').focus();
       toast('已引用项目大纲和目标页数，可继续修改后确认。', 'ok');
     } catch (error) { if (id === state.projectId && epoch === autoFormEpoch) toast('读取项目大纲失败：' + error.message, 'err'); }
@@ -419,6 +451,20 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   };
   $('#ov-auto-modal').onclick = (event) => { if (event.target === $('#ov-auto-modal')) $('#ov-auto-close').click(); };
   $('#ov-auto-refresh').onclick = loadAutoConfig;
+  $('#ov-auto-resume').onclick = async () => {
+    const id = state.projectId;
+    if (!id || autoSubmitting) return;
+    autoSubmitting = true; renderJobs();
+    try {
+      const result = await api(`/api/projects/${id}/auto-comic/resume`, { method: 'POST', body: '{}' });
+      if (state.projectId !== id) return;
+      if (result.job) { accepted.set(result.job.id, result.job); jobs = [result.job, ...jobs.filter((job) => job.id !== result.job.id)]; jobsEpoch++; }
+      reportAutoFailure(result.job);
+      toast(`继续任务 #${result.job_id}，复用已完成成果。`, 'ok');
+      await refreshTasks(); scheduleRefresh();
+    } catch (error) { if (state.projectId === id) toast('续跑失败：' + error.message, 'err'); }
+    finally { autoSubmitting = false; if (state.projectId === id) renderJobs(); }
+  };
   $('#ov-auto-prose').onclick = () => { $('#ov-auto-close').click(); switchTab('novel'); };
   window.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !$('#ov-auto-modal').classList.contains('hidden')) $('#ov-auto-close').click(); });
   $('#ov-auto-start').onclick = async () => {
@@ -428,9 +474,10 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     if (!Number.isInteger(pages) || pages < 1 || pages > 100) return toast('目标页数请填写 1 到 100 的整数。', 'err');
     autoSubmitting = true; renderJobs();
     try {
-      const result = await api(`/api/projects/${id}/auto-comic`, { method: 'POST', body: JSON.stringify({ text, target_pages: pages }) });
+      const result = await api(`/api/projects/${id}/auto-comic`, { method: 'POST', body: JSON.stringify({ text, target_pages: pages, source: $('#ov-auto-source').value }) });
       if (state.projectId !== id) return;
       if (result.job) { accepted.set(result.job.id, result.job); jobs = [result.job, ...jobs.filter((job) => job.id !== result.job.id)]; jobsEpoch++; }
+      reportAutoFailure(result.job);
       $('#ov-auto-close').click();
       $('#ov-auto-status').textContent = `任务 #${result.job_id} 已提交`;
       toast(`一键生成任务 #${result.job_id} 已提交`, 'ok');
