@@ -27,16 +27,16 @@
 .comic-editor input[type=range]{padding:0;accent-color:var(--accent);height:20px}
 .comic-editor .ce-field input[type=color]{width:100%;height:30px;padding:2px}
 .ce-center{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
-.ce-topbar{display:flex;align-items:center;gap:6px;padding:7px 10px;min-height:43px;border-bottom:1px solid var(--line);background:#fff;flex-wrap:wrap}
-.ce-spacer{flex:1}.ce-page-info{color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:45%}
 .ce-zoom-control{display:flex;align-items:center;gap:4px;flex:none}.ce-zoom-control select{width:76px;padding:4px;font-size:11px}
 .ce-badge{font-size:10px;padding:2px 7px;border-radius:5px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
 .ce-badge.ok{color:var(--ok)}.ce-badge.warn{color:var(--warn)}.ce-badge.err{color:var(--err)}.ce-badge.run{color:var(--accent)}
 .ce-hint{font-size:11px;color:var(--muted);max-width:40ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ce-viewport{position:relative;flex:1;min-height:0;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#f5f6f8;touch-action:none}
 .ce-canvas{max-width:none;max-height:none;transform-origin:center;box-shadow:0 2px 12px #23354b18;background:#fff;touch-action:none;user-select:none}
-.ce-floating-actions{position:absolute;right:10px;bottom:10px;z-index:3;display:flex;gap:5px}
+.ce-floating-actions{position:absolute;right:10px;bottom:10px;z-index:3;display:flex;align-items:center;gap:5px;max-width:calc(100% - 20px);flex-wrap:wrap;justify-content:flex-end}
 .comic-editor .ce-floating-actions .sm{box-shadow:0 2px 7px #22304415;display:flex;gap:5px;align-items:center}
+.comic-editor .ce-floating-actions .ce-badge{background:#fff;box-shadow:0 2px 7px #22304415}
+.comic-editor .ce-floating-actions .ce-hint{display:none}
 .comic-editor .ce-floating-actions .sm[aria-pressed=true]{background:#edf3ff;color:var(--accent);border-color:#b6ccff}
 .ce-side{position:absolute;right:10px;bottom:52px;z-index:5;background:white;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 30px #263c5d22;padding:10px;width:286px;max-height:min(460px,75%);overflow:auto;scrollbar-width:thin}
 .ce-side[hidden]{display:none}.ce-side-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:12px}
@@ -66,7 +66,7 @@
 @media(max-width:700px){
  .ce-root{grid-template-columns:44px minmax(0,1fr)}.ce-tools{padding:4px}.ce-tool{justify-content:center;padding:5px 2px;min-height:32px}.ce-tool-label,.ce-tool-key,.ce-tools .ce-section-title{display:none}.ce-tool-group{padding:5px 0;gap:3px}
  .ce-tools .ce-field{font-size:9px}.ce-tools select{padding:4px 1px;font-size:9px}.ce-tool-icon{width:18px;height:18px}
- .ce-topbar{padding:5px;gap:4px;min-height:37px}.ce-page-info{font-size:9px;max-width:30%}.ce-topbar .ce-badge,.ce-topbar .ce-hint{display:none}.ce-zoom-control select{width:60px}
+ .ce-zoom-control select{width:60px}
  .ce-side{right:5px;bottom:48px;width:min(280px,calc(100% - 54px));max-height:65%}.ce-preset-grid,.ce-gallery{grid-template-columns:repeat(3,minmax(0,1fr))}.ce-modal-grid{gap:8px}.comic-editor .ce-modal .ce-field{display:flex}
  .ce-floating-actions{right:6px;bottom:6px}.comic-editor .ce-floating-actions .sm{font-size:11px;padding:5px 7px}
 }

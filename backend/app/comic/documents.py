@@ -82,7 +82,10 @@ def load_for_edit(session: Session, project_id: int, page_ref: str) -> tuple[dic
             raise DocumentNotFound(f"旧存档无法转换：{exc}") from exc
         return document, {
             "source": "legacy_med_doc",
-            "version": legacy.version,
+            # version 必须是“editor_doc 的当前版本”：这里还没有 editor_doc，
+            # 必须报 0，否则前端把旧存档版本当保存基准，第一次保存就会撞 409。
+            "version": 0,
+            "legacy_version": legacy.version,
             "artifact_id": legacy.id,
             "page_image_id": None,
             "png_url": f"/api/artifacts/{legacy.id}/file" if legacy.path else "",

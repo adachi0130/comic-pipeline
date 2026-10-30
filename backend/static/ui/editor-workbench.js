@@ -4,7 +4,26 @@ import { createComicEditor } from './editor/comicEditor.mjs';
 export function createEditorWorkbench({ state, api, $, toast, switchTab, loadCompose, refreshGates, pageLabel, editPanel, chooseTemplate }) {
   let session = 0, pagesRequest = 0, instance = null;
   const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const editorApi = (path, options = {}) => api(path, { ...options, ...(options.body ? { body: JSON.stringify(options.body) } : {}) });
+  // 结构化错误：409（保存冲突）等要把状态码与 detail 传给编辑器，供其弹出“覆盖/保留”选择；
+  // app.js 的 api 会把对象 detail 压成 "[object Object]" 字符串，编辑器需要更完整的信息。
+  const editorApi = async (path, options = {}) => {
+    const response = await fetch(path, {
+      method: options.method || 'GET',
+      headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    });
+    const text = await response.text();
+    let payload = null;
+    try { payload = text ? JSON.parse(text) : null; } catch { payload = null; }
+    if (!response.ok) {
+      const detail = payload?.detail ?? payload?.error ?? text ?? `请求失败（${response.status}）`;
+      const error = new Error(typeof detail === 'string' ? detail : (detail?.message || JSON.stringify(detail)));
+      error.status = response.status;
+      error.detail = typeof detail === 'object' && detail ? detail : null;
+      throw error;
+    }
+    return payload;
+  };
   const badgeOf = (p) => p.editor_doc_id ? '已保存' : p.med_doc_id ? '旧存档' : p.ready ? '图片就绪' : '待出图';
   const current = (key, projectId) => session === key && state.projectId === projectId;
 
@@ -30,7 +49,9 @@ export function createEditorWorkbench({ state, api, $, toast, switchTab, loadCom
     $('#ed-page').innerHTML = '<option value="">选择漫画页</option>' + pages.map((p) => `<option value="${esc(p.page_ref)}">${esc(pageLabel(p.page_ref))} · ${esc(badgeOf(p))}</option>`).join('');
     $('#ed-page').value = state.editor?.pageRef || '';
     $('#ed-page-count').textContent = `${pages.length} 页`;
-    $('#ed-project-title').textContent = state.project?.title || '漫画编辑器';
+    // 顶栏已撤掉，项目名改为悬浮在状态徽标上查看（悬停提示）
+    const statePill = $('#ed-state');
+    if (statePill) statePill.title = state.project?.title || '漫画编辑器';
   }
   async function loadPages() {
     const projectId = state.projectId, request = ++pagesRequest;
@@ -97,7 +118,6 @@ export function createEditorWorkbench({ state, api, $, toast, switchTab, loadCom
   $('#ed-page').addEventListener('change', (e) => { if (e.target.value) open(e.target.value); });
   $('#ed-pages').addEventListener('click', (e) => { const p = e.target.closest('[data-editor-page]'); if (p) open(p.dataset.editorPage); });
   $('#ed-back').addEventListener('click', () => switchTab('compose'));
-  $('#ed-overview').addEventListener('click', () => switchTab('pipeline'));
   $('#ed-export').addEventListener('click', () => switchTab('exports'));
   $('#open-editor-workbench').addEventListener('click', () => switchTab('editor'));
   $('#ed-expand').addEventListener('click', () => {

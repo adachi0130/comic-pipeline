@@ -107,22 +107,21 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
   const refs = { svg: null, viewport: null, holder: null };
 
   // ------------------------------------------------------------ DOM 骨架
+  // 顶栏已按用户要求移除：状态/缩放/保存收进画布右下浮动区，不再占用画布上方空间。
   host.innerHTML = `
     <div class="ce-root">
       <aside class="ce-tools" data-area="tools"></aside>
       <div class="ce-center">
-        <div class="ce-topbar">
-          <span class="ce-badge" data-area="status">未加载</span>
-          <span class="ce-hint" data-area="hint"></span>
-          <span class="ce-page-info" data-area="page-info"></span>
-          <span class="ce-spacer"></span>
-          <label class="ce-zoom-control"><select data-opt="zoom" aria-label="画布缩放"></select></label>
-          <button class="sm" data-act="fit" title="适应窗口 (Ctrl+0)">适应</button>
-          <button class="sm primary" data-act="save" title="保存 (Ctrl+S)">保存漫画页</button>
-        </div>
         <div class="ce-viewport" data-area="viewport">
           <svg class="ce-canvas" data-area="canvas" role="img" aria-label="漫画页画布"></svg>
-          <div class="ce-floating-actions"><button class="sm" data-act="pin-frames" aria-pressed="false" title="固定画框，防止误改版式"><svg class="ce-tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3h8l-2 6 4 4v2H6v-2l4-4ZM12 15v7"/></svg><span data-pin-label>固定画框</span></button><button class="sm" data-act="layers-toggle" aria-pressed="false" title="图层面板">▱ 图层</button></div>
+          <div class="ce-floating-actions">
+            <span class="ce-badge" data-area="status" title="">未加载</span>
+            <span class="ce-hint" data-area="hint"></span>
+            <label class="ce-zoom-control"><select data-opt="zoom" aria-label="画布缩放"></select></label>
+            <button class="sm" data-act="fit" title="适应窗口 (Ctrl+0)">适应</button>
+            <button class="sm primary" data-act="save" title="保存 (Ctrl+S)">保存漫画页</button>
+            <button class="sm" data-act="pin-frames" aria-pressed="false" title="固定画框，防止误改版式"><svg class="ce-tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3h8l-2 6 4 4v2H6v-2l4-4ZM12 15v7"/></svg><span data-pin-label>固定画框</span></button><button class="sm" data-act="layers-toggle" aria-pressed="false" title="图层面板">▱ 图层</button>
+          </div>
         </div>
       </div>
       <aside class="ce-side" hidden data-area="side"></aside>
@@ -157,6 +156,8 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
   }
   function notice(text, kind = 'info') {
     hintEl.textContent = text || '';
+    // 顶栏已移除：详细消息浮在状态徽标上查看（主页面另有弹窗提示）
+    if (text) statusEl.title = text;
     onNotice?.(text, kind);
   }
   function markDirty() {
@@ -254,7 +255,8 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
     pinButton.setAttribute('aria-pressed',String(!!d.framesLocked));
     pinButton.title=d.framesLocked?'画框已固定，点击解除；仍可调整图片构图和编辑文字':'固定画框，防止移动、切割或删除';
     $('[data-pin-label]').textContent=d.framesLocked?'画框已固定':'固定画框';
-    $('[data-area="page-info"]').textContent = `${Math.round(d.width)} × ${Math.round(d.height)} px`;
+    // 页面尺寸放进状态徽标的悬停提示，不再单独占一条顶栏。
+    statusEl.title = `${Math.round(d.width)} × ${Math.round(d.height)} px${state.templateId ? ' · ' + state.templateId : ''}`;
     const zoomSelect = $('[data-opt="zoom"]');
     zoomSelect.innerHTML = [...new Set([.25,.5,.75,1,1.5,2,3,4,5,state.zoom])].sort((a,b)=>a-b).map((value)=>`<option value="${value}" ${value===state.zoom?'selected':''}>${value===1?'适应':Math.round(value*100)+'%'}</option>`).join('');
   }
@@ -1366,10 +1368,13 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
   });
   listen(svgEl, 'dragstart', (event) => event.preventDefault());
 
+  // 滚轮行为（用户要求：固定画面，不能一滚就缩放）：
+  // - Ctrl/Cmd + 滚轮：以光标为中心缩放（刻意的缩放动作）；
+  // - 普通滚轮：只平移画布，画面大小保持不变。
   listen(viewportEl, 'wheel', (event) => {
     if (!doc()) return;
-    if (!event.shiftKey) {
-      event.preventDefault();
+    event.preventDefault();
+    if (event.ctrlKey || event.metaKey) {
       const next = Math.max(0.2, Math.min(5, state.zoom * Math.exp(-event.deltaY * 0.002)));
       const bounds = viewportEl.getBoundingClientRect();
       const x = event.clientX - bounds.left - bounds.width / 2;
@@ -1380,8 +1385,6 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
       renderCanvas();
       return;
     }
-    // 普通滚轮：平移画布，避免在长页面里滚不动
-    event.preventDefault();
     state.view = { x: state.view.x - event.deltaX, y: state.view.y - event.deltaY };
     renderCanvas();
   }, { passive: false });
