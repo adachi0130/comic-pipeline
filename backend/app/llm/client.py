@@ -82,9 +82,11 @@ class LLMClient:
         if json_mode:
             body["response_format"] = {"type": "json_object"}
         # 供应商额外参数（如 top_p、enable_thinking 等）
-        for k in ("top_p", "frequency_penalty", "presence_penalty", "stop"):
+        for k in ("top_p", "frequency_penalty", "presence_penalty", "stop", "enable_thinking", "thinking", "reasoning_effort"):
             if k in p.extra:
                 body[k] = p.extra[k]
+        if max_tokens is None and p.extra.get('max_tokens') is not None:
+            body['max_tokens'] = int(p.extra['max_tokens'])
         if extra_body:
             body.update(extra_body)
 

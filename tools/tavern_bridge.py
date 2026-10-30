@@ -70,12 +70,16 @@ def main() -> int:
                         return s;
                     }"""
                 )
-                # 一次性落位：打开内容最多的真实会话。
+                # 优先保持酒馆默认已打开的会话；未选中时才回退到内容最多的真实会话。
                 # 先把目标会话写进角色卡的 chat 字段（内存）再选中，避免酒馆新建空会话。
                 settled = page.evaluate(
                     r"""async () => {
                         const ctx = window.SillyTavern?.getContext?.();
                         if (!ctx) return { ok: false, why: 'no ctx' };
+                        if (ctx.chatId && ctx.characterId != null && (ctx.chat || []).length) {
+                            return { ok: true, kept_default: true, character: ctx.characters?.[ctx.characterId]?.name,
+                                     chat: String(ctx.chatId), msgs: ctx.chat.length };
+                        }
                         try {
                             const res = await fetch('/api/chats/recent', {
                                 method: 'POST', headers: ctx.getRequestHeaders(),

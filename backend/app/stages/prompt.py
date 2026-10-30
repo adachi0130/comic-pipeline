@@ -134,6 +134,11 @@ def _merge_loras(*groups: list[dict] | None) -> list[dict]:
 _BASE_LONG_SIDE = 1216
 
 
+def _geometry_panels(geometry: dict) -> dict[str, dict]:
+    """新快照按业务阅读顺序，旧快照维持原 index，避免重启时改写旧项目尺寸。"""
+    return {str(panel.get('order') or panel.get('index')): panel for panel in geometry.get('panels') or []}
+
+
 def _size_from_geometry(gpan: dict, canvas: list | None) -> tuple[int, int] | None:
     """按该格在页面里的画框（几何）算出建议出图宽高，长边取 _BASE_LONG_SIDE。
 
@@ -186,7 +191,7 @@ def backfill_panel_sizes(session: Session) -> int:
             continue
         page = A.current(session, art.project_id, ArtifactKind.PAGE_SCRIPT.value, f"page:{page_no}")
         geom = ((page.payload or {}).get("geometry") if page is not None else None) or {}
-        gpan = next((gp for gp in geom.get("panels") or [] if str(gp.get("index")) == order_part), None)
+        gpan = _geometry_panels(geom).get(order_part)
         size = _size_from_geometry(gpan or {}, geom.get("canvas"))
         if not size:
             continue
@@ -270,7 +275,7 @@ def handle(session: Session, job: Job) -> dict:
         job.message = f"正在生成第 {page.ref.split(':', 1)[-1]} 页提示词，等待模型返回"
         session.commit()
         geom = page_payload.get("geometry") or {}
-        geometry_by_order = {p.get("index"): p for p in (geom.get("panels") or [])}
+        geometry_by_order = _geometry_panels(geom)
         user = promptlib.render(
             user_tpl,
             {
@@ -316,7 +321,7 @@ def handle(session: Session, job: Job) -> dict:
             loras = _merge_loras(preset_loras, default_loras, char_loras, item.loras)
 
             # 尺寸：按该格排版（模板几何）算出，保证与画框一致；几何缺失才退回模型给的
-            gpan = geometry_by_order.get(order) or {}
+            gpan = geometry_by_order.get(str(order)) or {}
             size = _size_from_geometry(gpan, geom.get("canvas"))
             width = size[0] if size else item.width
             height = size[1] if size else item.height

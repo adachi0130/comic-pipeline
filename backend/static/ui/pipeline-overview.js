@@ -19,7 +19,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   const matching = (id, ref) => jobs.find((job) => activeJob(job) && jobStage(job)?.id === id && (!job.ref || !ref || job.ref === ref));
 
   function reset() {
-    if (projectId) autoDrafts.set(projectId, { text: $('#ov-auto-text').value, pages: $('#ov-auto-pages').value, source: $('#ov-auto-source').value, presets: { ...presetChoices } });
+    if (projectId) autoDrafts.set(projectId, { text: $('#ov-auto-text').value, pages: $('#ov-auto-pages').value, source: $('#ov-auto-source').value, writer: $('#ov-auto-writer').value, presets: { ...presetChoices } });
     presetCatalogue = null; presetChoices = { positive: 'auto', negative: 'auto' };
     request++; projectId = null; board = null; jobs = []; stage = ''; artifactSignature = ''; historyOpen = false; accepted.clear();
     clearTimeout(refreshTimer);
@@ -28,7 +28,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     pageFilter = 'all'; pageQuery = ''; proseOpen = undefined;
     $('#ov-page-query').value = ''; $('#ov-page-tools').classList.add('hidden');
     $('#ov-auto-text').value = ''; $('#ov-auto-pages').value = '1'; $('#ov-auto-status').textContent = '';
-    $('#ov-auto-source').value = 'outline'; $('#ov-auto-resume').classList.add('hidden'); $('#ov-auto-notice').classList.add('hidden');
+    $('#ov-auto-source').value = 'outline'; $('#ov-auto-writer').value='llm'; $('#ov-auto-resume').classList.add('hidden'); $('#ov-auto-notice').classList.add('hidden');
     autoConfigRequest++; autoFormEpoch++; $('#ov-auto-modal').classList.add('hidden');
     for (const map of [targets, targetMissing, counts]) for (const key of Object.keys(map)) delete map[key];
     $('#ov-summary').innerHTML = ''; $('#ov-steps').innerHTML = ''; $('#ov-action').innerHTML = '';
@@ -39,7 +39,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   }
   async function load({ quiet = false } = {}) {
     const id = state.projectId;
-    if (id !== projectId) { reset(); projectId = id; const draft = autoDrafts.get(id); if (draft) { $('#ov-auto-text').value = draft.text; $('#ov-auto-pages').value = draft.pages; $('#ov-auto-source').value = draft.source || 'text'; presetChoices = draft.presets || presetChoices; } else if (state.project?.target_pages) $('#ov-auto-pages').value = state.project.target_pages; }
+    if (id !== projectId) { reset(); projectId = id; const draft = autoDrafts.get(id); if (draft) { $('#ov-auto-text').value = draft.text; $('#ov-auto-pages').value = draft.pages; $('#ov-auto-source').value = draft.source || 'text'; $('#ov-auto-writer').value=draft.writer || 'llm'; presetChoices = draft.presets || presetChoices; } else if (state.project?.target_pages) { $('#ov-auto-pages').value = state.project.target_pages; $('#ov-auto-writer').value=state.project.gen_params?.prose_writer || 'llm'; } }
     if (!id) { reset(); return; }
     const version = ++request, epoch = jobsEpoch;
     if (!quiet && !board) $('#ov-preview').innerHTML = '<div class="empty">正在读取漫画产物…</div>';
@@ -394,6 +394,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   $('#ov-refresh').onclick = () => { $('#ov-refresh').disabled = true; load(); refreshTasks(); refreshGates(); };
   async function loadAutoConfig() {
     const outlineMode = $('#ov-auto-source').value === 'outline';
+    $('#ov-auto-writer-wrap').classList.toggle('hidden',!outlineMode);
     $('label[for="ov-auto-text"]').textContent = outlineMode ? '故事大纲（先扩写正文）' : '完整漫画正文';
     $('#ov-auto-text').placeholder = outlineMode ? '输入故事大纲，或引用项目大纲' : '粘贴已完成的故事正文';
     const id = state.projectId, request = ++autoConfigRequest;
@@ -413,7 +414,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     const params = cfg?.default_params || {}, fields = [['width','宽'],['height','高'],['steps','步数'],['cfg','CFG'],['sampler','采样器'],['scheduler','调度器'],['denoise','降噪']];
     const settings = fields.filter(([key]) => params[key] != null && params[key] !== '').map(([key, name]) => `${name} ${params[key]}`).join(' · ') || '使用工作流 / 每格设置';
     const bridge = tavernResult.status === 'fulfilled' ? (tavernResult.value.bridge_online ? '酒馆桥在线' : '酒馆桥未连接') : '酒馆桥状态读取失败';
-    const info = [ ['正文生成', $('#ov-auto-source').value === 'outline' ? `LLM 扩写 · ${modelName('S1')}` : `已有完整正文 · ${bridge}`], ['分格模型', modelName('S2')], ['分镜提示词模型', modelName('S3')],
+    const info = [ ['正文生成', $('#ov-auto-source').value === 'outline' ? ($('#ov-auto-writer').value==='tavern'?`酒馆默认对话 · ${tavernResult.value?.context?.character_name || '未选择角色'} · ${bridge}`:`LLM 扩写 · ${modelName('S1')}`) : `已有完整正文 · ${bridge}`], ['分格模型', modelName('S2')], ['分镜提示词模型', modelName('S3')],
       ['出图后端', cfg ? `${cfg.backend === 'local' ? '本机 ComfyUI' : '云端 ComfyUI'} · ${status ? status[cfg.backend]?.reachable ? '已连接' : '未连接' : '连接状态未知'}` : '配置读取失败'],
       ['工作流', cfg?.workflow_name || '未选择'], ['出图默认参数', settings + '；每格尺寸和提示词可覆盖'] ];
     const destinations = [['settings', 'providers'], ['settings', 'providers'], ['settings', 'providers'], ['settings', 'comfy'], ['settings', 'comfy'], ['settings', 'comfy']];
@@ -438,7 +439,8 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
   $('#ov-auto-edit-presets').onclick = () => { $('#ov-auto-close').click(); editConfiguration('assets', 'presets'); };
   $('#ov-auto-open').onclick = async () => {
     if (!state.projectId) return toast('先选择项目', 'err');
-    const id = state.projectId, epoch = ++autoFormEpoch, last = jobs.find((job) => job.kind === 'auto_comic' && ['failed', 'cancelled'].includes(job.status));
+    const id = state.projectId, epoch = ++autoFormEpoch, latest = jobs.find((job) => job.kind === 'auto_comic');
+    const last = latest && ['failed', 'cancelled'].includes(latest.status) ? latest : null;
     $('#ov-auto-modal').classList.remove('hidden'); loadAutoConfig(); $('#ov-auto-close').focus();
     if (!last || $('#ov-auto-text').value) return;
     try {
@@ -446,13 +448,14 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
       if (id !== state.projectId || epoch !== autoFormEpoch || $('#ov-auto-modal').classList.contains('hidden') || $('#ov-auto-text').value) return;
       if (typeof job.payload?.text === 'string') $('#ov-auto-text').value = job.payload.text;
       if (Number.isInteger(job.payload?.target_pages)) $('#ov-auto-pages').value = job.payload.target_pages;
-      $('#ov-auto-source').value = job.payload?.source || 'text';
+      $('#ov-auto-source').value = job.payload?.source || 'text'; $('#ov-auto-writer').value=job.payload?.writer || 'llm'; loadAutoConfig();
       if (job.payload?.prompt_presets) { for (const kind of ['positive', 'negative']) presetChoices[kind] = String(job.payload.prompt_presets[kind]?.id || 0); renderAutoPresets(); }
     } catch { /* 用户仍可自己输入原正文并继续 */ }
   };
   $('#ov-auto-close').onclick = () => { autoConfigRequest++; autoFormEpoch++; $('#ov-auto-modal').classList.add('hidden'); $('#ov-auto-open').focus(); };
-  for (const selector of ['#ov-auto-text', '#ov-auto-pages', '#ov-auto-source']) $(selector).addEventListener('input', () => { autoFormEpoch++; });
+  for (const selector of ['#ov-auto-text', '#ov-auto-pages', '#ov-auto-source', '#ov-auto-writer']) $(selector).addEventListener('input', () => { autoFormEpoch++; });
   $('#ov-auto-source').onchange = loadAutoConfig;
+  $('#ov-auto-writer').onchange = loadAutoConfig;
   $('#ov-auto-outline').onclick = async () => {
     const id = state.projectId, button = $('#ov-auto-outline');
     if (!id || button.disabled || autoSubmitting) return;
@@ -466,7 +469,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
       $('#ov-auto-text').value = project.outline;
       $('#ov-auto-pages').value = project.target_pages;
       $('#ov-auto-source').value = 'outline'; loadAutoConfig();
-      autoDrafts.set(id, { text: project.outline, pages: String(project.target_pages), source: 'outline', presets: { ...presetChoices } });
+      autoDrafts.set(id, { text: project.outline, pages: String(project.target_pages), source: 'outline', writer: $('#ov-auto-writer').value, presets: { ...presetChoices } });
       $('#ov-auto-text').focus();
       toast('已引用项目大纲和目标页数，可继续修改后确认。', 'ok');
     } catch (error) { if (id === state.projectId && epoch === autoFormEpoch) toast('读取项目大纲失败：' + error.message, 'err'); }
@@ -499,7 +502,7 @@ export function createPipelineOverview({ state, api, $, esc, pill, toast, switch
     autoSubmitting = true; renderJobs();
     try {
       const preset_ids = Object.fromEntries(Object.entries(presetChoices).map(([kind, value]) => [kind, value === 'auto' ? null : Number(value)]));
-      const result = await api(`/api/projects/${id}/auto-comic`, { method: 'POST', body: JSON.stringify({ text, target_pages: pages, source: $('#ov-auto-source').value, preset_ids }) });
+      const result = await api(`/api/projects/${id}/auto-comic`, { method: 'POST', body: JSON.stringify({ text, target_pages: pages, source: $('#ov-auto-source').value, writer: $('#ov-auto-writer').value, preset_ids }) });
       if (state.projectId !== id) return;
       if (result.job) { accepted.set(result.job.id, result.job); jobs = [result.job, ...jobs.filter((job) => job.id !== result.job.id)]; jobsEpoch++; }
       reportAutoFailure(result.job);

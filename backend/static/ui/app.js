@@ -11,7 +11,7 @@ import { createEditFeedback } from './edit-feedback.js';
 import { createProviderManager } from './provider-manager.js?v=93';
 import { createComfySettings } from './comfy-settings.js';
 import { createImageWorkbench } from './image-workbench.js';
-import { createPipelineOverview } from './pipeline-overview.js?v=93';
+import { createPipelineOverview } from './pipeline-overview.js?v=96';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);

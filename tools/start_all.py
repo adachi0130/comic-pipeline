@@ -96,7 +96,7 @@ def main() -> int:
             print("桥已启动（需要酒馆在 :8000 运行）")
         print("\n全部就绪：")
         print("  前端  http://127.0.0.1:8770/ui/")
-        print("  编辑器 http://127.0.0.1:8770/editor/")
+        print("  编辑器 http://127.0.0.1:8770/ui/?tab=editor")
         print("停止：在本终端按 Ctrl+C")
         while all(p.poll() is None for p in procs):
             time.sleep(2)

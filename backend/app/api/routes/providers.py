@@ -135,9 +135,11 @@ def test_provider(provider_id: int, session: Session = Depends(get_session)) -> 
         res = client.chat(
             [{"role": "user", "content": "只回复两个字：可用"}],
             temperature=0.0,
-            max_tokens=16,
+            max_tokens=256,
         )
-        return {"ok": True, "reply": res.text.strip(), "duration_ms": res.duration_ms}
+        reply = res.text.strip()
+        return {"ok": bool(reply), "reply": reply, "duration_ms": res.duration_ms,
+                **({"error": "接口已响应，但没有返回正文；请检查输出长度或思考模式配置。"} if not reply else {})}
     except LLMError as e:
         return {"ok": False, "error": str(e)}
 

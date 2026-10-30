@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -54,10 +55,14 @@ class ComfyClient:
 
     def _get(self, path: str, **kw: Any) -> httpx.Response:
         kw["headers"] = self._headers(kw.get("headers"))
+        if urlsplit(self.base_url).hostname in ('127.0.0.1', 'localhost', '::1'):
+            kw.setdefault('trust_env', False)
         return httpx.get(f"{self.base_url}{path}", **kw)
 
     def _post(self, path: str, **kw: Any) -> httpx.Response:
         kw["headers"] = self._headers(kw.get("headers"))
+        if urlsplit(self.base_url).hostname in ('127.0.0.1', 'localhost', '::1'):
+            kw.setdefault('trust_env', False)
         return httpx.post(f"{self.base_url}{path}", **kw)
 
     # ---------------- 探测 ----------------

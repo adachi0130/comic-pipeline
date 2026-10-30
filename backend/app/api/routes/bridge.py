@@ -205,7 +205,7 @@ def claim(session: Session = Depends(get_session)) -> dict:
             "context_tail": payload.get("context_tail", ""),
             "title": (project.title if project else "") or "",
             "outline": (project.outline if project else "") or "",
-            "tavern_binding": (project.tavern_binding if project else {}) or {},
+            "tavern_binding": {} if payload.get('use_default_chat') else (project.tavern_binding if project else {}) or {},
         })
     else:  # tavern 操作
         task.update({
@@ -290,6 +290,13 @@ def result(body: dict, session: Session = Depends(get_session)) -> dict:
         raise HTTPException(404, "作业不存在")
     if job.cancel_requested:
         return _finish_cancelled(session, job)
+    if job.status == JobStatus.DONE.value and (job.result or {}).get('artifact_id'):
+        return {"ok": True, **job.result}
+    auto_payload = job.payload or {}
+    if auto_payload.get('auto_parent_job_id'):
+        parent = session.get(Job, auto_payload['auto_parent_job_id'])
+        if not parent or parent.cancel_requested or parent.status in ('failed', 'cancelled'):
+            return _finish_cancelled(session, job)
 
     # 非正文任务（例如切换对话）或空文本：只更新作业状态，**不创建正文产物**。
     # 否则会出现 project_id 为空却要写 prose 的错误（曾经导致 500 循环）。
@@ -301,7 +308,7 @@ def result(body: dict, session: Session = Depends(get_session)) -> dict:
         return {"ok": True, "skipped": True}
 
     project = session.get(Project, job.project_id) if job.project_id else None
-    auto = bool(project and project.review_mode == "auto")
+    auto = bool(project and project.review_mode == "auto") or auto_payload.get('auto_approve') is True
     art = prose.append_segment(
         session,
         project_id=job.project_id,
@@ -311,6 +318,9 @@ def result(body: dict, session: Session = Depends(get_session)) -> dict:
         status="approved" if auto else "review",
         receipt=body.get("receipt") or {},
     )
+    if auto_payload.get('auto_run'):
+        art.payload = {**art.payload, 'auto_run': auto_payload['auto_run'],
+                       'source_text': auto_payload.get('source_text', ''), 'mode': 'tavern'}
 
     job.status = JobStatus.DONE.value
     job.result = {"artifact_id": art.id, "ref": art.ref, "chars": len(text)}

@@ -53,7 +53,8 @@ def start(max_workers: int = 4) -> None:
         session.close()
     _scheduler = BackgroundScheduler(
         executors={"default": ApsThreadPool(max_workers=max_workers)},
-        job_defaults={"coalesce": True, "max_instances": 1},
+        # 等待其他作业占用的线程不是错过执行时间；不能让默认 1 秒宽限期丢掉排队出图。
+        job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": None},
     )
     _scheduler.start()
     log.info("作业队列已启动（workers=%s）", max_workers)

@@ -265,7 +265,10 @@ def test_power_lora_loader() -> None:
     assert inp["lora_1"] == {"on": True, "lora": "角色/C.safetensors", "strength": 1.2, "strengthTwo": None}, inp["lora_1"]
     # 多余槽关闭，但保留作者原来的 lora 名
     assert inp["lora_2"]["on"] is False and inp["lora_2"]["lora"] == "画风/B.safetensors", inp["lora_2"]
-    print("  [ok] Power Lora Loader：对象式槽按序写入，多余槽关掉且保留名字")
+    expanded = apply(wf, p, {}, loras=[{'name':f'风格{i}.safetensors','weight':.5} for i in range(3)])
+    assert expanded['9']['inputs']['lora_3']['lora']=='风格2.safetensors'
+    assert len(st.slots)==2, '每次请求扩槽不应修改缓存的原映射'
+    print("  [ok] Power Lora Loader：对象式槽按序写入、动态扩槽且保留原映射")
 
 
 if __name__ == "__main__":

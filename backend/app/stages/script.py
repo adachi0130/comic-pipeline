@@ -19,6 +19,7 @@ from ..llm import LLMClient, LLMLogContext
 from ..models import ArtifactKind, ArtifactStatus, Job, Project, Technique, Template
 from ..schemas import Storyboard
 from . import promptlib, prose
+from ..comic.templates import geometry_for
 
 KIND = "script"
 
@@ -111,7 +112,7 @@ def handle(session: Session, job: Job) -> dict:
                 project_id=project_id,
                 kind=ArtifactKind.PAGE_SCRIPT.value,
                 ref=ref,
-                payload={**page.model_dump(), "geometry": tpl.geometry, **({"auto_run": payload["auto_run"]} if payload.get("auto_run") else {})},
+                payload={**page.model_dump(), "geometry": geometry_for(tpl), **({"auto_run": payload["auto_run"]} if payload.get("auto_run") else {})},
                 status=ArtifactStatus.REVIEW.value,
             )
             if project.review_mode == "auto" or payload.get("auto_approve"):

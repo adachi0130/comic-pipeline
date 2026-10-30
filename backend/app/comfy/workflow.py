@@ -575,14 +575,20 @@ def apply_lora_stacker(
     - ``flat``：第 i 个 LoRA → ``lora_0i`` / ``strength_0i``，空槽填 ``empty_token``
     - ``dict``：第 i 个槽写 ``{"on": true, "lora": name, "strength": w}``，多余槽 ``{"on": false, ...}``
 
-    数量超过槽位时只取前 N 个（调用方提示）。
+    Power LoRA 的动态槽位按需扩展；固定容量堆加载器超额时报错，避免静默丢掉角色 LoRA。
     """
     node = wf.get(str(stacker.node_id))
     if node is None:
         raise WorkflowError(f"LoRA 堆加载节点不存在：{stacker.node_id}")
     inputs = node.setdefault("inputs", {})
-
-    for i, slot in enumerate(stacker.slots):
+    slots = list(stacker.slots)
+    if len(loras) > len(slots):
+        if stacker.style == 'dict' and stacker.class_type == 'Power Lora Loader (rgthree)' and all(re.fullmatch(r'lora_\d+', slot.name_input) for slot in slots):
+            start = max((int(slot.name_input.split('_')[-1]) for slot in slots), default=0)
+            slots.extend(LoraStackSlot(name_input=f'lora_{index}') for index in range(start + 1, start + len(loras) - len(slots) + 1))
+        else:
+            raise WorkflowError(f'LoRA 堆加载器仅有 {len(slots)} 个槽位，但请求了 {len(loras)} 个；请扩展工作流槽位。')
+    for i, slot in enumerate(slots):
         has = i < len(loras)
         if stacker.style == "dict":
             if has:

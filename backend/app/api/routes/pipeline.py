@@ -6,6 +6,7 @@ from threading import Lock
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
+from ...comic.templates import geometry_for
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
@@ -73,7 +74,7 @@ def page_detail(project_id: int, page_ref: str, session: Session = Depends(get_s
         "version": art.version,
         "template_id": payload.get("template_id"),
         "template": ({"id": tpl.id, "dir": tpl.dir, "panels_count": tpl.panels_count,
-                      "layout_desc": tpl.layout_desc, "geometry": tpl.geometry} if tpl else None),
+                      "layout_desc": tpl.layout_desc, "geometry": geometry_for(tpl)} if tpl else None),
         "panels": payload.get("panels", []),
         "prompts": prompts,
     }
@@ -109,7 +110,7 @@ def change_template(project_id: int, page_ref: str, body: dict, session: Session
                  "action": "", "scene_desc": "", "dialogue": "", "bubble_type": "none", "technique": []}
         panels.append(p)
 
-    new_payload = {**(art.payload or {}), "template_id": tpl.id, "panels": panels, "geometry": tpl.geometry}
+    new_payload = {**(art.payload or {}), "template_id": tpl.id, "panels": panels, "geometry": geometry_for(tpl)}
     new = A.create(session, project_id=project_id, kind=ArtifactKind.PAGE_SCRIPT.value, ref=page_ref,
                    payload=new_payload, status=ArtifactStatus.REVIEW.value)
     session.commit()
@@ -282,7 +283,7 @@ def create_page(project_id: int, body: dict, session: Session = Depends(get_sess
     ]
     A.create(session, project_id=project_id, kind=ArtifactKind.PAGE_SCRIPT.value, ref=ref,
              payload={"scene_id": 0, "page_index": no, "template_id": tpl.id,
-                      "panels": panels, "geometry": tpl.geometry},
+                      "panels": panels, "geometry": geometry_for(tpl)},
              status=ArtifactStatus.REVIEW.value)
     session.commit()
     return {"ok": True, "page_ref": ref, "template_id": tpl.id, "panels_count": tpl.panels_count}
@@ -735,7 +736,7 @@ def auto_page(project_id: int, page_ref: str, body: dict, session: Session = Dep
 
     art = A.create(session, project_id=project_id, kind=ArtifactKind.PAGE_SCRIPT.value, ref=page_ref,
                    payload={"scene_id": 0, "page_index": no, "template_id": tpl.id,
-                            "panels": panels, "geometry": tpl.geometry, "source": "ai"},
+                            "panels": panels, "geometry": geometry_for(tpl), "source": "ai"},
                    status=ArtifactStatus.REVIEW.value)
     session.commit()
     return {"ok": True, "page_ref": page_ref, "template_id": tpl.id,
@@ -817,6 +818,7 @@ def auto_comic(project_id: int, body: dict, session: Session = Depends(get_sessi
     text = body.get('text')
     target = body.get('target_pages')
     source = body.get('source', 'text')
+    writer = body.get('writer', 'llm')
     choices = body.get('preset_ids')
     if choices is not None and (not isinstance(choices, dict) or any(key not in ('positive', 'negative') for key in choices)):
         raise HTTPException(400, '正负面预设选择无效。')
@@ -826,6 +828,8 @@ def auto_comic(project_id: int, body: dict, session: Session = Depends(get_sessi
         return choices is None or all(value is None or value == ((saved or {}).get(kind, {}).get('id') or 0) for kind, value in choices.items())
     if source not in ('text', 'outline'):
         raise HTTPException(400, '正文来源需为已有正文或大纲扩写。')
+    if writer not in ('llm', 'tavern'):
+        raise HTTPException(400, '正文生成方式需为 LLM 或酒馆。')
     if not isinstance(text, str) or not text.strip() or len(text) > 100000:
         raise HTTPException(400, '请填写不超过 10 万字的正文。')
     text = text.strip()
@@ -838,7 +842,7 @@ def auto_comic(project_id: int, body: dict, session: Session = Depends(get_sessi
         active = session.scalars(select(Job).where(Job.project_id == project_id, Job.status.in_(['queued', 'running']))).all()
         for old in active:
             p = old.payload or {}
-            if old.kind == 'auto_comic' and p.get('text') == text and p.get('target_pages') == target and p.get('source', 'text') == source:
+            if old.kind == 'auto_comic' and p.get('text') == text and p.get('target_pages') == target and p.get('source', 'text') == source and p.get('writer', 'llm') == writer:
                 if not same_presets(p.get('prompt_presets')):
                     raise HTTPException(409, '任务已使用固定预设运行，请等待完成后调整。')
                 return {'job_id': old.id, 'status': old.status, 'job': _brief(old), 'reused': True}
@@ -847,12 +851,17 @@ def auto_comic(project_id: int, body: dict, session: Session = Depends(get_sessi
         if not session.scalars(select(Template.id).limit(1)).first():
             raise HTTPException(400, '缺少分格模板，请先导入模板菜单。')
         try:
-            if source == 'outline':
+            if source == 'outline' and writer == 'llm':
                 promptlib.resolve_provider(session, 'S1')
             promptlib.resolve_provider(session, 'S2')
             promptlib.resolve_provider(session, 'S3')
         except Exception as exc:
             raise HTTPException(400, f'请先配置并启用正文/分格/提示词所需的 LLM 供应商：{exc}') from exc
+        if source == 'outline' and writer == 'tavern':
+            from .bridge import tavern_live
+            live = tavern_live(session)
+            if not live.get('bridge_online') or not (live.get('context') or {}).get('chat_id'):
+                raise HTTPException(400, '酒馆默认对话尚未在线，请先打开酒馆并选择默认对话，等待连接后重试。')
         try:
             cfg = load_comfy_config()
             if not cfg.workflow_name or not workflow_path(cfg.workflow_name).is_file():
@@ -869,6 +878,8 @@ def auto_comic(project_id: int, body: dict, session: Session = Depends(get_sessi
             raise HTTPException(400, str(exc)) from exc
         if artifacts:
             old = previous.payload if previous else {}
+            if old.get('writer', 'llm') != writer:
+                raise HTTPException(409, '续跑需沿用原正文生成方式，请在新项目切换 LLM 或酒馆。')
             saved_presets = old.get('prompt_presets')
             if saved_presets and not same_presets(saved_presets):
                 raise HTTPException(409, '续跑需沿用原任务预设；修改预设请在新项目生成。')
@@ -887,7 +898,7 @@ def auto_comic(project_id: int, body: dict, session: Session = Depends(get_sessi
             if source == 'text':
                 A.create(session, project_id=project_id, kind='prose', ref='seg:1', payload={'text': text, 'mode': 'paste', 'auto_run': run_id}, status='approved')
             session.commit()
-        job = jobq.enqueue('auto_comic', project_id=project_id, stage='AUTO', payload={'text': text, 'source': source, 'target_pages': target, 'auto_run': run_id, 'prompt_presets': presets, 'checkpoint': checkpoint(session, project_id)})
+        job = jobq.enqueue('auto_comic', project_id=project_id, stage='AUTO', payload={'text': text, 'source': source, 'writer': writer, 'target_pages': target, 'auto_run': run_id, 'prompt_presets': presets, 'checkpoint': checkpoint(session, project_id)})
     return {'job_id': job.id, 'status': job.status, 'job': _brief(job), 'reused': False}
 
 
@@ -897,7 +908,7 @@ def resume_auto_comic(project_id: int, session: Session = Depends(get_session)) 
     if previous is None or previous.status not in ('failed', 'cancelled'):
         raise HTTPException(409, '当前没有中断的一键任务可继续。')
     data = previous.payload or {}
-    return auto_comic(project_id, {'text': data.get('text'), 'target_pages': data.get('target_pages'), 'source': data.get('source', 'text')}, session)
+    return auto_comic(project_id, {'text': data.get('text'), 'target_pages': data.get('target_pages'), 'source': data.get('source', 'text'), 'writer': data.get('writer', 'llm')}, session)
 
 
 @router.post("/projects/{project_id}/run/{stage}")

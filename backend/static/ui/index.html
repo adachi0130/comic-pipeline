@@ -687,7 +687,7 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
         <div class="modal hidden" id="ov-auto-modal"><div class="box ov-auto-dialog" role="dialog" aria-modal="true" aria-labelledby="ov-auto-title"><div class="row"><h2 id="ov-auto-title">确认一键生成</h2><span class="spacer"></span><button class="sm" id="ov-auto-close" aria-label="关闭">×</button></div>
           <div class="ov-auto-note">检查本次配置，再填写正文和页数。首次使用请选择空项目；中断后使用相同正文和页数继续。</div><details id="ov-auto-settings"><summary>模型、工作流与参数 · 展开编辑</summary><div id="ov-auto-config" class="ov-auto-config" aria-live="polite">正在读取配置…</div></details>
           <details open class="ov-auto-presets"><summary>正负面预设 · 本次自动带入</summary><div class="grid2" style="margin-top:10px"><div><label class="fld" for="ov-auto-positive">正向预设</label><select id="ov-auto-positive"></select><textarea id="ov-auto-positive-preview" readonly aria-label="正向预设内容"></textarea></div><div><label class="fld" for="ov-auto-negative">负向预设</label><select id="ov-auto-negative"></select><textarea id="ov-auto-negative-preview" readonly aria-label="负向预设内容"></textarea></div></div><div id="ov-auto-preset-status" class="ov-auto-note" role="status"></div><div class="row"><button class="sm" id="ov-auto-edit-presets">编辑预设与画风</button><span class="ov-auto-note">续跑保留原任务预设；保存配置后可返回这里。</span></div></details>
-          <div class="row"><label for="ov-auto-source"><b>输入内容</b></label><select id="ov-auto-source" style="width:auto;max-width:100%"><option value="outline">故事大纲，先用 LLM 扩写正文</option><option value="text">已有完整正文，直接分格</option></select><button class="sm" id="ov-auto-prose">去正文页使用酒馆</button></div><div class="ov-auto-note">大纲模式先调用 S1 模型写完整正文，再分格出图；已有正文模式直接使用输入内容。</div>
+          <div class="row"><label for="ov-auto-source"><b>输入内容</b></label><select id="ov-auto-source" style="width:auto;max-width:100%"><option value="outline">故事大纲，先扩写正文</option><option value="text">已有完整正文，直接分格</option></select><span id="ov-auto-writer-wrap"><label for="ov-auto-writer">正文生成方式</label> <select id="ov-auto-writer" style="width:auto"><option value="llm">LLM 模型</option><option value="tavern">酒馆 · 默认对话</option></select></span><button class="sm" id="ov-auto-prose">正文工作台</button></div><div class="ov-auto-note">大纲模式按所选方式扩写，再自动分格出图；酒馆使用当前默认对话，不切换角色或会话。已有正文模式直接分格。</div>
           <div class="row"><label class="fld" for="ov-auto-text">漫画正文</label><span class="spacer"></span><button class="sm" id="ov-auto-outline" type="button">引用故事大纲</button></div><div class="ov-auto-note">引用会将项目已保存的大纲和目标页数填入下方，可继续修改。</div><textarea id="ov-auto-text" placeholder="在这里粘贴完整故事正文"></textarea><div class="row"><label>目标页数 <input id="ov-auto-pages" type="number" min="1" max="100" value="1"></label><span class="spacer"></span><button class="sm" id="ov-auto-refresh">重新检查</button><button class="primary" id="ov-auto-start">确认并开始</button></div></div></div>
         <div id="ov-summary" class="ov-summary"></div><div id="ov-steps" class="ov-steps" aria-label="选择流水线阶段"></div>
         <div id="ov-action" class="ov-action"></div><div id="ov-feedback" class="save-feedback" role="status" aria-live="polite"></div></div>
@@ -891,6 +891,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=95"></script>
+<script type="module" src="/ui/app.js?v=96"></script>
 </body>
 </html>

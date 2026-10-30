@@ -2,18 +2,58 @@
 from types import SimpleNamespace
 import hashlib
 import json
+import time
 
 from sqlalchemy import select
 
 from .. import artifacts as A, jobs
-from ..models import Artifact, Project
+from ..models import Artifact, Job, Project
 from ..overview import available
 from . import compose, image, prompt, script
 
 KIND = 'auto_comic'
 
 
+def expand_story_tavern(session, job, project, text, run_id, *, timeout_s=600):
+    """外部酒馆桥消费 deferred 作业，不占用第二个调度线程，也不切换默认对话。"""
+    pending = session.scalars(select(Job).where(Job.project_id == project.id, Job.kind == 'prose',
+        Job.status.in_(['queued', 'running'])).order_by(Job.id.desc())).all()
+    child = next((item for item in pending if (item.payload or {}).get('auto_run') == run_id), None)
+    if child is None:
+        child = jobs.enqueue_deferred('prose', project_id=project.id, stage='S1', payload={
+            'project_id': project.id, 'mode': 'start', 'auto_run': run_id,
+            'auto_parent_job_id': job.id, 'auto_approve': True, 'use_default_chat': True,
+            'source_text': text, 'context_tail': '',
+            'instruction': f'请创作独立的完整漫画故事《{project.title}》。本次故事大纲：\n{text}\n\n'
+                f'扩写为适合 {project.target_pages} 页漫画的完整正文，包含开端、发展、结尾、动作和精炼对白。'
+                '请以本次大纲为准，不延续此前对话的剧情，不复述要求，只输出正文。',
+        })
+        child = session.get(Job, child.id)
+    elif (child.payload or {}).get('auto_parent_job_id') != job.id:
+        child.payload = {**child.payload, 'auto_parent_job_id': job.id}
+        session.commit()
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if jobs.is_cancelled(job.id):
+            jobs.request_cancel(child.id)
+            return
+        session.expire_all()
+        child = session.get(Job, child.id)
+        if child.status in ('failed', 'cancelled'):
+            raise RuntimeError(f'酒馆正文生成失败：{child.error or child.status}')
+        if child.status == 'done':
+            art = A.current(session, project.id, 'prose', 'seg:1')
+            if not art or (art.payload or {}).get('auto_run') != run_id or not (art.payload or {}).get('text', '').strip():
+                raise RuntimeError('酒馆没有返回有效的故事正文，请检查默认对话和模型连接后续跑。')
+            return
+        time.sleep(0.5)
+    jobs.request_cancel(child.id)
+    raise RuntimeError('酒馆正文生成超时，请检查默认对话和酒馆桥后续跑。')
+
+
 def expand_story(session, job, project, text, run_id):
+    if (job.payload or {}).get('writer', 'llm') == 'tavern':
+        return expand_story_tavern(session, job, project, text, run_id)
     from ..llm import LLMClient, LLMLogContext
     from . import promptlib, prose
     provider, cfg = promptlib.resolve_provider(session, 'S1')
@@ -100,7 +140,7 @@ def handle(session, job):
         session.commit()
 
     if data.get('source') == 'outline' and A.current(session, project_id, 'prose', 'seg:1') is None:
-        update('正在调用 S1 模型扩写故事正文', 0, target * 3 + 1)
+        update('正在通过酒馆默认对话扩写正文' if data.get('writer') == 'tavern' else '正在调用 S1 模型扩写故事正文', 0, target * 3 + 1)
         if not check():
             return {'cancelled': True}
         expand_story(session, job, session.get(Project, project_id), text, run_id)
