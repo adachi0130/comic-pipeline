@@ -227,6 +227,38 @@ class EditorDocumentTests(unittest.TestCase):
         self.assertEqual(len(document["panels"]), 1)
         self.assertTrue(any("path" in item for item in document["conversion"]["dropped"]))
 
+    def test_legacy_edit_is_not_replaced_by_generated_layout(self):
+        template = self.install_template(pick_template(1))
+        self.make_page(template)
+        legacy = {"width": 200, "height": 200, "objects": [
+            {"type": "polygon", "name": "p1", "left": 0, "top": 0,
+             "width": 200, "height": 200,
+             "points": [{"x": -100, "y": -100}, {"x": 100, "y": -100},
+                        {"x": 100, "y": 100}, {"x": -100, "y": 100}]},
+            {"type": "textbox", "left": 20, "top": 20, "text": "保留手工台词"},
+        ]}
+        self.artifact("med_doc", "page:1", payload={"doc": legacy})
+        document, meta = D.load_for_edit(self.session, 1, "page:1")
+        self.assertEqual(meta["source"], "legacy_med_doc")
+        self.assertEqual(document["elements"][0]["text"], "保留手工台词")
+
+    def test_render_keeps_document_image_version_and_respects_removal(self):
+        template = self.install_template(pick_template(1))
+        self.make_page(template)
+        document = build_from_project(self.session, 1, "page:1")
+        panel = document["panels"][0]
+        lookup = D.image_lookup_for(self.session, 1)
+        old_path = lookup(panel)
+        newer = self.data / "projects/1/candidates/new.png"
+        newer.write_bytes(png_bytes((230, 10, 10)))
+        self.artifact("image", "panel:1.1", status="approved", payload={
+            "candidates": [{"path": str(newer)}], "selected_index": 0})
+        self.assertEqual(lookup(panel), old_path, "历史构图必须继续引用原候选图")
+        panel["image"] = None
+        self.assertIsNone(lookup(panel))
+        output = Image.open(io.BytesIO(render_png(document, image_lookup=lookup)))
+        self.assertEqual(output.getpixel((output.width // 2, output.height // 2)), (255, 255, 255))
+
     def test_legacy_conversion_rejects_garbage(self):
         with self.assertRaises(LegacyConversionError):
             convert_legacy_doc("not json", page_ref="page:1")

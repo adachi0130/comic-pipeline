@@ -17,7 +17,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from .. import artifacts as A
-from ..models import ArtifactKind, ArtifactStatus, Project, Template
+from ..models import Artifact, ArtifactKind, ArtifactStatus, Project, Template
 from ..storage import StorageError, new_output_dir, resolve_project_path, validate_ref, write_new
 from .document import DocumentError, SCHEMA_VERSION, build_from_project
 from .legacy import LegacyConversionError, convert_legacy_doc
@@ -60,22 +60,7 @@ def load_for_edit(session: Session, project_id: int, page_ref: str) -> tuple[dic
 
     page_script = A.current(session, project_id, ArtifactKind.PAGE_SCRIPT.value, page_ref)
     template_id = ((page_script.payload or {}).get("template_id") if page_script else "") or ""
-    if page_script is not None:
-        try:
-            document = build_from_project(session, project_id, page_ref, page_script=page_script)
-            return document, {
-                "source": "generated",
-                "version": 0,
-                "artifact_id": None,
-                "page_image_id": None,
-                "png_url": "",
-                "template_id": template_id,
-            }
-        except DocumentError as exc:
-            # 版式可用但缺图时仍应让用户打开编辑器（缺图格子留空）
-            raise DocumentNotFound(str(exc)) from exc
-
-    # 最后退回旧 MED 存档
+    # 旧存档优先于重新生成的版式，避免已有手工文字和构图消失。
     legacy = A.current(session, project_id, ArtifactKind.MED_DOC.value, page_ref)
     if legacy is not None:
         raw = (legacy.payload or {}).get("doc")
@@ -92,6 +77,21 @@ def load_for_edit(session: Session, project_id: int, page_ref: str) -> tuple[dic
             "template_id": template_id,
             "conversion": document.get("conversion"),
         }
+    if page_script is not None:
+        try:
+            document = build_from_project(session, project_id, page_ref, page_script=page_script)
+            return document, {
+                "source": "generated",
+                "version": 0,
+                "artifact_id": None,
+                "page_image_id": None,
+                "png_url": "",
+                "template_id": template_id,
+            }
+        except DocumentError as exc:
+            # 版式可用但缺图时仍应让用户打开编辑器（缺图格子留空）
+            raise DocumentNotFound(str(exc)) from exc
+
     raise DocumentNotFound("该页还没有分格脚本，无法编辑")
 
 
@@ -105,18 +105,28 @@ def image_lookup_for(session: Session, project_id: int):
         ref = panel.get("panelRef")
         if not ref:
             return None
-        artifact = A.current(session, project_id, ArtifactKind.IMAGE.value, ref)
-        if artifact is None:
-            return None
+        spec = panel.get("image")
+        if not isinstance(spec, dict):
+            return None  # 用户主动移除了图片，不得重新填回当前采用图。
+        if spec.get("artifactId") is not None:
+            artifact = session.get(Artifact, spec["artifactId"])
+            if (artifact is None or artifact.project_id != project_id
+                    or artifact.kind != ArtifactKind.IMAGE.value or artifact.ref != ref):
+                raise RenderError(f"{ref} 的图片版本不属于当前项目和漫画格")
+            index = spec.get("candidateIndex")
+        else:
+            artifact = A.current(session, project_id, ArtifactKind.IMAGE.value, ref)
+            if artifact is None:
+                return None
+            index = (artifact.payload or {}).get("selected_index")
         payload = artifact.payload or {}
-        index = payload.get("selected_index")
         candidates = payload.get("candidates") or []
         if type(index) is not int or not 0 <= index < len(candidates):
-            return None
+            raise RenderError(f"{ref} 的候选图编号不可用")
         try:
             return str(resolve_project_path(candidates[index]["path"], project_id))
-        except (StorageError, OSError, KeyError, TypeError):
-            return None
+        except (StorageError, OSError, KeyError, TypeError) as exc:
+            raise RenderError(f"{ref} 的图片文件不可用") from exc
 
     return lookup
 
@@ -170,6 +180,21 @@ def save(
         artifact for artifact in A.all_current(session, project_id, ArtifactKind.IMAGE.value)
         if artifact.ref.startswith(panel_prefix)
     )
+
+    # 保存构图引用的实际图片版本，而不是把后来采用的新版本记成它的来源。
+    for panel in document.get("panels") or []:
+        spec = panel.get("image") or {}
+        if spec.get("artifactId") is not None:
+            image = session.get(Artifact, spec["artifactId"])
+            if (image is None or image.project_id != project_id or image.kind != "image"
+                    or image.ref != panel.get("panelRef")):
+                raise DocumentError("图片版本不属于当前项目和漫画格")
+            if image not in upstream:
+                upstream.append(image)
+    if document.get("conversion"):
+        legacy = A.current(session, project_id, ArtifactKind.MED_DOC.value, page_ref)
+        if legacy is not None:
+            upstream.append(legacy)
 
     # 1) 画布存档（新版本，旧版保留可回退）
     stored = {**document}

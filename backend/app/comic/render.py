@@ -122,7 +122,7 @@ def _draw_panel(canvas: Image.Image, panel: dict, *, scale: float, image_source=
         try:
             image = load_image_source(image_source)
         except RenderError:
-            image = None
+            raise
     if image is not None:
         spec = panel.get("image") or {}
         x0, x1 = min(p[0] for p in points), max(p[0] for p in points)
@@ -460,7 +460,7 @@ def render_page(
             spec = item.get("image") or {}
             if spec.get("dataUrl"):
                 source = spec["dataUrl"]
-            elif image_lookup is not None:
+            elif item.get("image") and image_lookup is not None:
                 source = image_lookup(item)
             _draw_panel(canvas, item, scale=scale, image_source=source)
         elif kind == "stroke":
