@@ -218,6 +218,13 @@ def main():
             box=hit.bounding_box(); x=box['x']+box['width']*.4; y=box['y']+box['height']*.6
             page.mouse.move(x,y);page.mouse.down();page.mouse.move(x+25,y+15);page.mouse.up()
             assert actual.locator('[data-hit]').first.get_attribute('points') == original
+            actual.locator('[data-act="pin-frames"]').click()
+            expect(actual.locator('[data-act="pin-frames"]')).to_have_attribute('aria-pressed','true')
+            expect(actual.locator('[data-tool="cut"]')).to_be_disabled()
+            expect(actual.locator('[data-tool="rectangle"]')).to_be_disabled()
+            assert actual.locator('.ce-handles').count()==0
+            page.keyboard.press('c')
+            expect(actual.locator('[data-tool="select"]')).to_have_attribute('aria-pressed','true')
             actual.locator('[data-act="crop"]').click()
             expect(actual.get_by_role('dialog', name='调整构图')).to_be_visible()
             assert actual.locator('[data-crop] image').get_attribute('href').startswith('/api/artifacts/')
@@ -282,6 +289,7 @@ def main():
             actual = page.locator('#ed-host')
             assert actual.locator('svg text').filter(has_text='漫画测试').count()
             assert actual.locator('svg.ce-canvas').get_attribute('viewBox') == saved_size
+            expect(actual.locator('[data-act="pin-frames"]')).to_have_attribute('aria-pressed','true')
             # 实际整页快照审核后，从新导出中心生成并下载真实 PDF/CBZ。
             page.locator('#ed-back').click()
             page.locator('#cps-approve').click()

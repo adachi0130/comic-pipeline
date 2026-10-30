@@ -119,7 +119,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
         </div>
         <div class="ce-viewport" data-area="viewport">
           <svg class="ce-canvas" data-area="canvas" role="img" aria-label="漫画页画布"></svg>
-          <div class="ce-floating-actions"><button class="sm" data-act="layers-toggle" aria-pressed="false" title="图层面板">▱ 图层</button></div>
+          <div class="ce-floating-actions"><button class="sm" data-act="pin-frames" aria-pressed="false" title="固定画框，防止误改版式"><svg class="ce-tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3h8l-2 6 4 4v2H6v-2l4-4ZM12 15v7"/></svg><span data-pin-label>固定画框</span></button><button class="sm" data-act="layers-toggle" aria-pressed="false" title="图层面板">▱ 图层</button></div>
         </div>
       </div>
       <aside class="ce-side" hidden data-area="side"></aside>
@@ -201,13 +201,13 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
     const panel = selectedPanel(), element = selectedElement();
     toolsEl.innerHTML = `
       ${onChooseTemplate ? `<div class="ce-tool-group"><p class="ce-section-title">版式模板</p>${action('template','template','版式与分格')}</div>` : ''}
-      <div class="ce-tool-group">${TOOLS.map(([id,label,key,tip]) => `<button type="button" class="ce-tool${state.tool === id ? ' on' : ''}" data-tool="${id}" aria-pressed="${state.tool === id}" title="${tip} (${key})" aria-label="${label}">${icon(id)}<span class="ce-tool-label">${label}</span><span class="ce-tool-key">${key.split(' ')[0].replace('Shift+','⇧')}</span></button>`).join('')}</div>
+      <div class="ce-tool-group">${TOOLS.map(([id,label,key,tip]) => `<button type="button" class="ce-tool${state.tool === id ? ' on' : ''}" data-tool="${id}" ${doc()?.framesLocked && ['cut','rectangle','overlay'].includes(id)?'disabled':''} aria-pressed="${state.tool === id}" title="${tip} (${key})" aria-label="${label}">${icon(id)}<span class="ce-tool-label">${label}</span><span class="ce-tool-key">${key.split(' ')[0].replace('Shift+','⇧')}</span></button>`).join('')}</div>
       <div class="ce-tool-group">${action('bubble','bubble','对话气泡')}<button type="button" class="ce-tool${state.tool === 'text' ? ' on' : ''}" data-tool="text" title="拖出文字区域 (T)" aria-label="文字">${icon('text')}<span class="ce-tool-label">文字</span><span class="ce-tool-key">T</span></button>${action('sticker','sticker','贴纸素材')}</div>
       <div class="ce-tool-group">${action('undo','undo','撤销',!history.undo.length)}${action('redo','redo','重做',!history.redo.length)}</div>
       <label class="ce-field">画框<select data-opt="panel" aria-label="选择画框"><option value="">未选择</option>${(doc()?.panels || []).map((item,index) => `<option value="${escapeHtml(item.id)}" ${item.id===state.selectedPanelId?'selected':''}>${index+1} · ${item.type==='overlay'?'叠加框':'普通框'}</option>`).join('')}</select></label>
       ${state.tool==='cut'?`<label class="ce-field">切割留白 ${state.gutter}px<input aria-label="切割留白" type="range" min="0" max="48" value="${state.gutter}" data-opt="gutter"></label>`:''}
       ${['brush','eraser'].includes(state.tool)?`<label class="ce-field">笔刷 ${state.brushSize}px<input aria-label="笔刷大小" type="range" min="1" max="64" value="${state.brushSize}" data-opt="brush"></label>`:''}
-      ${panel ? `<div class="ce-tool-group"><p class="ce-section-title">画框 ${(doc().panels || []).indexOf(panel)+1}</p>${action('upload-image','upload','上传图片')}${action('gallery','gallery','本格候选图',!panel.panelRef)}${action('crop','crop','调整构图',!panel.image)}${action('remove-image','delete','移除图片',!panel.image)}${onEditPanel?action('edit-params','settings','编辑生成参数',!panel.panelRef):''}<label class="ce-field">边框 ${panel.borderWidth || 0}px<input type="range" min="0" max="12" step="0.5" value="${panel.borderWidth || 0}" data-panel-opt="borderWidth" aria-label="画框边框"></label>${action('convert-type','overlay',panel.type==='overlay'?'转普通框':'转叠加框')}${action('front-panel','up','上移内容')}${action('back-panel','down','下移内容')}${action('delete','delete','删除画框',false,'danger')}</div>`:''}
+      ${panel ? `<div class="ce-tool-group"><p class="ce-section-title">画框 ${(doc().panels || []).indexOf(panel)+1}</p>${action('upload-image','upload','上传图片')}${action('gallery','gallery','本格候选图',!panel.panelRef)}${action('crop','crop','调整构图',!panel.image)}${action('remove-image','delete','移除图片',!panel.image)}${onEditPanel?action('edit-params','settings','编辑生成参数',!panel.panelRef):''}<label class="ce-field">边框 ${panel.borderWidth || 0}px<input type="range" min="0" max="12" step="0.5" value="${panel.borderWidth || 0}" data-panel-opt="borderWidth" aria-label="画框边框"></label>${action('convert-type','overlay',panel.type==='overlay'?'转普通框':'转叠加框',!!doc()?.framesLocked)}${action('front-panel','up','上移内容')}${action('back-panel','down','下移内容')}${action('delete','delete','删除画框',!!doc()?.framesLocked,'danger')}</div>`:''}
       ${element ? `<div class="ce-tool-group"><p class="ce-section-title">${element.kind==='bubble'?'对话气泡':element.kind==='text'?'文字':'贴纸'}</p>${action('edit-element','settings','编辑内容')}${action('flip-element','flip','水平镜像')}${action('front-element','up','上移内容')}${action('back-element','down','下移内容')}${action('delete','delete','删除内容',false,'danger')}</div>`:''}
     `;
   }
@@ -240,13 +240,17 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
     }
     // 选中框与手柄
     const panel = selectedPanel();
-    if (panel && state.tool === 'select') parts.push(panelHandles(panel, handle));
+    if (panel && state.tool === 'select' && !d.framesLocked) parts.push(panelHandles(panel, handle));
     const element = selectedElement();
     if (element && state.tool === 'select') parts.push(elementHandles(element, handle));
     if (state.tool === 'cut') parts.push(`<g class="ce-cut-layer" data-cutfx></g>`);
 
     svgEl.innerHTML = parts.join('');
     applyCanvasBox();
+    const pinButton=$('[data-act="pin-frames"]');
+    pinButton.setAttribute('aria-pressed',String(!!d.framesLocked));
+    pinButton.title=d.framesLocked?'画框已固定，点击解除；仍可调整图片构图和编辑文字':'固定画框，防止移动、切割或删除';
+    $('[data-pin-label]').textContent=d.framesLocked?'画框已固定':'固定画框';
     $('[data-area="page-info"]').textContent = `${Math.round(d.width)} × ${Math.round(d.height)} px`;
     const zoomSelect = $('[data-opt="zoom"]');
     zoomSelect.innerHTML = [...new Set([.25,.5,.75,1,1.5,2,3,4,5,state.zoom])].sort((a,b)=>a-b).map((value)=>`<option value="${value}" ${value===state.zoom?'selected':''}>${value===1?'适应':Math.round(value*100)+'%'}</option>`).join('');
@@ -522,6 +526,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
 
   function changeTool(tool) {
     cancelDrag();
+    if (doc()?.framesLocked && ['cut','rectangle','overlay'].includes(tool)) { notice('画框已固定，先点击钉子解除固定。','warn'); return; }
     state.tool = tool;
     render();
   }
@@ -559,6 +564,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
     if (state.tool === 'hand' || state.tool === 'zoom' || spaceHeld || event.button === 1) return;
 
     if (state.tool === 'cut') {
+      if (d.framesLocked) return;
       const candidates = (d.panels || []).filter((panel) => !findLayer(panel.layerId)?.locked);
       const near = snapComicCutPoint(candidates, raw, 14 * scale);
       drag.current = { kind: 'cut', pointerId: event.pointerId, first: near || null, last: raw, before: d };
@@ -595,6 +601,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
       const panel = panelId ? (d.panels || []).find((item) => item.id === panelId) : null;
       if (panel) {
         if (panel.id !== state.selectedPanelId) choosePanel(panel);
+        if (d.framesLocked) return;
         if (!handle) return; // 与参考项目一致：画框内部只选中，外置手柄才移动。
         const layer = findLayer(panel.layerId);
         if (!layer?.locked) {
@@ -620,6 +627,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
       return;
     }
 
+    if (d.framesLocked && ['rectangle','overlay'].includes(state.tool)) return;
     if (state.tool === 'rectangle' || state.tool === 'overlay' || state.tool === 'text') {
       const layer = currentCreationLayer(state.tool === 'overlay' ? 'overlays' : state.tool === 'text' ? 'dialogue' : 'panels');
       if (!layer) return;
@@ -1161,6 +1169,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
       if (act === 'fit') { fitView(); return; }
       if (act === 'save') { await save(); return; }
       if (act === 'bubble') { openBalloonPicker(); return; }
+      if (act === 'pin-frames') { cancelDrag(); if(doc()) { state.tool='select'; replaceDocument({...doc(),framesLocked:!doc().framesLocked}); } return; }
       if (act === 'layers-toggle') { state.layersOpen=!state.layersOpen; renderSide(); return; }
       if (act === 'template') { onChooseTemplate?.(); return; }
       if (act === 'edit-params') { if(selectedPanel()?.panelRef) onEditPanel?.(selectedPanel().panelRef); return; }
@@ -1186,6 +1195,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
         return;
       }
       if (act === 'convert-type') {
+        if (doc()?.framesLocked) return;
         const panel = selectedPanel();
         if (!panel) return;
         const converted = convertPanelType(panel, panel.type === 'overlay' ? 'regular' : 'overlay', doc(), state.section);
@@ -1244,6 +1254,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
   }
 
   function deleteSelection() {
+    if (selectedPanel() && doc()?.framesLocked) { notice('画框已固定，先点击钉子解除固定。','warn'); return; }
     const d = doc();
     if (!d) return;
     if (selectedElement()) {
