@@ -120,7 +120,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
             <label class="ce-zoom-control"><select data-opt="zoom" aria-label="画布缩放"></select></label>
             <button class="sm" data-act="fit" title="适应窗口 (Ctrl+0)">适应</button>
             <button class="sm primary" data-act="save" title="保存 (Ctrl+S)">保存漫画页</button>
-            <button class="sm" data-act="pin-frames" aria-pressed="false" title="固定画框，防止误改版式"><svg class="ce-tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3h8l-2 6 4 4v2H6v-2l4-4ZM12 15v7"/></svg><span data-pin-label>固定画框</span></button><button class="sm" data-act="layers-toggle" aria-pressed="false" title="图层面板">▱ 图层</button>
+            <button class="sm" data-act="pin-frames" aria-pressed="false" title="固定画框与画面：防误改版式，滚轮不再移动画面"><svg class="ce-tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3h8l-2 6 4 4v2H6v-2l4-4ZM12 15v7"/></svg><span data-pin-label>固定画框</span></button><button class="sm" data-act="layers-toggle" aria-pressed="false" title="图层面板">▱ 图层</button>
           </div>
         </div>
       </div>
@@ -253,7 +253,9 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
     applyCanvasBox();
     const pinButton=$('[data-act="pin-frames"]');
     pinButton.setAttribute('aria-pressed',String(!!d.framesLocked));
-    pinButton.title=d.framesLocked?'画框已固定，点击解除；仍可调整图片构图和编辑文字':'固定画框，防止移动、切割或删除';
+    pinButton.title=d.framesLocked
+      ? '画框与画面已固定：不能拖动/切割/删除画框，滚轮也不再移动画面（Ctrl+滚轮仍可缩放）。再点一次解除。'
+      : '固定画框与画面：防误改版式，滚轮不再移动画面';
     $('[data-pin-label]').textContent=d.framesLocked?'画框已固定':'固定画框';
     // 页面尺寸放进状态徽标的悬停提示，不再单独占一条顶栏。
     statusEl.title = `${Math.round(d.width)} × ${Math.round(d.height)} px${state.templateId ? ' · ' + state.templateId : ''}`;
@@ -1368,9 +1370,9 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
   });
   listen(svgEl, 'dragstart', (event) => event.preventDefault());
 
-  // 滚轮行为（用户要求：固定画面，不能一滚就缩放）：
-  // - Ctrl/Cmd + 滚轮：以光标为中心缩放（刻意的缩放动作）；
-  // - 普通滚轮：只平移画布，画面大小保持不变。
+  // 滚轮行为（“固定画框”同时锁住画面）：
+  // - 画框已固定：滚轮只允许 Ctrl/⌘+滚轮缩放，普通滚动完全不动画面；
+  // - 未固定：普通滚轮平移画布，Ctrl/⌘+滚轮缩放。
   listen(viewportEl, 'wheel', (event) => {
     if (!doc()) return;
     event.preventDefault();
@@ -1385,6 +1387,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
       renderCanvas();
       return;
     }
+    if (doc()?.framesLocked) return; // 已固定：画面纹丝不动
     state.view = { x: state.view.x - event.deltaX, y: state.view.y - event.deltaY };
     renderCanvas();
   }, { passive: false });
