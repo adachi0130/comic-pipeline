@@ -39,7 +39,8 @@ def snapshot(session: Session, project: Project) -> dict:
     templates = {tpl.id: tpl for tpl in session.scalars(select(Template)).all()}
     scripts = by_kind.get("page_script", {})
     page_images = by_kind.get("page_image", {})
-    documents = by_kind.get("med_doc", {})
+    # 编辑文档：新格式优先，旧 med_doc 继续兼容展示
+    documents = {**by_kind.get("med_doc", {}), **by_kind.get("editor_doc", {})}
     prompts = by_kind.get("panel_prompt", {})
     images = by_kind.get("image", {})
     prose = [{**brief(art), "text": (art.payload or {}).get("text") or ""}

@@ -321,11 +321,27 @@ class DataSafetyTests(unittest.TestCase):
         for record, color in zip(records, ("red", "blue")):
             self.assertEqual(Path(record["path"]).read_bytes(), png(color))
 
-    def composition_inputs(self, candidate_path=None):
+    def composition_inputs(self, candidate_path=None, geometry=None):
+        """建一页可合成的输入：单格模板 + 已采用图片。
+
+        默认给完整多边形几何（走真实的解析/渲染链路）；传 ``geometry={}`` 并写空
+        SVG 可模拟“模板既无几何也无可用 SVG”的坏数据。
+        """
         svg = self.data / "templates" / "test.svg"
-        svg.parent.mkdir(parents=True)
-        svg.write_text("<svg/>")
-        self.session.add(Template(id="vertical:test", dir="vertical", panels_count=1, svg_path=str(svg), geometry={}))
+        svg.parent.mkdir(parents=True, exist_ok=True)
+        svg.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+            '<g transform="matrix(1 0 0 1 50 50)">'
+            '<polygon points="-50,-50 50,-50 50,50 -50,50" style="stroke: rgb(0,0,0); stroke-width: 2;"/>'
+            "</g></svg>",
+            encoding="utf-8",
+        )
+        if geometry is None:
+            geometry = {"canvas": [100, 100], "panels": [
+                {"index": 1, "order": 1, "x_pct": 0, "y_pct": 0, "width_pct": 100, "height_pct": 100,
+                 "points_pct": [[0, 0], [100, 0], [100, 100], [0, 100]], "border_width": 2},
+            ]}
+        self.session.add(Template(id="vertical:test", dir="vertical", panels_count=1, svg_path=str(svg), geometry=geometry))
         self.session.commit()
         self.artifact("page_script", "page:1", payload={"template_id": "vertical:test", "panels": [{"panel_order": 1}]})
         source = candidate_path or self.file("candidates/legacy.png", png("red"))
@@ -336,21 +352,20 @@ class DataSafetyTests(unittest.TestCase):
         legacy = self.file("pages/page_1.png", png("green"))
         old = self.artifact("page_image", "page:1", path=legacy)
         job = Job(project_id=1, kind="compose", payload={"page_ref": "page:1"})
-        composer = Mock()
-        composer.compose.side_effect = [(ComposeResult(ok=True, panels=1, placed=1), png(c)) for c in ("red", "blue")]
-        with patch("app.med.composer.MedComposer", return_value=composer):
-            results = [compose.handle(self.session, job) for _ in range(2)]
+        results = [compose.handle(self.session, job) for _ in range(2)]
         self.assertNotEqual(results[0]["png"], results[1]["png"])
-        self.assertEqual(Path(results[0]["png"]).read_bytes(), png("red"))
-        self.assertEqual(Path(results[1]["png"]).read_bytes(), png("blue"))
+        # 新链路按文档渲染（不再回放 MED 像素）；两次都是合法 PNG 且互不覆盖
+        for result in results:
+            self.assertEqual(Path(result["png"]).read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertEqual(result["panels"], 1)
         self.assertEqual(self.client.get(f"/api/artifacts/{old.id}/file").content, png("green"))
 
-    def test_compose_rejects_external_candidate_before_browser(self):
+    def test_compose_rejects_external_candidate_before_render(self):
         self.composition_inputs(self.external)
-        with patch("app.med.composer.MedComposer") as browser, self.assertRaises(storage.StorageError):
+        with self.assertRaises(storage.StorageError):
             compose.handle(self.session, Job(project_id=1, kind="compose", payload={"page_ref": "page:1"}))
-        browser.assert_not_called()
         self.assertEqual(self.external.read_bytes(), b"external must survive")
+        self.assertIsNone(A.current(self.session, 1, "page_image", "page:1"))
 
     def test_compose_only_places_selected_art_and_auto_approves_complete_page(self):
         self.composition_inputs()
@@ -358,41 +373,75 @@ class DataSafetyTests(unittest.TestCase):
         page.payload = {**page.payload, "panels": [{"panel_order": 1, "technique": ["集中线", "运动线"]}]}
         self.session.commit()
         job = Job(project_id=1, kind="compose", payload={"page_ref": "page:1", "auto_approve": True, "auto_run": "run-1"})
-        composer = Mock()
-        composer.compose.return_value = (ComposeResult(ok=True, panels=1, placed=1), png("red"))
-        with patch("app.med.composer.MedComposer", return_value=composer):
-            compose.handle(self.session, job)
-        self.assertEqual(composer.compose.call_args.kwargs["tones"], [])
+        compose.handle(self.session, job)
         result = A.current(self.session, 1, "page_image", "page:1")
         self.assertEqual(result.status, "approved")
         self.assertEqual(result.payload["auto_run"], "run-1")
+        self.assertEqual(result.payload["renderer"], "comic/render")
+        # 自动拼页只贴图，不得顺手写下编辑文档
+        self.assertIsNone(A.current(self.session, 1, "editor_doc", "page:1"))
 
     def test_compose_rejects_partial_placement_without_publishing(self):
         self.composition_inputs()
-        job = Job(project_id=1, kind="compose", payload={"page_ref": "page:1"})
-        composer = Mock()
-        composer.compose.return_value = (ComposeResult(ok=True, panels=1, placed=0, warnings=["贴图失败"]), png("red"))
-        with patch("app.med.composer.MedComposer", return_value=composer), self.assertRaisesRegex(RuntimeError, "未完成"):
-            compose.handle(self.session, job)
+        # 两格只给一格图：必须在渲染前拒绝，且不发布半成品
+        page = A.current(self.session, 1, "page_script", "page:1")
+        page.payload = {**page.payload, "panels": [{"panel_order": 1}, {"panel_order": 2}]}
+        self.session.commit()
+        with self.assertRaisesRegex(ValueError, "尚未采用"):
+            compose.handle(self.session, Job(project_id=1, kind="compose", payload={"page_ref": "page:1"}))
         self.assertIsNone(A.current(self.session, 1, "page_image", "page:1"))
-        composer.close.assert_called_once()
 
-    def test_compose_rejects_unselected_candidate_before_browser(self):
+    def test_compose_rejects_unselected_candidate_before_render(self):
         self.composition_inputs()
         image = A.current(self.session, 1, "image", "panel:1.1")
         image.payload = {**image.payload, "selected_index": None}
         self.session.commit()
-        with patch("app.med.composer.MedComposer") as browser, self.assertRaisesRegex(ValueError, "尚未采用"):
+        with self.assertRaisesRegex(ValueError, "尚未采用"):
             compose.handle(self.session, Job(project_id=1, kind="compose", payload={"page_ref": "page:1"}))
-        browser.assert_not_called()
 
-    def test_composer_reports_template_failure_as_tuple(self):
-        from app.med.composer import MedComposer
-        composer = MedComposer("http://example.invalid")
-        composer.install_template = Mock(return_value=0)
-        result, data = composer.compose(template_svg="<svg/>", is_landscape=False, prompts=[], arts=[])
-        self.assertFalse(result.ok)
-        self.assertEqual(data, b"")
+    def test_compose_rejects_template_without_geometry(self):
+        """模板既无几何、SVG 又不可解析时，必须明确报错，而不是产出空白页。"""
+        self.composition_inputs(geometry={})
+        (self.data / "templates" / "test.svg").write_text("<svg/>", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "无法构建拼页文档"):
+            compose.handle(self.session, Job(project_id=1, kind="compose", payload={"page_ref": "page:1"}))
+        self.assertIsNone(A.current(self.session, 1, "page_image", "page:1"))
+
+    def test_compose_uses_saved_editor_doc_when_present(self):
+        """保存过编辑文档时，S5 必须按文档渲染，把手工图层一并带上。"""
+        self.composition_inputs()
+        document = {
+            "schemaVersion": 1, "editor": "comic-pipeline/editor",
+            "width": 100.0, "height": 100.0,
+            "layout": {"templateId": "vertical:test"},
+            "layers": [
+                {"id": "panels", "kind": "panels", "visible": True, "locked": False},
+                {"id": "dialogue", "kind": "dialogue", "visible": True, "locked": False},
+            ],
+            "panels": [{
+                "id": "panel-1", "layerId": "panels", "order": 1, "type": "regular",
+                "points": [[0, 0], [100, 0], [100, 100], [0, 100]], "borderWidth": 2,
+                "panelRef": "panel:1.1", "image": {"scale": 0, "x": 0, "y": 0, "rotation": 0},
+            }],
+            "strokes": [], "fonts": [],
+            "elements": [{
+                "id": "e1", "kind": "text", "layerId": "dialogue", "order": 1,
+                "x": 10, "y": 10, "width": 80, "height": 40, "rotation": 0,
+                "skewX": 0, "skewY": 0, "flipX": False, "flipY": False, "opacity": 1,
+                "text": "手工文字", "fontFamily": "sans-serif", "fontSize": 12,
+                "textAlign": "center", "writingMode": "horizontal-tb", "lineHeight": 1.25,
+                "color": "#111111", "fill": "none", "stroke": "#111111", "strokeWidth": 0,
+                "feather": 0, "mask": [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 1}, {"x": 0, "y": 1}],
+            }],
+            "binding": {"pageRef": "page:1", "templateId": "vertical:test", "panelRefs": {"1": "panel:1.1"}},
+        }
+        A.create(self.session, project_id=1, kind="editor_doc", ref="page:1",
+                 payload={"document": document}, status="review")
+        self.session.commit()
+        compose.handle(self.session, Job(project_id=1, kind="compose", payload={"page_ref": "page:1"}))
+        result = A.current(self.session, 1, "page_image", "page:1")
+        self.assertEqual(result.payload["source"], "editor_doc")
+        self.assertEqual(result.payload["placed"], 1)
 
     def test_image_regeneration_preserves_previous_candidates(self):
         legacy = self.file("candidates/legacy.png", png("green"))

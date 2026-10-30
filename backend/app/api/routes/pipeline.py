@@ -363,11 +363,14 @@ def compose_board(project_id: int, session: Session = Depends(get_session)) -> d
                 "prompt": (prompt_art.payload.get("prompt_pos") if prompt_art else "") or "",
             })
         page_img = A.current(session, project_id, ArtifactKind.PAGE_IMAGE.value, a.ref)
-        # 「编辑中」画布：用户在 MED 里保存的整页状态（也是一种“该页的成品”）
+        # 「编辑中」画布：新编辑器文档优先；旧 MED 存档保留用于回退与转换
+        editor_doc = A.current(session, project_id, ArtifactKind.EDITOR_DOC.value, a.ref)
         med_doc = A.current(session, project_id, ArtifactKind.MED_DOC.value, a.ref)
         # 该页可审核的成品：优先整页成图；否则用「编辑中」画布（有落盘预览时）
         if page_img is not None:
             result, result_kind = page_img, "page_image"
+        elif editor_doc is not None and editor_doc.path:
+            result, result_kind = editor_doc, "editor_doc"
         elif med_doc is not None and med_doc.path:
             result, result_kind = med_doc, "med_doc"
         else:
@@ -387,7 +390,10 @@ def compose_board(project_id: int, session: Session = Depends(get_session)) -> d
             # 整页成图（S5）的审核信息
             "page_image_id": page_img.id if page_img else None,
             "page_image_status": page_img.status if page_img else "",
-            # 「编辑中」画布（MED 存档）的信息
+            # 「编辑中」画布：新文档 + 旧 MED 存档都暴露给前端
+            "editor_doc_id": editor_doc.id if editor_doc else None,
+            "editor_doc_status": editor_doc.status if editor_doc else "",
+            "editor_doc_has_file": bool(editor_doc and editor_doc.path),
             "med_doc_id": med_doc.id if med_doc else None,
             "med_doc_status": med_doc.status if med_doc else "",
             "med_doc_has_file": bool(med_doc and med_doc.path),

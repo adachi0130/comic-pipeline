@@ -4,30 +4,51 @@
 
 ---
 
-## 1. Manga Editor Desu（分页合成/精修工作台）
+## 0. novelai_local_web（漫画编辑器来源）
+
+- **项目**：YILING0013/novelai_local_web
+- **上游**：https://github.com/YILING0013/novelai_local_web
+- **许可证**：**AGPL-3.0**（根目录与 `next_nai_web/LICENSE` 均为 AGPL-3.0）
+- **移植基线提交**：`4dd42f5aa0fa21fbf149f9ed08beb3b6426152b3`
+- **随本仓库分发**：是。代码在 `backend/static/ui/editor/`（前端模块）与
+  `backend/app/comic/`（按上游算法重写的后端渲染）。
+- **许可文本**：`backend/static/ui/editor/licenses/AGPL-3.0.txt`
+- **逐文件来源与改动**：`docs/漫画编辑器移植来源清单.md`
+
+### 分发注意
+
+- 上述文件按 **AGPL-3.0** 使用，不是 MIT/BSD。保留文件头的 SPDX 标识与来源注释，不得删除。
+- AGPL-3.0 第 13 条：通过网络向用户提供本服务时，须向使用者提供获取对应源码的方式。
+  本仓库即源码；若要分发二进制或镜像，须一并提供源码与许可文本。
+
+---
+
+## 1. Manga Editor Desu（**仅模板来源，运行依赖已移除**）
 
 - **项目**：Manga Editor Desu!（作者 **new-sankaku**）
 - **上游**：https://github.com/new-sankaku/manga-editor-desu
 - **许可证**：**GPL-3.0**（GNU General Public License v3.0）
 - **本项目锁定版本**：commit `04e0cf3de1f3677682f6d1831f2713db70e441ba`（2026-08-30）
-- **获取方式**：**不随本仓库分发**。使用者运行 `backend/scripts/fetch_editor.*` 从上游按上述 commit 拉取到
-  `backend/static/editor/`（该目录已加入 `.gitignore`）。
 
-### 本项目与 MED 的边界
+### 现状：不再运行 MED
 
-- MED 没有官方自动化 API（无 postMessage / 无 URL 参数 / 无全局导出对象）。
-- 本项目通过**同源 iframe + 注入桥脚本**（`backend/static/ui/editor_bridge/med_bridge.js`）调用
-  MED 的顶层内部函数来驱动它。
-- 该桥脚本与 MED 的全局作用域紧耦合、直接调用其内部函数，因此
-  **`backend/static/ui/editor_bridge/` 下的代码按 GPL-3.0 对待**（`med_bridge.js` 内含 SPDX 标识）。
-- 本仓库其余自研代码与 MED 保持隔离。
+漫画编辑与分页合成已改为本项目自研实现（`backend/app/comic/` 渲染核心 +
+`backend/static/ui/editor/` 编辑器），**S5 自动拼页与手动编辑都不再启动 MED**，
+也不再需要 `backend/static/editor/` 才能工作。
 
-### 分发注意（重要）
+仍然保留的是 MED 的**版式模板 SVG**：69 个模板（竖版 41、横版 28）已导出到
+`data/templates/`，由 `backend/app/comic/template_geometry.py` 解析真实多边形与阅读顺序。
+这些模板文件来自 MED，**GPL-3.0 许可继续适用**，其来源与许可不得移除。
 
-- 只要**不把 MED 本体打包进你的分发物**，本仓库的自研部分不因 MED 而承担 GPL 分发义务。
-- 若你把 MED 一起分发（打进压缩包 / 放进仓库），则须遵守 GPL-3.0：
-  保留版权声明与 LICENSE、标注修改、提供完整对应源码等。MED 自带的 `third/` 目录下
-  （Fabric.js、three.js、pixi、jszip、localforage 等）与字体还有各自的许可证，也需一并保留。
+- 模板获取与解析脚本：`backend/scripts/fetch_editor.*`、`parse_med_templates.mjs`、`build_template_menu.py`
+- 历史存档兼容：旧 `med_doc`（fabric JSON）仍可读取并转换为新文档（`backend/app/comic/legacy.py`）；
+  无法转换的元素会列在转换摘要里，不会静默丢弃。
+
+### 分发注意
+
+- 只分发本项目自研代码 + `data/templates/` 里的模板 SVG 时，模板部分按 GPL-3.0 处理。
+- 旧的桥代码 `backend/static/ui/editor_bridge/` 与 `backend/app/med/` 属于历史兼容层，
+  按 GPL-3.0 对待（`med_bridge.js` 内含 SPDX 标识）。新流程不依赖它们。
 
 ---
 
@@ -36,6 +57,9 @@
 见 `requirements.txt`。主要项：FastAPI、uvicorn、SQLAlchemy、Alembic、pydantic、httpx、
 APScheduler、Paramiko、PyYAML、Jinja2、img2pdf、Playwright、Pillow。
 各自遵循其开源许可证（多为 MIT / BSD / Apache-2.0 系）。
+
+> 说明：Playwright 现在只用于**酒馆常驻桥**（`tools/tavern_bridge.py`）；
+> MED 合成桥已不再需要无头浏览器。
 
 ## 3. 外部服务（不由本仓库分发）
 

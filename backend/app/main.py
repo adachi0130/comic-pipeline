@@ -2,8 +2,8 @@
 
 启动时：建表（M0）/ 启动作业队列 / 挂静态资源。
 - ``/api/*``   业务接口
-- ``/editor/`` vendor 的 Manga Editor Desu（同源托管，供桥驱动）
-- ``/ui/``     自研前端
+- ``/ui/``     自研前端（含 /ui/editor/ 漫画编辑器）
+- ``/editor/`` **已移除**：不再挂载 Manga Editor Desu（运行依赖已去除）
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from .api.routes import artifacts as artifacts_routes
 from .api.routes import assets as assets_routes
 from .api.routes import bridge as bridge_routes
 from .api.routes import comfy as comfy_routes
+from .api.routes import editor as editor_routes
 from .api.routes import jobs as jobs_routes
 from .api.routes import meta as meta_routes
 from .api.routes import pipeline as pipeline_routes
@@ -109,6 +110,7 @@ app.include_router(prompts_routes.router, prefix="/api")
 app.include_router(comfy_routes.router, prefix="/api")
 app.include_router(jobs_routes.router, prefix="/api")
 app.include_router(pipeline_routes.router, prefix="/api")
+app.include_router(editor_routes.router, prefix="/api")
 app.include_router(bridge_routes.router, prefix="/api")
 app.include_router(assets_routes.router, prefix="/api")
 
@@ -127,10 +129,18 @@ def root():
 
 
 # 静态资源（若目录已有内容才挂载，避免空目录报错）
-_editor_dir = BACKEND_DIR / "static" / "editor"
+# Windows 的 mimetypes 把 .mjs 判成 text/plain，浏览器会拒绝加载 ES module
+# （报 "Expected a JavaScript-or-Wasm module script"）。编辑器是多模块 ES module，
+# 必须在挂载前显式注册正确类型。
+import mimetypes as _mimetypes
+
+_mimetypes.add_type("text/javascript", ".mjs")
+_mimetypes.add_type("application/javascript", ".js")
+
+# 注意：不再挂载 /editor（Manga Editor Desu）。分页合成与漫画编辑已改为自研实现
+# （backend/app/comic/ + backend/static/ui/editor/），运行时不需要 MED。
+# 旧的 backend/static/editor/ 目录如仍存在，仅作为历史资料，不再对外提供。
 _ui_dir = BACKEND_DIR / "static" / "ui"
-if _editor_dir.exists():
-    app.mount("/editor", StaticFiles(directory=str(_editor_dir), html=True), name="editor")
 if _ui_dir.exists():
     # 自研前端：加 no-cache，避免浏览器缓存旧 app.js 导致“按钮点了没反应”这类假故障。
     # （本地开发工具，性能无关紧要，正确性优先。）
