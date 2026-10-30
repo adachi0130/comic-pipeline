@@ -60,7 +60,7 @@ import { balloonPageSvg } from './comicPaint.mjs';
 
 /** 工具定义：与上游一致的 8 个常用工具，快捷键也保持相同。 */
 const TOOLS = [
-  ['select', '选择', 'V', '拖动、缩放、旋转画框与元素'],
+  ['select', '选择', 'V', '点击选择，拖动外侧手柄移动、缩放或旋转'],
   ['cut', '切割', 'C', '沿两点连线切开画框，切口留白'],
   ['rectangle', '画框', 'U', '拖出新的矩形画框'],
   ['overlay', '叠加框', 'Shift+U', '拖出可跨分镜的上层框（放透明立绘）'],
@@ -70,7 +70,7 @@ const TOOLS = [
   ['zoom', '缩放', 'Z', '点击放大，Alt 缩小'],
 ];
 
-export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
+export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEditPanel, onChooseTemplate }) {
   const lifecycle = new AbortController();
   let disposed = false;
   const listen = (target, type, handler, options = {}) => target.addEventListener(type, handler, { ...options, signal: lifecycle.signal });
@@ -85,7 +85,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     selectedElementId: null,
     selectedStrokeId: null,
     activeLayerId: 'panels',
-    inspector: 'panels',
+    layersOpen: false,
     zoom: 1,
     view: { x: 0, y: 0 },
     gutter: 14,
@@ -97,6 +97,8 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     savedRevision: 0,
     status: '',
   };
+  let spaceHeld = false;
+  let panelSliderEdit = false;
   const history = { undo: [], redo: [] };
   const drag = { current: null, frame: null, pending: null };
   const refs = { svg: null, viewport: null, holder: null };
@@ -109,19 +111,21 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
         <div class="ce-topbar">
           <span class="ce-badge" data-area="status">未加载</span>
           <span class="ce-hint" data-area="hint"></span>
+          <span class="ce-page-info" data-area="page-info"></span>
           <span class="ce-spacer"></span>
-          <button class="sm" data-act="undo" title="撤销 (Ctrl+Z)">撤销</button>
-          <button class="sm" data-act="redo" title="重做 (Ctrl+Y)">重做</button>
+          <label class="ce-zoom-control"><select data-opt="zoom" aria-label="画布缩放"></select></label>
           <button class="sm" data-act="fit" title="适应窗口 (Ctrl+0)">适应</button>
           <button class="sm primary" data-act="save" title="保存 (Ctrl+S)">保存漫画页</button>
         </div>
         <div class="ce-viewport" data-area="viewport">
           <svg class="ce-canvas" data-area="canvas" role="img" aria-label="漫画页画布"></svg>
+          <div class="ce-floating-actions"><button class="sm" data-act="layers-toggle" aria-pressed="false" title="图层面板">▱ 图层</button></div>
         </div>
       </div>
-      <aside class="ce-side" data-area="side"></aside>
+      <aside class="ce-side" hidden data-area="side"></aside>
     </div>
     <input type="file" accept="image/png,image/webp,image/jpeg,image/svg+xml,.svg" data-act="asset-upload" hidden>
+    <input type="file" accept="image/png,image/webp,image/jpeg" data-act="panel-upload" hidden>
   `;
   const $ = (selector) => host.querySelector(selector);
   const toolsEl = $('[data-area="tools"]');
@@ -175,110 +179,49 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
   }
 
   // ------------------------------------------------------------ 工具面板
+  // 工具顺序、上下文操作与浮动图层沿用上游 ComicWorkspace 的组织方式。
+  const ICONS = {
+    select: '<path d="m5 3 13 9-6 1-3 6Z"/>', cut: '<path d="m8 8 11 12M8 16 19 4"/><circle cx="5" cy="6" r="3"/><circle cx="5" cy="18" r="3"/>',
+    rectangle:'<rect x="4" y="4" width="16" height="16" rx="1"/>',overlay:'<rect x="3" y="3" width="13" height="13" rx="1"/><path d="M9 19h11V9"/>',
+    brush:'<path d="m10 13 8-10 3 3-9 9M10 13c-6-2-2 7-7 7 5 2 10-1 9-5"/>',eraser:'<path d="m3 14 10-11 8 7-10 11H9Z"/><path d="m7 10 8 7M11 21h10"/>',
+    hand:'<path d="M7 12V7a2 2 0 0 1 4 0V4a2 2 0 0 1 4 0v3a2 2 0 0 1 4 0v4a2 2 0 0 1 3 1v5c0 5-12 6-15 1l-4-5a2 2 0 0 1 3-2Z"/>',
+    zoom:'<circle cx="10" cy="10" r="7"/><path d="m15 15 6 6M7 10h6M10 7v6"/>',text:'<path d="M4 5h16M12 5v15M8 20h8"/>',
+    bubble:'<path d="M20 11c0 6-8 9-12 6l-5 3 1-6c-5-10 16-15 16-3Z"/>',sticker:'<path d="M4 3h16v12l-6 6H4ZM14 21v-6h6"/>',
+    undo:'<path d="m8 3-6 6 6 6M2 9h12a7 7 0 0 1 0 14"/>',redo:'<path d="m16 3 6 6-6 6M22 9H10a7 7 0 0 0 0 14"/>',
+    template:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M13 3v18M13 12h8"/>',upload:'<path d="M12 16V3m-5 5 5-5 5 5M3 16v5h18v-5"/>',
+    gallery:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="2"/><path d="m3 19 6-6 4 4 4-7 4 7"/>',
+    crop:'<path d="M6 2v16h16M2 6h16v16"/>',delete:'<path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/>',
+    settings:'<path d="M3 6h18M3 12h18M3 18h18"/><circle cx="8" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="9" cy="18" r="2"/>',
+    up:'<path d="m5 12 7-7 7 7M12 5v15"/>',down:'<path d="m5 12 7 7 7-7M12 4v15"/>',flip:'<path d="M12 2v20M3 18l5-12v12ZM21 18 16 6v12Z"/>',
+  };
+  const icon = (name) => `<svg class="ce-tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ICONS.settings}</svg>`;
+  const action = (act, name, label, disabled = false, extra = '') => `<button type="button" class="ce-tool ${extra}" data-act="${act}" title="${label}" aria-label="${label}" ${disabled ? 'disabled' : ''}>${icon(name)}<span class="ce-tool-label">${label}</span></button>`;
+
   function renderTools() {
+    const panel = selectedPanel(), element = selectedElement();
     toolsEl.innerHTML = `
-      <div class="ce-tool-group">
-        ${TOOLS.map(([id, label, key, tip]) => `
-          <button class="ce-tool${state.tool === id ? ' on' : ''}" data-tool="${id}" title="${tip} (${key})">
-            <span class="ce-tool-label">${label}</span><span class="ce-tool-key">${key.split(' ')[0].replace('Shift+', '⇧')}</span>
-          </button>`).join('')}
-      </div>
-      <div class="ce-tool-group">
-        <button class="ce-tool${state.tool === 'text' ? ' on' : ''}" data-tool="text" title="拖出文字框 (T)">
-          <span class="ce-tool-label">文字</span><span class="ce-tool-key">T</span>
-        </button>
-        <button class="ce-tool" data-act="bubble" title="在对白层加一个气泡">气泡</button>
-        <button class="ce-tool" data-act="sticker" title="导入贴纸素材">贴纸</button>
-      </div>
-      <div class="ce-tool-group">
-        <label class="ce-field">切割留白 <input type="range" min="0" max="48" value="${state.gutter}" data-opt="gutter"></label>
-        <label class="ce-field">笔刷 <input type="range" min="1" max="64" value="${state.brushSize}" data-opt="brush"></label>
-        <label class="ce-field">画布缩放
-          <select data-opt="zoom">
-            ${[0.25, 0.5, 0.75, 1, 1.5, 2, 3].map((v) => `<option value="${v}"${Math.abs(state.zoom - v) < 0.001 ? ' selected' : ''}>${v === 1 ? '适应' : Math.round(v * 100) + '%'}</option>`).join('')}
-          </select>
-        </label>
-      </div>
+      ${onChooseTemplate ? `<div class="ce-tool-group"><p class="ce-section-title">版式模板</p>${action('template','template','版式与分格')}</div>` : ''}
+      <div class="ce-tool-group">${TOOLS.map(([id,label,key,tip]) => `<button type="button" class="ce-tool${state.tool === id ? ' on' : ''}" data-tool="${id}" aria-pressed="${state.tool === id}" title="${tip} (${key})" aria-label="${label}">${icon(id)}<span class="ce-tool-label">${label}</span><span class="ce-tool-key">${key.split(' ')[0].replace('Shift+','⇧')}</span></button>`).join('')}</div>
+      <div class="ce-tool-group">${action('bubble','bubble','对话气泡')}<button type="button" class="ce-tool${state.tool === 'text' ? ' on' : ''}" data-tool="text" title="拖出文字区域 (T)" aria-label="文字">${icon('text')}<span class="ce-tool-label">文字</span><span class="ce-tool-key">T</span></button>${action('sticker','sticker','贴纸素材')}</div>
+      <div class="ce-tool-group">${action('undo','undo','撤销',!history.undo.length)}${action('redo','redo','重做',!history.redo.length)}</div>
+      <label class="ce-field">画框<select data-opt="panel" aria-label="选择画框"><option value="">未选择</option>${(doc()?.panels || []).map((item,index) => `<option value="${escapeHtml(item.id)}" ${item.id===state.selectedPanelId?'selected':''}>${index+1} · ${item.type==='overlay'?'叠加框':'普通框'}</option>`).join('')}</select></label>
+      ${state.tool==='cut'?`<label class="ce-field">切割留白 ${state.gutter}px<input aria-label="切割留白" type="range" min="0" max="48" value="${state.gutter}" data-opt="gutter"></label>`:''}
+      ${['brush','eraser'].includes(state.tool)?`<label class="ce-field">笔刷 ${state.brushSize}px<input aria-label="笔刷大小" type="range" min="1" max="64" value="${state.brushSize}" data-opt="brush"></label>`:''}
+      ${panel ? `<div class="ce-tool-group"><p class="ce-section-title">画框 ${(doc().panels || []).indexOf(panel)+1}</p>${action('upload-image','upload','上传图片')}${action('gallery','gallery','本格候选图',!panel.panelRef)}${action('crop','crop','调整构图',!panel.image)}${action('remove-image','delete','移除图片',!panel.image)}${onEditPanel?action('edit-params','settings','编辑生成参数',!panel.panelRef):''}<label class="ce-field">边框 ${panel.borderWidth || 0}px<input type="range" min="0" max="12" step="0.5" value="${panel.borderWidth || 0}" data-panel-opt="borderWidth" aria-label="画框边框"></label>${action('convert-type','overlay',panel.type==='overlay'?'转普通框':'转叠加框')}${action('front-panel','up','上移内容')}${action('back-panel','down','下移内容')}${action('delete','delete','删除画框',false,'danger')}</div>`:''}
+      ${element ? `<div class="ce-tool-group"><p class="ce-section-title">${element.kind==='bubble'?'对话气泡':element.kind==='text'?'文字':'贴纸'}</p>${action('edit-element','settings','编辑内容')}${action('flip-element','flip','水平镜像')}${action('front-element','up','上移内容')}${action('back-element','down','下移内容')}${action('delete','delete','删除内容',false,'danger')}</div>`:''}
     `;
   }
 
-  // ------------------------------------------------------------ 侧栏
   function renderSide() {
-    const panels = doc()?.panels || [];
-    const elements = doc()?.elements || [];
-    const panel = selectedPanel();
-    const element = selectedElement();
-    const activeLayer = findLayer(state.activeLayerId);
-    sideEl.innerHTML = `
-      <div class="ce-inspector-tabs" role="tablist" aria-label="编辑面板">
-        ${[['panels', '分镜'], ['layers', '图层'], ['properties', '属性']].map(([id, label]) => `<button type="button" role="tab" data-inspector="${id}" aria-selected="${state.inspector === id}">${label}</button>`).join('')}
-      </div>
-      <section ${state.inspector !== 'layers' ? 'hidden' : ''} aria-label="图层">
-      <h3>图层</h3>
-      <div class="ce-layers">
-        ${layers().map((layer) => `
-          <div class="ce-layer${layer.id === state.activeLayerId ? ' on' : ''}">
-            <button class="ce-layer-name" data-layer-pick="${layer.id}" title="设为当前层">${layerName(layer)}</button>
-            <button class="ce-icon" data-layer-toggle="${layer.id}" data-field="visible" title="显示/隐藏">${layer.visible ? '👁' : '🚫'}</button>
-            <button class="ce-icon" data-layer-toggle="${layer.id}" data-field="locked" title="锁定/解锁">${layer.locked ? '🔒' : '🔓'}</button>
-            <button class="ce-icon" data-layer-move="${layer.id}" data-dir="1" title="上移一层">↑</button>
-            <button class="ce-icon" data-layer-move="${layer.id}" data-dir="-1" title="下移一层">↓</button>
-          </div>`).join('')}
-      </div>
-      <p class="ce-tip">当前层：${layerName(activeLayer)}${activeLayer?.locked ? '（已锁定，不能编辑）' : ''}</p>
-
-      </section>
-      <section ${state.inspector !== 'panels' ? 'hidden' : ''} aria-label="分镜列表">
-      <h3>本页画框（${panels.length}）</h3>
-      <div class="ce-list">
-        ${panels.map((item, index) => {
-          const ref = item.panelRef || '';
-          const hasImage = Boolean(item.image);
-          return `<button class="ce-row${item.id === state.selectedPanelId ? ' on' : ''}" data-panel-pick="${item.id}">
-            <b>${index + 1}</b><span>${ref || '未绑定'}</span>
-            <i class="${hasImage ? 'ok' : 'warn'}">${hasImage ? '有图' : '缺图'}</i>
-          </button>`;
-        }).join('') || '<p class="ce-tip">暂无画框。可用「画框」工具拖出新框。</p>'}
-      </div>
-
-      </section>
-      <section ${state.inspector !== 'properties' ? 'hidden' : ''} aria-label="选中对象属性">
-      ${!panel && !element ? '<p class="ce-tip">在画布中选择画框、气泡或文字，调整它的属性。</p>' : ''}
-      ${element ? `
-        <h3>选中元素</h3>
-        <div class="ce-actions">
-          <button class="sm" data-act="edit-element">编辑内容</button>
-          <button class="sm" data-act="flip-element">水平镜像</button>
-          <button class="sm" data-act="front-element">上移</button>
-          <button class="sm" data-act="back-element">下移</button>
-          <button class="sm danger" data-act="delete">删除</button>
-        </div>` : ''}
-
-      ${panel ? `
-        <h3>选中画框</h3>
-        <div class="ce-actions">
-          <button class="sm" data-act="crop">调整构图</button>
-          <button class="sm" data-act="remove-image" ${panel.image ? '' : 'disabled'}>移除图片</button>
-          <button class="sm" data-act="convert-type">${panel.type === 'overlay' ? '转普通框' : '转叠加框'}</button>
-          <button class="sm" data-act="front-panel">上移</button>
-          <button class="sm" data-act="back-panel">下移</button>
-          <button class="sm danger" data-act="delete">删除</button>
-        </div>
-        <label class="ce-field">边框粗细 <input type="range" min="0" max="12" step="0.5" value="${panel.borderWidth || 0}" data-panel-opt="borderWidth"></label>
-        <p class="ce-tip">${panel.image ? '拖动图片可微调位置，也可以用「调整构图」放大缩小。' : '这一格还没有图片，可直接从已采用的候选图重新载入。'}</p>` : ''}
-
-      <h3>页面</h3>
-      ${doc()?.conversion ? `<details class="ce-tip"><summary>旧存档转换详情</summary><ul>${[...(doc().conversion.dropped || []), ...(doc().conversion.warnings || [])].map((item) => `<li>${escapeHtml(item)}</li>`).join('') || '<li>未发现未转换的元素</li>'}</ul></details>` : ''}
-      <p class="ce-tip">${doc() ? `${Math.round(doc().width)} × ${Math.round(doc().height)} px · ${doc().layout?.templateId || '空白'}` : '未加载'}</p>
-      <p class="ce-tip">元素 ${elements.length} 个 · 笔迹 ${(doc()?.strokes || []).length} 条</p>
-      </section>
-    `;
+    sideEl.hidden = !state.layersOpen;
+    $('[data-act="layers-toggle"]').setAttribute('aria-pressed',String(state.layersOpen));
+    const items = getComicRenderItems(doc() || {}).slice().reverse();
+    sideEl.innerHTML = `<div class="ce-side-heading"><b>图层与内容</b><button class="ce-icon" data-act="layers-toggle" aria-label="关闭图层">×</button></div>
+      <div class="ce-layers">${layers().map((layer) => `<div class="ce-layer${layer.id===state.activeLayerId?' on':''}"><button class="ce-layer-name" data-layer-pick="${escapeHtml(layer.id)}">${escapeHtml(layerName(layer))}</button><button class="ce-icon" data-layer-toggle="${escapeHtml(layer.id)}" data-field="visible" title="${layer.visible?'隐藏':'显示'}图层" aria-label="${layer.visible?'隐藏':'显示'}${escapeHtml(layerName(layer))}">${layer.visible?'◉':'○'}</button><button class="ce-icon" data-layer-toggle="${escapeHtml(layer.id)}" data-field="locked" title="锁定或解锁">${layer.locked?'▣':'□'}</button><button class="ce-icon" data-layer-move="${escapeHtml(layer.id)}" data-dir="1" aria-label="上移图层">↑</button><button class="ce-icon" data-layer-move="${escapeHtml(layer.id)}" data-dir="-1" aria-label="下移图层">↓</button></div>`).join('')}</div>
+      <h3>内容</h3><div class="ce-list">${items.map(({kind,item}) => `<button type="button" class="ce-row" data-item-pick="${escapeHtml(item.id)}" data-kind="${kind}"><b>${kind==='panel'?'▧':kind==='stroke'?'╱':'T'}</b><span>${escapeHtml(item.name || item.panelRef || (item.kind==='bubble'?'气泡':item.text || '笔迹'))}</span></button>`).join('')}</div>
+      ${doc()?.conversion?`<details class="ce-tip"><summary>旧存档转换详情</summary><ul>${[...(doc().conversion.dropped || []),...(doc().conversion.warnings || [])].map((item)=>`<li>${escapeHtml(item)}</li>`).join('') || '<li>没有未转换元素</li>'}</ul></details>`:''}`;
   }
-  function layerName(layer) {
-    if (!layer) return '—';
-    const names = { panels: '画框', overlays: '叠加框', dialogue: '对白' };
-    return layer.name || names[layer.kind] || layer.kind || layer.id;
-  }
+  function layerName(layer) { return layer?.name || ({panels:'画框',overlays:'叠加框',dialogue:'对白'}[layer?.kind]) || layer?.id || '—'; }
 
   // ------------------------------------------------------------ 画布渲染
   function renderCanvas() {
@@ -304,6 +247,9 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
 
     svgEl.innerHTML = parts.join('');
     applyCanvasBox();
+    $('[data-area="page-info"]').textContent = `${Math.round(d.width)} × ${Math.round(d.height)} px`;
+    const zoomSelect = $('[data-opt="zoom"]');
+    zoomSelect.innerHTML = [...new Set([.25,.5,.75,1,1.5,2,3,4,5,state.zoom])].sort((a,b)=>a-b).map((value)=>`<option value="${value}" ${value===state.zoom?'selected':''}>${value===1?'适应':Math.round(value*100)+'%'}</option>`).join('');
   }
 
   /**
@@ -353,6 +299,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
       ${img}
       <polygon points="${POLY(panel.points)}" fill="none" stroke="${panel.borderWidth > 0 ? '#111' : 'transparent'}" stroke-width="${panel.borderWidth || 0}" stroke-linejoin="round"/>
       <polygon data-hit="${panel.id}" points="${POLY(panel.points)}" fill="transparent" stroke="${color}" stroke-width="${(active ? 1.6 : 0.8) * handle}" stroke-dasharray="${active ? '' : `${6 * handle} ${5 * handle}`}" opacity="${active ? 1 : 0.5}" style="cursor:${state.tool === 'select' ? 'move' : 'crosshair'}"/>
+      <g pointer-events="none"><rect x="${panelBounds(panel).x+6}" y="${panelBounds(panel).y+6}" width="${24*handle}" height="${22*handle}" rx="${4*handle}" fill="${color}"/><text x="${panelBounds(panel).x+6+12*handle}" y="${panelBounds(panel).y+6+16*handle}" fill="#fff" text-anchor="middle" font-size="${13*handle}" font-family="sans-serif">${(doc().panels || []).indexOf(panel)+1}</text></g>
     </g>`;
   }
 
@@ -583,8 +530,9 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     state.selectedElementId = null;
     state.selectedStrokeId = null;
     state.selectedPanelId = panel?.id || null;
-    if (panel) state.inspector = 'properties';
+
     if (panel?.layerId) state.activeLayerId = panel.layerId;
+    renderTools();
     renderSide();
     renderCanvas();
   }
@@ -592,22 +540,23 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     state.selectedPanelId = null;
     state.selectedStrokeId = null;
     state.selectedElementId = element?.id || null;
-    if (element) state.inspector = 'properties';
+
     if (element?.layerId) state.activeLayerId = element.layerId;
+    renderTools();
     renderSide();
     renderCanvas();
   }
 
   function pointerDown(event) {
     if (!doc()) return;
-    if (event.button !== 0 || (event.pointerType !== 'touch' && !event.isPrimary)) return;
+    if ((event.button !== 0 && event.button !== 1) || (event.pointerType !== 'touch' && !event.isPrimary)) return;
     if (event.target.closest('button, input, select, textarea')) return;
     const d = doc();
     const scale = handleScale();
     const raw = canvasPoint(event, false);
     const point = canvasPoint(event);
 
-    if (state.tool === 'hand' || state.tool === 'zoom' || event.button === 1) return;
+    if (state.tool === 'hand' || state.tool === 'zoom' || spaceHeld || event.button === 1) return;
 
     if (state.tool === 'cut') {
       const candidates = (d.panels || []).filter((panel) => !findLayer(panel.layerId)?.locked);
@@ -625,7 +574,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     // 否则点击已有画面时会被画框点选吞掉（上游也是先判工具再判命中）。
     if (state.tool === 'select' && (elementTarget || panelTarget || handle)) {
       event.preventDefault();
-      const element = elementTarget ? (d.elements || []).find((item) => item.id === elementTarget.dataset.elementHit) : null;
+      const element = elementTarget ? (d.elements || []).find((item) => item.id === elementTarget.dataset.elementHit) : (handle ? selectedElement() : null);
       if (element) {
         if (element.id !== state.selectedElementId) chooseElement(element);
         const layer = findLayer(element.layerId);
@@ -646,6 +595,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
       const panel = panelId ? (d.panels || []).find((item) => item.id === panelId) : null;
       if (panel) {
         if (panel.id !== state.selectedPanelId) choosePanel(panel);
+        if (!handle) return; // 与参考项目一致：画框内部只选中，外置手柄才移动。
         const layer = findLayer(panel.layerId);
         if (!layer?.locked) {
           const bounds = panelBounds(panel);
@@ -1063,15 +1013,66 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     ['announcement', '宣告'], ['mumble', '喃喃细语'], ['vibration', '颤抖波纹'], ['burst-fine', '细芒爆发'],
   ];
 
+  function openBalloonPicker() {
+    if (!doc()) return;
+    const modal = document.createElement('div'); modal.className='ce-modal';
+    modal.innerHTML=`<div class="ce-modal-box wide" role="dialog" aria-modal="true" aria-label="选择对话气泡"><h3>对话气泡</h3><div class="ce-preset-grid">${BUBBLE_PRESETS.map(([id,label])=>`<button type="button" class="ce-preset" data-bubble-preset="${id}"><svg viewBox="0 0 100 100" aria-hidden="true">${balloonPageSvg({kind:'bubble',presetId:id,width:100,height:100,fill:'#fff',stroke:'#34425b',strokeWidth:1.5,text:''})}</svg><span>${label}</span></button>`).join('')}</div><div class="ce-modal-actions"><button class="sm" data-close>取消</button></div></div>`;
+    modal.addEventListener('click',(event)=>{
+      if(event.target===modal || event.target.closest('[data-close]')) {modal.remove(); return;}
+      const choice=event.target.closest('[data-bubble-preset]');
+      if(!choice) return;
+      const d=doc(); modal.remove();
+      insertElement('bubble',{x:d.width*.35,y:d.height*.08,width:d.width*.3,height:d.width*.22},{presetId:choice.dataset.bubblePreset});
+    }); host.appendChild(modal);
+  }
+
+  async function openGallery() {
+    const panel=selectedPanel(); if(!panel?.panelRef) return;
+    const panelId=panel.id;
+    const modal=document.createElement('div'); modal.className='ce-modal';
+    modal.innerHTML='<div class="ce-modal-box wide" role="dialog" aria-modal="true" aria-label="本格候选图"><h3>本格候选图</h3><div class="ce-gallery-content">正在加载…</div><div class="ce-modal-actions"><button class="sm" data-close>关闭</button></div></div>';
+    modal.addEventListener('click',event=>{if(event.target===modal || event.target.closest('[data-close]')) modal.remove();});
+    host.appendChild(modal);
+    try {
+      const board=await api(`/api/projects/${state.projectId}/image-board`);
+      if(disposed || !modal.isConnected) return;
+      const record=(board.pages || []).flatMap(page=>page.panels || []).find(item=>item.panel_ref===panel.panelRef)?.image;
+      const candidates=(record?.candidates || []).filter(item=>item.available && item.url);
+      modal.querySelector('.ce-gallery-content').innerHTML=candidates.length?`<div class="ce-gallery">${candidates.map(item=>`<button type="button" data-candidate="${item.index}"><img src="${escapeHtml(item.url)}" alt="候选图 ${item.index+1}"><span>候选图 ${item.index+1}${record.selected_index===item.index?' · 已采用':''}</span></button>`).join('')}</div>`:'<p class="ce-tip">本格还没有可用候选图，可先上传图片或打开生成参数出图。</p>';
+      modal.addEventListener('click',async event=>{
+        const button=event.target.closest('[data-candidate]'); if(!button) return;
+        const candidate=candidates.find(item=>item.index===Number(button.dataset.candidate));
+        if(!candidate) return;
+        button.disabled=true;
+        try {
+          const image=new Image(); image.src=candidate.url; await image.decode();
+          if(disposed || !modal.isConnected) return;
+          const target=doc().panels.find(item=>item.id===panelId); if(!target) return;
+          const spec=fitPanelImage(target,{artifactId:record.artifact_id,candidateIndex:candidate.index,url:candidate.url,width:image.naturalWidth,height:image.naturalHeight,rotation:0});
+          replaceDocument({...doc(),panels:doc().panels.map(item=>item.id===panelId?{...item,image:spec}:item)});
+          modal.remove(); notice('已放入当前画框，保存漫画页后生效。');
+        } catch(error) {notice(`图片读取失败：${error.message}`,'error'); button.disabled=false;}
+      });
+    } catch(error) { if(!disposed && modal.isConnected) modal.querySelector('.ce-gallery-content').textContent=`加载失败：${error.message}`; }
+  }
+
   // ------------------------------------------------------------ 构图调整
-  function openCrop() {
+  async function openCrop() {
     const panel = selectedPanel();
-    if (!panel || !panel.image?.dataUrl) { notice('这一格还没有图片，无法调整构图。', 'warn'); return; }
+    if (!panel || !(panel.image?.dataUrl || panel.image?.url)) { notice('这一格还没有图片，无法调整构图。', 'warn'); return; }
+    let source = { ...panel.image };
+    if (!(source.width > 0 && source.height > 0)) {
+      try {
+        const image = new Image(); image.src = source.dataUrl || source.url; await image.decode();
+        if (disposed || selectedPanel()?.id !== panel.id) return;
+        source = { ...source, width:image.naturalWidth, height:image.naturalHeight };
+      } catch (error) { if(!disposed) notice(`图片读取失败：${error.message}`, 'error'); return; }
+    }
     const bounds = panelBounds(panel);
     const padding = Math.max(bounds.width, bounds.height) * 0.28;
     const view = { x: bounds.x - padding, y: bounds.y - padding, width: bounds.width + padding * 2, height: bounds.height + padding * 2 };
-    const fit = fitPanelImage(panel, panel.image);
-    let current = { ...panel.image };
+    const fit = fitPanelImage(panel, source);
+    let current = source.scale > 0 ? { ...source } : { ...fit };
     const backdrop = document.createElement('div');
     backdrop.className = 'ce-modal';
     backdrop.innerHTML = `
@@ -1093,7 +1094,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     let dragState = null;
     function draw() {
       svg.innerHTML = `
-        <image href="${current.dataUrl}" x="${current.x}" y="${current.y}" width="${current.width * current.scale}" height="${current.height * current.scale}" transform="rotate(${current.rotation || 0} ${current.x + current.width * current.scale / 2} ${current.y + current.height * current.scale / 2})"/>
+        <image href="${escapeHtml(current.dataUrl || current.url)}" x="${current.x}" y="${current.y}" width="${current.width * current.scale}" height="${current.height * current.scale}" transform="rotate(${current.rotation || 0} ${current.x + current.width * current.scale / 2} ${current.y + current.height * current.scale / 2})"/>
         <path d="M ${view.x} ${view.y} h ${view.width} v ${view.height} h ${-view.width} Z ${path}" fill="#353545" fill-opacity="0.58" fill-rule="evenodd"/>`;
     }
     draw();
@@ -1143,8 +1144,13 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
 
   // ------------------------------------------------------------ 事件绑定
   listen(host, 'click', async (event) => {
-    const inspector = event.target.closest('[data-inspector]');
-    if (inspector) { state.inspector = inspector.dataset.inspector; renderSide(); return; }
+    const itemPick = event.target.closest('[data-item-pick]');
+    if (itemPick) {
+      if (itemPick.dataset.kind==='panel') choosePanel(doc().panels.find((item)=>item.id===itemPick.dataset.itemPick));
+      else if (itemPick.dataset.kind==='element') chooseElement(doc().elements.find((item)=>item.id===itemPick.dataset.itemPick));
+      else { state.selectedStrokeId=itemPick.dataset.itemPick; state.selectedPanelId=null; state.selectedElementId=null; }
+      return;
+    }
     const toolButton = event.target.closest('[data-tool]');
     if (toolButton) { changeTool(toolButton.dataset.tool); return; }
     const actButton = event.target.closest('[data-act]');
@@ -1154,12 +1160,12 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
       if (act === 'redo') { redo(); return; }
       if (act === 'fit') { fitView(); return; }
       if (act === 'save') { await save(); return; }
-      if (act === 'bubble') {
-        const d = doc();
-        if (!d) return;
-        insertElement('bubble', { x: d.width * 0.35, y: d.height * 0.08, width: d.width * 0.3, height: d.width * 0.22 });
-        return;
-      }
+      if (act === 'bubble') { openBalloonPicker(); return; }
+      if (act === 'layers-toggle') { state.layersOpen=!state.layersOpen; renderSide(); return; }
+      if (act === 'template') { onChooseTemplate?.(); return; }
+      if (act === 'edit-params') { if(selectedPanel()?.panelRef) onEditPanel?.(selectedPanel().panelRef); return; }
+      if (act === 'upload-image') { const input=$('[data-act=panel-upload]'); input.dataset.target=selectedPanel()?.id || ''; input.click(); return; }
+      if (act === 'gallery') { await openGallery(); return; }
       if (act === 'sticker') { assetInput.dataset.kind = 'sticker'; assetInput.value = ''; assetInput.click(); return; }
       if (act === 'edit-element') { openElementEditor(); return; }
       if (act === 'flip-element') {
@@ -1270,11 +1276,28 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
       const panel = selectedPanel();
       if (!panel) return;
       const d = doc();
-      replaceDocument({ ...d, panels: (d.panels || []).map((item) => item.id === panel.id ? { ...item, [panelOpt]: Number(event.target.value) } : item) }, { record: false });
+      if (!panelSliderEdit) { history.undo.push(d); history.redo=[]; panelSliderEdit=true; }
+      state.document=ensureComicLayers({ ...d, panels: (d.panels || []).map((item) => item.id === panel.id ? { ...item, [panelOpt]: Number(event.target.value) } : item) });
+      markDirty(); renderCanvas(); updateButtons();
     }
   });
   listen(host, 'change', (event) => {
-    if (event.target.dataset.opt === 'zoom') renderCanvas();
+    if (event.target.dataset.panelOpt) { panelSliderEdit=false; renderTools(); }
+    if (event.target.dataset.opt === 'zoom') { state.zoom=Number(event.target.value); if(state.zoom===1) state.view={x:0,y:0}; renderCanvas(); }
+    if (event.target.dataset.opt === 'panel') choosePanel(doc().panels.find((item)=>item.id===event.target.value) || null);
+  });
+
+  listen($('[data-act="panel-upload"]'),'change',async (event)=>{
+    const input=event.target, file=input.files?.[0], targetId=input.dataset.target; input.value='';
+    if(!file || !targetId) return;
+    try {
+      const asset=await readComicAsset(file);
+      if(disposed) return;
+      const target=doc()?.panels.find(item=>item.id===targetId); if(!target) return;
+      const image=fitPanelImage(target,{dataUrl:asset.dataUrl,width:asset.width,height:asset.height,rotation:0});
+      replaceDocument({...doc(),panels:doc().panels.map(item=>item.id===targetId?{...item,image}:item)});
+      notice('图片已放入原画框，保存后写入漫画页。');
+    } catch(error) { if(!disposed) notice(`图片导入失败：${error.message}`,'error'); }
   });
 
   listen(assetInput, 'change', async () => {
@@ -1284,7 +1307,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     try {
       const asset = await readComicAsset(file);
       const d = doc();
-      if (!d) return;
+      if (!d || disposed) return;
       const scale = Math.min(d.width * 0.4 / asset.width, d.height * 0.4 / asset.height, 1);
       const width = asset.width * scale;
       const height = asset.height * scale;
@@ -1303,11 +1326,14 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     if (drag.current && drag.current.pointerId === event.pointerId) pointerUp(event);
   });
   listen(svgEl, 'dblclick', dblClick);
+  listen(host, 'dblclick', (event) => {
+    if (event.target.closest('[data-tool="hand"]')) fitView();
+  });
   listen(svgEl, 'dragstart', (event) => event.preventDefault());
 
   listen(viewportEl, 'wheel', (event) => {
     if (!doc()) return;
-    if (event.ctrlKey || event.metaKey || state.tool === 'zoom') {
+    if (!event.shiftKey) {
       event.preventDefault();
       const next = Math.max(0.2, Math.min(5, state.zoom * Math.exp(-event.deltaY * 0.002)));
       const bounds = viewportEl.getBoundingClientRect();
@@ -1326,7 +1352,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
   }, { passive: false });
 
   listen(viewportEl, 'pointerdown', (event) => {
-    if (state.tool !== 'hand' && !event.spaceHeld && event.button !== 1) return;
+    if (state.tool !== 'hand' && !spaceHeld && event.button !== 1) return;
     if (event.target.closest('button')) return;
     event.preventDefault();
     const start = { x: event.clientX, y: event.clientY, view: { ...state.view } };
@@ -1361,6 +1387,8 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     if (event.target.closest('input, textarea, select, [contenteditable="true"], .ce-modal')) return;
     const key = event.key.toLowerCase();
     const command = event.ctrlKey || event.metaKey;
+    if (key === ' ') { event.preventDefault(); spaceHeld=true; return; }
+    if (event.shiftKey && key==='c') { event.preventDefault(); openCrop(); return; }
     if (command && key === 'z') { event.preventDefault(); undo(event.shiftKey); return; }
     if (command && key === 'y') { event.preventDefault(); redo(); return; }
     if (command && key === 's') { event.preventDefault(); save(); return; }
@@ -1384,6 +1412,8 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     if (next) { event.preventDefault(); changeTool(next); }
   });
 
+  listen(window, 'keyup', (event)=>{ if(event.key===' ') spaceHeld=false; });
+  listen(window, 'blur', ()=>{spaceHeld=false;});
   listen(window, 'resize', () => { if (doc() && state.zoom) renderCanvas(); });
 
   const resizeObserver = new ResizeObserver(() => {

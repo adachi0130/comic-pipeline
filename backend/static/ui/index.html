@@ -704,6 +704,7 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
 
     <!-- 出图 -->
     <section id="tab-images" class="hidden">
+      <div id="ed-params-banner" class="scope-notice hidden"><b>漫画画框参数</b><span id="ed-params-label"></span><span class="spacer"></span><button class="sm primary" id="ed-params-return">保存并返回漫画编辑</button></div>
       <div class="card iw-toolbar"><div class="row"><div><h2>逐格出图工作台</h2><div class="h2sub">选页与格，编辑提示词和参数，比较候选图后采用满意的画面。</div></div><span class="spacer"></span>
         <button class="sm" id="iw-refresh">刷新</button><button class="sm primary" id="iw-comfy">出图设置</button><button class="sm" id="iw-compose">去分页合成</button></div>
         <div class="row"><span class="pill tag" id="iw-connection">读取出图设置…</span><span class="pill" id="iw-info">—</span><span class="mut" id="iw-orphans"></span></div></div>
@@ -770,20 +771,21 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
         <div class="spacer"></div>
         <button class="sm" id="ed-back">预览与审核</button>
         <button class="sm" id="ed-export">整册导出</button>
-        <details class="ed-menu"><summary>视图 ▾</summary><div class="ed-menu-items">
-          <button class="sm" id="ed-expand" aria-pressed="false">专注画布</button>
+        <button class="sm" id="ed-expand" aria-pressed="false">扩大工作区</button>
+        <button class="sm" id="ed-library-toggle" aria-expanded="false">漫画页</button>
+        <details class="ed-menu"><summary>更多 ▾</summary><div class="ed-menu-items">
           <button class="sm" id="ed-window" disabled>独立窗口</button>
         </div></details>
         <button class="sm primary" id="ed-save" disabled>保存漫画页</button>
       </header>
-      <nav class="ed-pagebar" aria-label="漫画页">
-        <span class="ed-page-caption">漫画页 <small id="ed-page-count">0 页</small></span>
-        <div id="ed-pages" class="ed-pages"></div>
-        <label class="ed-page-select">跳转<select id="ed-page" aria-label="跳转漫画页"><option value="">先选择项目与漫画页</option></select></label>
-      </nav>
       <div class="ed-surface">
         <div class="editor-empty" id="ed-empty"><b>选择漫画页，开始编辑</b><span>还没有漫画页时，先在工作台完成分格分页。</span></div>
         <div id="ed-host" class="comic-editor hidden"></div>
+        <aside class="ed-library" aria-label="漫画页库">
+          <div class="ed-library-heading"><b>漫画页</b><small id="ed-page-count">0 页</small><button class="sm" id="ed-library-close" aria-label="关闭漫画页库">×</button></div>
+          <label class="ed-page-select">跳转漫画页<select id="ed-page"><option value="">先选择项目与漫画页</option></select></label>
+          <div id="ed-pages" class="ed-pages"></div>
+        </aside>
       </div>
       <footer class="editor-feedback"><span class="ed-status-dot"></span><span id="ed-message" role="status" aria-live="polite">选择漫画页后开始编辑</span></footer>
     </section>
@@ -889,6 +891,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=94"></script>
+<script type="module" src="/ui/app.js?v=95"></script>
 </body>
 </html>

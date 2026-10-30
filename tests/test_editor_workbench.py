@@ -204,7 +204,48 @@ def main():
             assert page.locator('#tab-editor iframe').count() == 0, '编辑器应直接挂载主页面'
             assert actual.locator('[data-panel-id]').count() == 1
             assert actual.locator('image').count() == 1, '选定图片未自动贴入'
+            # 默认保留主导航，扩大后隐藏，退出扩大恢复。
+            expect(page.locator('.side')).to_be_visible()
+            assert actual.evaluate('(el) => getComputedStyle(el).getPropertyValue("--panel").trim()') == '#fff'
+            page.locator('#ed-expand').click()
+            expect(page.locator('.side')).not_to_be_visible()
+            page.locator('#ed-expand').click()
+            expect(page.locator('.side')).to_be_visible()
+            assert page.locator('.ed-page-preview img').count() == 1
+            # 画框内部拖动只选中，不移动；标准候选 URL 也能打开构图调整。
+            hit=actual.locator('[data-hit]').first
+            original=hit.get_attribute('points')
+            box=hit.bounding_box(); x=box['x']+box['width']*.4; y=box['y']+box['height']*.6
+            page.mouse.move(x,y);page.mouse.down();page.mouse.move(x+25,y+15);page.mouse.up()
+            assert actual.locator('[data-hit]').first.get_attribute('points') == original
+            actual.locator('[data-act="crop"]').click()
+            expect(actual.get_by_role('dialog', name='调整构图')).to_be_visible()
+            assert actual.locator('[data-crop] image').get_attribute('href').startswith('/api/artifacts/')
+            actual.locator('[data-modal="cancel"]').click()
+            # 本格候选图读取使用原项目，不打开第二个生成队列。
+            actual.locator('[data-act="gallery"]').click()
+            expect(actual.locator('.ce-gallery img')).to_have_count(1)
+            actual.locator('[data-candidate="0"]').click()
+            expect(actual.get_by_role('dialog', name='本格候选图')).not_to_be_visible()
+            # 图片上传放回发起它的画框，并能随正式漫画文档保存。
+            with page.expect_file_chooser() as chooser:
+                actual.locator('[data-act="upload-image"]').click()
+            chooser.value.set_files({'name':'frame.png','mimeType':'image/png','buffer':png('skyblue')})
+            expect(actual.locator('[data-panel-id] image').first).to_have_attribute('href', re.compile('^data:image/'))
+            kept_canvas=actual.locator('svg.ce-canvas').element_handle()
+            actual.locator('[data-act="edit-params"]').click()
+            expect(page.locator('#ed-params-banner')).to_be_visible()
+            expect(page.locator('#iw-current h2').first).to_contain_text('格')
+            page.locator('#ed-params-return').click()
+            expect(page.locator('#tab-editor')).to_be_visible()
+            assert kept_canvas.evaluate('(node) => node === document.querySelector("#ed-host svg.ce-canvas")')
+            # 图层按需从画布右下角展开，平时不占据侧栏。
+            expect(actual.locator('.ce-side')).not_to_be_visible()
+            actual.locator('[data-act="layers-toggle"]').first.click()
+            expect(actual.locator('.ce-side')).to_be_visible()
+            actual.locator('.ce-side [data-act="layers-toggle"]').click()
             actual.locator('[data-act="bubble"]').click()
+            actual.locator('[data-bubble-preset="speech"]').click()
             assert actual.locator('[data-element-id] path').count(), '气泡轮廓必须在画布中可见'
             expect(page.locator('#ed-state')).to_have_text('未保存')
             actual.locator('[data-act="edit-element"]').click()
@@ -224,12 +265,11 @@ def main():
                 assert actual.locator('svg text').filter(has_text='漫画测试').count()
                 page.screenshot(path=str(screenshots / f'editor-native-{width}.png'))
             page.set_viewport_size({'width': 1440, 'height': 1100})
-            page.locator('.ed-menu summary').click()
             page.locator('#ed-expand').click()
             expect(page.locator('#ed-expand')).to_have_attribute('aria-pressed', 'true')
             page.screenshot(path=str(screenshots / 'editor-desktop.png'))
             page.locator('#ed-expand').click()
-            # 返回预览后再进同一页，保留同一个 iframe 会话。
+            # 返回预览后再进同一页，保留同一个 DOM 编辑会话。
             canvas_element = actual.locator('svg.ce-canvas').element_handle()
             page.locator('#ed-back').click()
             expect(page.locator('#tab-compose')).to_be_visible()
@@ -283,6 +323,7 @@ def main():
             with page.expect_request(lambda request: request.method == 'GET' and request.url.endswith('/api/projects/2')):
                 page.locator('#project-switch').select_option('2')
             actual.locator('[data-act="bubble"]').evaluate('(button) => button.click()')
+            actual.locator('[data-bubble-preset="speech"]').evaluate('(button) => button.click()')
             expect(page.locator('#project-switch')).to_be_enabled()
             expect(page.locator('#project-switch')).to_have_value('1')
             expect(page.locator('#ed-state')).to_have_text('未保存')

@@ -1,7 +1,7 @@
 /* 主页面漫画工作区，不使用 iframe；会话绑定发起操作的项目与页。 */
 import { createComicEditor } from './editor/comicEditor.mjs';
 
-export function createEditorWorkbench({ state, api, $, toast, switchTab, loadCompose, refreshGates, pageLabel }) {
+export function createEditorWorkbench({ state, api, $, toast, switchTab, loadCompose, refreshGates, pageLabel, editPanel, chooseTemplate }) {
   let session = 0, pagesRequest = 0, instance = null;
   const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const editorApi = (path, options = {}) => api(path, { ...options, ...(options.body ? { body: JSON.stringify(options.body) } : {}) });
@@ -10,7 +10,7 @@ export function createEditorWorkbench({ state, api, $, toast, switchTab, loadCom
 
   function collapse() {
     document.body.classList.remove('editor-expanded');
-    $('#ed-expand').setAttribute('aria-pressed', 'false'); $('#ed-expand').textContent = '专注画布';
+    $('#ed-expand').setAttribute('aria-pressed', 'false'); $('#ed-expand').textContent = '扩大工作区';
   }
   function reset() {
     session++; pagesRequest++; instance?.dispose(); instance = null;
@@ -22,7 +22,11 @@ export function createEditorWorkbench({ state, api, $, toast, switchTab, loadCom
   }
   function renderPages() {
     const pages = state._editorPages || [];
-    $('#ed-pages').innerHTML = pages.map((p) => `<button type="button" class="ed-page-tab${state.editor?.pageRef === p.page_ref ? ' active' : ''}" data-editor-page="${esc(p.page_ref)}" aria-pressed="${state.editor?.pageRef === p.page_ref}"><span class="ed-page-no">${esc(p.page_ref.split(':')[1].padStart(2, '0'))}</span><span>${esc(pageLabel(p.page_ref))}</span><small>${esc(badgeOf(p))}</small></button>`).join('');
+    $('#ed-pages').innerHTML = pages.map((p) => {
+      const src=p.composed_url || (p.med_doc_has_file?`/api/artifacts/${p.med_doc_id}/file`:`/api/projects/${state.projectId}/editor-doc/${encodeURIComponent(p.page_ref)}/preview?scale=0.15`);
+      return `<button type="button" class="ed-page-tab${state.editor?.pageRef === p.page_ref ? ' active' : ''}" data-editor-page="${esc(p.page_ref)}" aria-pressed="${state.editor?.pageRef === p.page_ref}" title="${esc(pageLabel(p.page_ref))} · ${esc(badgeOf(p))}"><span class="ed-page-preview"><img src="${esc(src)}" loading="lazy" alt="${esc(pageLabel(p.page_ref))}预览" data-template="${esc(p.template_id)}"></span><span class="ed-page-caption"><span class="ed-page-no">${esc(p.page_ref.split(':')[1].padStart(3,'0'))}</span><span>${esc(pageLabel(p.page_ref))}</span><small>${esc(badgeOf(p))}</small></span></button>`;
+    }).join('');
+    $('#ed-pages').querySelectorAll('img').forEach((image)=>image.addEventListener('error',()=>{if(image.dataset.template){image.src=`/api/templates/${encodeURIComponent(image.dataset.template)}/svg`; delete image.dataset.template;}},{once:true}));
     $('#ed-page').innerHTML = '<option value="">选择漫画页</option>' + pages.map((p) => `<option value="${esc(p.page_ref)}">${esc(pageLabel(p.page_ref))} · ${esc(badgeOf(p))}</option>`).join('');
     $('#ed-page').value = state.editor?.pageRef || '';
     $('#ed-page-count').textContent = `${pages.length} 页`;
@@ -52,6 +56,7 @@ export function createEditorWorkbench({ state, api, $, toast, switchTab, loadCom
       switchTab('editor'); requestAnimationFrame(() => instance?.render()); return;
     }
     if (previous?.dirty && !confirm('当前漫画页有未保存的修改。切换页会丢失这些修改，确定继续吗？')) { $('#ed-page').value = previous.pageRef; return; }
+    $('#tab-editor').classList.remove('pages-open'); $('#ed-library-toggle').setAttribute('aria-expanded','false');
     const key = ++session; instance?.dispose();
     state.editor = { projectId, pageRef, session: key, dirty: false, ready: false, loading: true };
     switchTab('editor'); renderPages();
@@ -66,7 +71,7 @@ export function createEditorWorkbench({ state, api, $, toast, switchTab, loadCom
       $('#ed-state').textContent = error ? '操作失败' : state.editor.dirty ? '未保存' : '已就绪';
       if (message) $('#ed-message').textContent = message;
     };
-    const editor = createComicEditor({ host, api: editorApi,
+    const editor = createComicEditor({ host, api: editorApi, onEditPanel: editPanel, onChooseTemplate: chooseTemplate,
       onDirty(dirty) { if (current(key, projectId)) { state.editor.dirty = dirty; setState(dirty ? '当前页有未保存修改。' : '当前页已保存。'); } },
       onNotice(message, kind) { setState(message, kind === 'error'); },
       onSaved(payload) {
@@ -85,6 +90,10 @@ export function createEditorWorkbench({ state, api, $, toast, switchTab, loadCom
     } catch (error) { setState(`打开失败：${error.message}，可重新选择本页重试。`, true); }
     finally { if (current(key, projectId)) state.editor.loading = false; }
   }
+  $('#ed-library-toggle').addEventListener('click',()=>{
+    const opened=$('#tab-editor').classList.toggle('pages-open'); $('#ed-library-toggle').setAttribute('aria-expanded',String(opened));
+  });
+  $('#ed-library-close').addEventListener('click',()=>{ $('#tab-editor').classList.remove('pages-open'); $('#ed-library-toggle').setAttribute('aria-expanded','false'); });
   $('#ed-page').addEventListener('change', (e) => { if (e.target.value) open(e.target.value); });
   $('#ed-pages').addEventListener('click', (e) => { const p = e.target.closest('[data-editor-page]'); if (p) open(p.dataset.editorPage); });
   $('#ed-back').addEventListener('click', () => switchTab('compose'));
@@ -93,7 +102,7 @@ export function createEditorWorkbench({ state, api, $, toast, switchTab, loadCom
   $('#open-editor-workbench').addEventListener('click', () => switchTab('editor'));
   $('#ed-expand').addEventListener('click', () => {
     const expanded = document.body.classList.toggle('editor-expanded');
-    $('#ed-expand').textContent = expanded ? '显示面板' : '专注画布'; $('#ed-expand').setAttribute('aria-pressed', String(expanded));
+    $('#ed-expand').textContent = expanded ? '退出扩大' : '扩大工作区'; $('#ed-expand').setAttribute('aria-pressed', String(expanded));
     requestAnimationFrame(() => instance?.render());
   });
   $('#ed-save').addEventListener('click', async () => {

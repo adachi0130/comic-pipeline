@@ -18,7 +18,15 @@ const $$ = (s) => document.querySelectorAll(s);
 const API = '';
 
 const state = { projectId: null, project: null, meta: null, templates: [], techniques: [] };
-const editorWorkbench = createEditorWorkbench({ state, api, $, toast, switchTab, loadCompose, refreshGates, pageLabel });
+let editorParamsReturn = null;
+const editorWorkbench = createEditorWorkbench({ state, api, $, toast, switchTab, loadCompose, refreshGates, pageLabel,
+  editPanel: (ref) => {
+    editorParamsReturn = { projectId: state.projectId, pageRef: state.editor?.pageRef };
+    $('#ed-params-label').textContent = `${pageLabel(editorParamsReturn.pageRef)} · ${panelFullLabel(ref)}`;
+    $('#ed-params-banner').classList.remove('hidden');
+    switchTab('images'); imageWorkbench.focus(ref).catch((error) => toast(error.message, 'err'));
+  },
+  chooseTemplate: () => switchTab('pages') });
 
 // ---------- 工具 ----------
 async function api(path, opts = {}) {
@@ -59,6 +67,13 @@ const providerManager = createProviderManager({ api, $, esc, toast, editFeedback
 const configuration = createConfigurationCenter({ state, api, $, esc, toast, switchTab,
   loadProviders, loadStageBinding, loadCharacterPresetPanel, loadStyleLoras, ensureLoraDatalist, editFeedback });
 const imageWorkbench = createImageWorkbench({ state, api, $, esc, pill, toast, editFeedback, refreshGates, openComfySettings, switchTab, pageLabel, panelFullLabel, attachLoraCombos, ensureLoraDatalist });
+$('#ed-params-return').addEventListener('click', async () => {
+  const target = editorParamsReturn;
+  if (!target || target.projectId !== state.projectId || !(await editFeedback.flush('image-editor'))) return;
+  if (target.projectId !== state.projectId) return;
+  editorParamsReturn = null; $('#ed-params-banner').classList.add('hidden');
+  await editorWorkbench.open(target.pageRef);
+});
 const pipelineOverview = createPipelineOverview({ state, api, $, esc, pill, toast, switchTab, refreshGates,
   pageLabel, panelFullLabel, openPageDetail, openStageArtifacts, focusWorkbench, editConfiguration: editAutoConfiguration,
   focusImage: (ref) => { switchTab('images'); imageWorkbench.focus(ref); } });
@@ -247,6 +262,7 @@ async function pickProject(id) {
     $('#pr-style').innerHTML = '<div class="empty">正在加载新项目画风…</div>'; $('#pr-style-status').textContent = '';
   }
   if (state.editor && state.editor.projectId !== id) editorWorkbench.reset();
+  if (editorParamsReturn?.projectId !== id) { editorParamsReturn = null; $('#ed-params-banner').classList.add('hidden'); }
   state.projectId = id;
   try { localStorage.setItem('comic.lastProjectId', String(id)); } catch { /* 隐私模式忽略 */ }
   state.project = project;
