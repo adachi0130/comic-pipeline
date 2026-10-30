@@ -228,6 +228,30 @@ def normalize_panel_refs(prompts: PagePrompts, page_ref: str, expected_refs: lis
     prompts.page_ref = page_ref
 
 
+def _has_cjk(text: str) -> bool:
+    """提示词里是否含中文字符（汉字、中文标点、全角符号都算）。"""
+    if not text:
+        return False
+    for character in text:
+        code = ord(character)
+        if (0x3400 <= code <= 0x4DBF        # CJK 扩展 A
+                or 0x4E00 <= code <= 0x9FFF  # CJK 基本区
+                or 0x3000 <= code <= 0x303F  # CJK 标点（，。「」等）
+                or 0xFF00 <= code <= 0xFFEF  # 全角符号（（）！：等）
+                or 0x20000 <= code <= 0x2A6DF):  # CJK 扩展 B
+            return True
+    return False
+
+
+def cjk_panels(prompts: PagePrompts) -> list[str]:
+    """返回提示词里带中文的格号；出图模型不认中文，必须整条英文。"""
+    return [
+        item.panel_ref
+        for item in prompts.panels
+        if _has_cjk(item.prompt_pos) or _has_cjk(item.prompt_neg)
+    ]
+
+
 def handle(session: Session, job: Job) -> dict:
     payload = job.payload or {}
     project_id = int(payload.get("project_id") or job.project_id or 0)
@@ -289,6 +313,17 @@ def handle(session: Session, job: Job) -> dict:
         )
         expected_refs = [f"panel:{page.ref.split(':', 1)[1]}.{panel['panel_order']}" for panel in page_payload.get('panels', [])]
         user += "\n\n【本次必须输出的页格编号】\n当前页：" + page.ref + "\n逐格编号：" + ", ".join(expected_refs) + "\n请严格按这些编号输出，不要沿用其他页的编号。"
+
+        def _validate(value: PagePrompts) -> PagePrompts:
+            # 格数适配校验：必须与分页脚本的 panels 一一对应
+            expected_count = len(page_payload.get("panels", []))
+            if len(value.panels) != expected_count:
+                raise ValueError(
+                    f"{page.ref} 需 {expected_count} 格提示词（按该页模板格数），模型给了 {len(value.panels)} 格"
+                )
+            normalize_panel_refs(value, page.ref, expected_refs)
+            return value
+
         prompts: PagePrompts = client.structured(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             PagePrompts,
@@ -297,13 +332,36 @@ def handle(session: Session, job: Job) -> dict:
         )
         if jobq.is_cancelled(job.id):
             break
-        # 格数适配校验：必须与分页脚本的 panels 一一对应
-        expected = len(page_payload.get("panels", []))
-        if len(prompts.panels) != expected:
-            raise ValueError(
-                f"{page.ref} 需 {expected} 格提示词（按该页模板格数），模型给了 {len(prompts.panels)} 格"
+        _validate(prompts)
+
+        # 中文防线：出图模型只认英文提示词。发现中文 → 带纠错指令重试一次，仍中文则明确失败。
+        bad = cjk_panels(prompts)
+        if bad:
+            job.message = f"{page.ref} 提示词出现中文，正在要求模型重写为英文"
+            session.commit()
+            retry_user = (
+                user
+                + "\n\n【纠错重写（上一轮输出不合格，必须全部重写）】\n"
+                + "你上一轮在 " + ", ".join(bad) + " 的提示词里写了中文。\n"
+                + "prompt_pos / prompt_neg 只能包含英文（Danbooru tag 或英文自然语言），"
+                + "必须把中文的 action/scene_desc/角色名 翻译成英文，禁止任何中文字符与全角标点。\n"
+                + "请重新输出整页 JSON，所有提示词只用英文。"
             )
-        normalize_panel_refs(prompts, page.ref, expected_refs)
+            prompts = client.structured(
+                [{"role": "system", "content": system}, {"role": "user", "content": retry_user}],
+                PagePrompts,
+                log=log,
+                should_cancel=lambda: jobq.is_cancelled(job.id),
+            )
+            if jobq.is_cancelled(job.id):
+                break
+            _validate(prompts)
+            bad = cjk_panels(prompts)
+            if bad:
+                raise ValueError(
+                    f"{page.ref} 提示词重试后仍含中文（{'、'.join(bad)}）。"
+                    "出图模型只认英文；请在「提示词模板」里强化英文要求，或更换 S3 模型后重试。"
+                )
 
         # 该页每格的分格脚本（取 characters / panel_order）
         script_by_order = {p.get("panel_order"): p for p in page_payload.get("panels", [])}
