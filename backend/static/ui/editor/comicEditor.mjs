@@ -71,6 +71,9 @@ const TOOLS = [
 ];
 
 export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
+  const lifecycle = new AbortController();
+  let disposed = false;
+  const listen = (target, type, handler, options = {}) => target.addEventListener(type, handler, { ...options, signal: lifecycle.signal });
   const state = {
     projectId: null,
     pageRef: null,
@@ -82,6 +85,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     selectedElementId: null,
     selectedStrokeId: null,
     activeLayerId: 'panels',
+    inspector: 'panels',
     zoom: 1,
     view: { x: 0, y: 0 },
     gutter: 14,
@@ -176,7 +180,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
       <div class="ce-tool-group">
         ${TOOLS.map(([id, label, key, tip]) => `
           <button class="ce-tool${state.tool === id ? ' on' : ''}" data-tool="${id}" title="${tip} (${key})">
-            <span class="ce-tool-label">${label}</span><span class="ce-tool-key">${key.split(' ')[0]}</span>
+            <span class="ce-tool-label">${label}</span><span class="ce-tool-key">${key.split(' ')[0].replace('Shift+', '⇧')}</span>
           </button>`).join('')}
       </div>
       <div class="ce-tool-group">
@@ -206,6 +210,10 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     const element = selectedElement();
     const activeLayer = findLayer(state.activeLayerId);
     sideEl.innerHTML = `
+      <div class="ce-inspector-tabs" role="tablist" aria-label="编辑面板">
+        ${[['panels', '分镜'], ['layers', '图层'], ['properties', '属性']].map(([id, label]) => `<button type="button" role="tab" data-inspector="${id}" aria-selected="${state.inspector === id}">${label}</button>`).join('')}
+      </div>
+      <section ${state.inspector !== 'layers' ? 'hidden' : ''} aria-label="图层">
       <h3>图层</h3>
       <div class="ce-layers">
         ${layers().map((layer) => `
@@ -219,6 +227,8 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
       </div>
       <p class="ce-tip">当前层：${layerName(activeLayer)}${activeLayer?.locked ? '（已锁定，不能编辑）' : ''}</p>
 
+      </section>
+      <section ${state.inspector !== 'panels' ? 'hidden' : ''} aria-label="分镜列表">
       <h3>本页画框（${panels.length}）</h3>
       <div class="ce-list">
         ${panels.map((item, index) => {
@@ -231,6 +241,9 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
         }).join('') || '<p class="ce-tip">暂无画框。可用「画框」工具拖出新框。</p>'}
       </div>
 
+      </section>
+      <section ${state.inspector !== 'properties' ? 'hidden' : ''} aria-label="选中对象属性">
+      ${!panel && !element ? '<p class="ce-tip">在画布中选择画框、气泡或文字，调整它的属性。</p>' : ''}
       ${element ? `
         <h3>选中元素</h3>
         <div class="ce-actions">
@@ -255,8 +268,10 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
         <p class="ce-tip">${panel.image ? '拖动图片可微调位置，也可以用「调整构图」放大缩小。' : '这一格还没有图片，可直接从已采用的候选图重新载入。'}</p>` : ''}
 
       <h3>页面</h3>
+      ${doc()?.conversion ? `<details class="ce-tip"><summary>旧存档转换详情</summary><ul>${[...(doc().conversion.dropped || []), ...(doc().conversion.warnings || [])].map((item) => `<li>${escapeHtml(item)}</li>`).join('') || '<li>未发现未转换的元素</li>'}</ul></details>` : ''}
       <p class="ce-tip">${doc() ? `${Math.round(doc().width)} × ${Math.round(doc().height)} px · ${doc().layout?.templateId || '空白'}` : '未加载'}</p>
       <p class="ce-tip">元素 ${elements.length} 个 · 笔迹 ${(doc()?.strokes || []).length} 条</p>
+      </section>
     `;
   }
   function layerName(layer) {
@@ -446,6 +461,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     setStatus('加载中', 'run');
     try {
       const payload = await api(`/api/projects/${projectId}/editor-doc/${encodeURIComponent(pageRef)}`);
+      if (disposed) return;
       state.templateId = payload.document?.layout?.templateId || payload.template_id || '';
       state.document = ensureComicLayers(normalizeDocument(payload.document));
       state.selectedPanelId = null;
@@ -515,6 +531,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
         method: 'POST',
         body: { document: documentForSave() },
       });
+      if (disposed) return payload;
       state.savedRevision = captured;
       state.dirty = state.revision !== state.savedRevision;
       setStatus(state.dirty ? '未保存' : `已保存 v${payload.version}`, state.dirty ? 'warn' : 'ok');
@@ -566,6 +583,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     state.selectedElementId = null;
     state.selectedStrokeId = null;
     state.selectedPanelId = panel?.id || null;
+    if (panel) state.inspector = 'properties';
     if (panel?.layerId) state.activeLayerId = panel.layerId;
     renderSide();
     renderCanvas();
@@ -574,6 +592,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     state.selectedPanelId = null;
     state.selectedStrokeId = null;
     state.selectedElementId = element?.id || null;
+    if (element) state.inspector = 'properties';
     if (element?.layerId) state.activeLayerId = element.layerId;
     renderSide();
     renderCanvas();
@@ -1123,7 +1142,9 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
   }
 
   // ------------------------------------------------------------ 事件绑定
-  host.addEventListener('click', async (event) => {
+  listen(host, 'click', async (event) => {
+    const inspector = event.target.closest('[data-inspector]');
+    if (inspector) { state.inspector = inspector.dataset.inspector; renderSide(); return; }
     const toolButton = event.target.closest('[data-tool]');
     if (toolButton) { changeTool(toolButton.dataset.tool); return; }
     const actButton = event.target.closest('[data-act]');
@@ -1239,7 +1260,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     notice('先选中要删除的内容。', 'warn');
   }
 
-  host.addEventListener('input', (event) => {
+  listen(host, 'input', (event) => {
     const opt = event.target.dataset.opt;
     if (opt === 'gutter') { state.gutter = Number(event.target.value); return; }
     if (opt === 'brush') { state.brushSize = Number(event.target.value); return; }
@@ -1252,11 +1273,11 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
       replaceDocument({ ...d, panels: (d.panels || []).map((item) => item.id === panel.id ? { ...item, [panelOpt]: Number(event.target.value) } : item) }, { record: false });
     }
   });
-  host.addEventListener('change', (event) => {
+  listen(host, 'change', (event) => {
     if (event.target.dataset.opt === 'zoom') renderCanvas();
   });
 
-  assetInput.addEventListener('change', async () => {
+  listen(assetInput, 'change', async () => {
     const file = assetInput.files?.[0];
     assetInput.value = '';
     if (!file) return;
@@ -1274,17 +1295,17 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     }
   });
 
-  svgEl.addEventListener('pointerdown', pointerDown);
-  svgEl.addEventListener('pointermove', pointerMove);
-  svgEl.addEventListener('pointerup', pointerUp);
-  svgEl.addEventListener('pointercancel', cancelDrag);
-  svgEl.addEventListener('lostpointercapture', (event) => {
+  listen(svgEl, 'pointerdown', pointerDown);
+  listen(svgEl, 'pointermove', pointerMove);
+  listen(svgEl, 'pointerup', pointerUp);
+  listen(svgEl, 'pointercancel', cancelDrag);
+  listen(svgEl, 'lostpointercapture', (event) => {
     if (drag.current && drag.current.pointerId === event.pointerId) pointerUp(event);
   });
-  svgEl.addEventListener('dblclick', dblClick);
-  svgEl.addEventListener('dragstart', (event) => event.preventDefault());
+  listen(svgEl, 'dblclick', dblClick);
+  listen(svgEl, 'dragstart', (event) => event.preventDefault());
 
-  viewportEl.addEventListener('wheel', (event) => {
+  listen(viewportEl, 'wheel', (event) => {
     if (!doc()) return;
     if (event.ctrlKey || event.metaKey || state.tool === 'zoom') {
       event.preventDefault();
@@ -1304,7 +1325,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     renderCanvas();
   }, { passive: false });
 
-  viewportEl.addEventListener('pointerdown', (event) => {
+  listen(viewportEl, 'pointerdown', (event) => {
     if (state.tool !== 'hand' && !event.spaceHeld && event.button !== 1) return;
     if (event.target.closest('button')) return;
     event.preventDefault();
@@ -1317,8 +1338,8 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
     };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    listen(window, 'pointermove', move);
+    listen(window, 'pointerup', up);
   });
 
   function undo(redoMode = false) {
@@ -1334,8 +1355,8 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
   }
   function redo() { undo(true); }
 
-  window.addEventListener('keydown', (event) => {
-    if (!doc()) return;
+  listen(window, 'keydown', (event) => {
+    if (disposed || !doc() || !host.isConnected || host.closest('.hidden') || host.querySelector('.ce-modal')) return;
     if (event.isComposing) return;
     if (event.target.closest('input, textarea, select, [contenteditable="true"], .ce-modal')) return;
     const key = event.key.toLowerCase();
@@ -1363,7 +1384,12 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     if (next) { event.preventDefault(); changeTool(next); }
   });
 
-  window.addEventListener('resize', () => { if (doc() && state.zoom) renderCanvas(); });
+  listen(window, 'resize', () => { if (doc() && state.zoom) renderCanvas(); });
+
+  const resizeObserver = new ResizeObserver(() => {
+    if (!disposed && doc() && viewportEl.clientWidth && viewportEl.clientHeight) renderCanvas();
+  });
+  resizeObserver.observe(viewportEl);
 
   // ------------------------------------------------------------ 对外接口
   return {
@@ -1375,6 +1401,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved }) {
     changeTool,
     isDirty: () => state.dirty,
     dispose() {
+      disposed = true; lifecycle.abort(); resizeObserver.disconnect();
       cancelDrag();
       host.innerHTML = '';
     },

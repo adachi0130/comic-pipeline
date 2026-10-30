@@ -156,6 +156,8 @@ function switchTab(tab, requestedSection) {
   $$('.nav button[data-tab]').forEach((x) => x.classList.toggle('active', x.dataset.tab === tab && (!x.dataset.section || x.dataset.section === section)));
   Object.keys(TITLES).forEach((t) => $('#tab-' + t).classList.toggle('hidden', t !== tab));
   $('.main').classList.toggle('editor-active', tab === 'editor');
+  document.body.classList.toggle('editor-mode', tab === 'editor');
+  if (tab === 'editor') editorWorkbench.refreshLayout();
   if (tab !== 'editor') editorWorkbench.collapse();
   try { localStorage.setItem('comic.tab', tab); } catch { /* ignore */ }   // 记住当前菜单，刷新后回到这里
   $('#view-title').textContent = TITLES[tab][0];

@@ -1,11 +1,12 @@
-"""内嵌工作台冒烟：真实本地 MED + 临时项目/数据库/图片，无真实应用 lifespan。
+"""工作台冒烟：主页面新漫画编辑器 + 临时项目/数据库/图片，无真实应用 lifespan。
 
 运行：.venv/Scripts/python.exe -X utf8 -B tests/test_editor_workbench.py
-需要已拉取 MED 并安装 Playwright Chromium。
+需要本项目模板 SVG 和 Playwright Chromium，不需要 MED。
 """
 from __future__ import annotations
 
 import functools
+import os
 import http.server
 import json
 import re
@@ -20,7 +21,7 @@ from unittest.mock import patch, Mock
 
 def main():
     from test_data_safety import DataSafetyTests, A, Template, Job, Project, book, png, data_url
-    from app.api.routes import projects, meta, bridge, providers, assets, comfy, jobs, pipeline, prompts
+    from app.api.routes import projects, meta, bridge, providers, assets, comfy, jobs, pipeline, prompts, editor
     from app.comfy import store
     from sqlalchemy.orm import Session
     from playwright.sync_api import sync_playwright, expect
@@ -35,9 +36,9 @@ def main():
         boundary = patch.object(store, name, value)
         boundary.start()
         case.addCleanup(boundary.stop)
-    # 只读 MED 已锁定版本的实际 SVG 模板，写入临时模板表。
-    source = (static / 'editor/js/svg/manga-panels-image-vertical.js').read_text(encoding='utf-8')
-    svg = json.loads(re.search(r'svg:\s*("(?:\\.|[^"\\])*")', source).group(1))
+    from app.comic.template_geometry import parse_template_svg
+    svg = next(path.read_text(encoding='utf-8') for path in sorted((root / 'data/templates').glob('vertical_*.svg'))
+               if parse_template_svg(path.read_text(encoding='utf-8')).panel_count == 1)
     template_path = case.base / 'template.svg'
     template_path.write_text(svg, encoding='utf-8')
     case.session.add(Template(id='vertical:test', dir='vertical', panels_count=1,
@@ -51,7 +52,7 @@ def main():
     case.artifact('prose', 'seg:1', payload={'text': '原始正文', 'mode': 'paste'})
     case.artifact('image', 'panel:1.1', payload={'candidates': [case.candidate(case.file('candidates/panel.png', png('skyblue')))], 'selected_index': 0})
     app = case.client.app
-    for module in (projects, meta, bridge, providers, assets, comfy, jobs, prompts):
+    for module in (projects, meta, bridge, providers, assets, comfy, jobs, prompts, editor):
         app.include_router(module.router, prefix='/api')
     captures = []
     api_lock = threading.Lock()
@@ -96,6 +97,7 @@ def main():
             return True
 
     class Handler(http.server.SimpleHTTPRequestHandler):
+        extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map, ".mjs": "text/javascript"}
         def log_message(self, *args):
             pass
 
@@ -157,7 +159,7 @@ def main():
                     time.sleep(0.6)
                 if delay_stage_response.is_set() and self.command == 'GET' and self.path == '/api/stage-models':
                     time.sleep(0.45)  # 已读取旧绑定后延迟响应，制造真实的读取/保存交错。
-                if '/med-doc/' in self.path and self.command == 'POST': captures.append(json.loads(body))
+                if '/editor-doc/' in self.path and self.command == 'POST': captures.append(json.loads(body))
             self.send_response(status)
             self.send_header('Content-Type', content_type)
             self.send_header('Content-Length', str(len(body)))
@@ -175,8 +177,8 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     origin = f'http://127.0.0.1:{server.server_port}'
     # 保存截图也放临时目录，避免覆盖已有项目文件。
-    screenshots = case.base / 'screenshots'
-    screenshots.mkdir()
+    screenshots = Path(os.environ.get('COMIC_QA_SCREENSHOTS') or case.base / 'screenshots')
+    screenshots.mkdir(parents=True, exist_ok=True)
     errors = []
     try:
         with sync_playwright() as p:
@@ -198,36 +200,48 @@ def main():
             expect(page.locator('#tab-editor')).to_be_visible()
             expect(page.locator('#ed-save')).to_be_enabled(timeout=60000)
             assert len(browser.contexts[0].pages) == 1, '常用编辑不得打开新窗口'
-            actual = page.frames[-1]
-            assert actual.locator('.tutorial-overlay').count() == 0, '内嵌画布不应被独立教程遮挡'
-            assert actual.evaluate('() => window.__MED.panelCount()') == 1
-            assert actual.evaluate('() => canvas.getObjects().some(o => o.type === "image")'), '选定图片未自动贴入'
-            actual.evaluate('() => { canvas.add(new fabric.Text("漫画测试", {left: 80, top: 80})); canvas.renderAll(); }')
-            saved_size = actual.evaluate('() => [canvas.getWidth(), canvas.getHeight()]')
-            expect(page.locator('#ed-state')).to_have_text('未保存修改')
+            actual = page.locator('#ed-host')
+            assert page.locator('#tab-editor iframe').count() == 0, '编辑器应直接挂载主页面'
+            assert actual.locator('[data-panel-id]').count() == 1
+            assert actual.locator('image').count() == 1, '选定图片未自动贴入'
+            actual.locator('[data-act="bubble"]').click()
+            assert actual.locator('[data-element-id] path').count(), '气泡轮廓必须在画布中可见'
+            expect(page.locator('#ed-state')).to_have_text('未保存')
+            actual.locator('[data-act="edit-element"]').click()
+            actual.locator('[data-field="text"]').fill('漫画测试')
+            actual.locator('[data-modal="apply"]').click()
+            saved_size = actual.locator('svg.ce-canvas').get_attribute('viewBox')
             page.locator('#ed-save').click()
-            expect(page.locator('#ed-state')).to_have_text('已保存', timeout=30000)
+            expect(page.locator('#ed-state')).to_have_text('已就绪', timeout=30000)
             assert captures[-1]['has_preview'] and captures[-1]['page_image_id']
             assert page.url.endswith('/ui/'), '保存不应导致主页面跳转'
             assert page.locator('#tab-editor').is_visible()
+            for width in (1440, 768, 390):
+                page.set_viewport_size({'width': width, 'height': 1000})
+                page.wait_for_timeout(150)
+                assert page.evaluate('() => document.documentElement.scrollWidth <= innerWidth + 1'), f'编辑器 {width}px 横向溢出'
+                assert actual.locator('.ce-viewport').bounding_box()['height'] >= 260
+                assert actual.locator('svg text').filter(has_text='漫画测试').count()
+                page.screenshot(path=str(screenshots / f'editor-native-{width}.png'))
+            page.set_viewport_size({'width': 1440, 'height': 1100})
+            page.locator('.ed-menu summary').click()
             page.locator('#ed-expand').click()
             expect(page.locator('#ed-expand')).to_have_attribute('aria-pressed', 'true')
             page.screenshot(path=str(screenshots / 'editor-desktop.png'))
             page.locator('#ed-expand').click()
             # 返回预览后再进同一页，保留同一个 iframe 会话。
-            frame_url = page.locator('#ed-frame').get_attribute('src')
+            canvas_element = actual.locator('svg.ce-canvas').element_handle()
             page.locator('#ed-back').click()
             expect(page.locator('#tab-compose')).to_be_visible()
+            assert page.evaluate('() => window.dispatchEvent(new KeyboardEvent("keydown", {key:"s",ctrlKey:true,cancelable:true}))'), '离开编辑器后不得抢占保存快捷键'
             page.locator('#cps-do').click()
-            assert page.locator('#ed-frame').get_attribute('src') == frame_url
+            assert canvas_element.evaluate('(node) => node === document.querySelector("#ed-host svg.ce-canvas")')
             # 重开工作台，恢复已保存画布、文字与画布尺寸。
             page.reload()
             expect(page.locator('#ed-save')).to_be_enabled(timeout=60000)
-            actual = page.frames[-1]
-            assert actual.evaluate('() => canvas.getObjects().some(o => o.text === "漫画测试")')
-            restored_size = actual.evaluate('() => [canvas.getWidth(), canvas.getHeight()]')
-            # MED 会按当前视窗缩放显示，保存的页面比例与内容必须保留。
-            assert abs(restored_size[0] / restored_size[1] - saved_size[0] / saved_size[1]) < 1e-6, (saved_size, restored_size)
+            actual = page.locator('#ed-host')
+            assert actual.locator('svg text').filter(has_text='漫画测试').count()
+            assert actual.locator('svg.ce-canvas').get_attribute('viewBox') == saved_size
             # 实际整页快照审核后，从新导出中心生成并下载真实 PDF/CBZ。
             page.locator('#ed-back').click()
             page.locator('#cps-approve').click()
@@ -249,7 +263,7 @@ def main():
             for width in (768, 390):
                 page.set_viewport_size({'width': width, 'height': 1000})
                 page.wait_for_timeout(150)
-                assert actual.evaluate('() => canvas.getObjects().some(o => o.text === "漫画测试")'), '适配窗口不能清空画布'
+                assert actual.locator('svg text').filter(has_text='漫画测试').count(), '适配窗口不能清空画布'
                 assert page.evaluate('() => document.documentElement.scrollWidth <= innerWidth + 1'), f'主工作台在 {width}px 溢出'
                 expect(page.locator('#mobile-menu')).to_be_visible()
                 expect(page.locator('.nav [data-tab="exports"]')).not_to_be_visible()
@@ -263,20 +277,22 @@ def main():
             page.locator('.nav [data-tab="editor"]').click()
             page.screenshot(path=str(screenshots / 'editor-regular-desktop.png'))
             # 新项目读取期间才产生的画布修改，也要在真正切换前确认。
+            page.locator('#ed-back').click()
             delay_project_switch.set()
             page.once('dialog', lambda dialog: dialog.dismiss())
             with page.expect_request(lambda request: request.method == 'GET' and request.url.endswith('/api/projects/2')):
                 page.locator('#project-switch').select_option('2')
-            actual.evaluate('() => canvas.add(new fabric.Text("切换途中修改", {left: 100, top: 160, fontSize: 24}))')
+            actual.locator('[data-act="bubble"]').evaluate('(button) => button.click()')
             expect(page.locator('#project-switch')).to_be_enabled()
             expect(page.locator('#project-switch')).to_have_value('1')
-            assert actual.evaluate('() => canvas.getObjects().some(object => object.text === "切换途中修改")')
+            expect(page.locator('#ed-state')).to_have_text('未保存')
             delay_project_switch.clear()
+            page.locator('.nav [data-tab="editor"]').click()
             page.locator('#ed-save').click()
-            expect(page.locator('#ed-state')).to_have_text('已保存')
+            expect(page.locator('#ed-state')).to_have_text('已就绪')
             # 同一个工作区里切换项目，即便上一个项目的响应更晚，也不能显示其页。
             delay_project_one.set()
-            page.locator('.nav [data-tab="compose"]').click()
+            page.locator('#ed-back').click()
             page.locator('#project-switch').select_option('2')
             expect(page.locator('#breadcrumb-project')).to_have_text('另一部漫画')
             expect(page.locator('#cps-detail')).to_contain_text('当前项目还没有漫画页')
@@ -320,7 +336,7 @@ def main():
             expect(page.locator('#pv-form-status')).to_contain_text('供应商保存失败')
             expect(page.locator('#pv-model')).to_have_value('model-c')
             page.unroute(provider_route, fail_provider)
-            page.locator('.nav [data-tab="settings"][data-section="models"]').click()
+            page.locator('.nav [data-tab="settings"][data-section="comfy"]').click()
             page.locator('.nav [data-tab="settings"][data-section="providers"]').click()
             expect(page.locator('#pv-model')).to_have_value('model-c')
             delay_provider_save.set()
@@ -345,7 +361,7 @@ def main():
             expect(page.locator('#pv-model')).to_have_value('')
             delay_stage_response.set()
             with page.expect_request(lambda request: request.method == 'GET' and request.url.endswith('/api/stage-models')):
-                page.locator('.nav [data-tab="settings"][data-section="models"]').click()
+                page.locator('.nav [data-tab="settings"][data-section="providers"]').click()
             expect(page.locator('.stage-bind')).to_have_count(3)
             page.locator('.stage-bind[data-stage="S1"]').select_option(provider_id)
             expect(page.locator('[data-model-state="S1"]')).to_contain_text('已保存')
@@ -355,7 +371,7 @@ def main():
             delay_stage_response.clear()
             page.locator('.nav [data-tab="settings"][data-section="comfy"]').click()
             expect(page.locator('#settings-comfy-overview')).to_contain_text('还没有选定工作流')
-            page.locator('.nav [data-tab="settings"][data-section="models"]').click()
+            page.locator('.nav [data-tab="settings"][data-section="providers"]').click()
             expect(page.locator('.stage-bind[data-stage="S1"]')).to_have_value(provider_id)
             page.screenshot(path=str(screenshots / 'configuration-models-desktop.png'))
             # 系统提示词入口可保存实际覆盖值，页面状态同步显示自定义。
@@ -392,7 +408,7 @@ def main():
             page.locator('.pres-name').first.fill('全局画面预设')
             page.locator('.pres-text').first.fill('masterpiece, clean lineart')
             page.locator('.pres-save').first.click()
-            page.locator('.nav [data-tab="assets"][data-section="style"]').click()
+            page.locator('.nav [data-tab="assets"][data-section="presets"]').click()
             page.locator('#pr-addstyle').click()
             page.locator('.st-name').first.fill('style.safetensors')
             page.locator('.st-w').first.fill('0')
@@ -520,7 +536,7 @@ def main():
             expect(page.locator('[data-char] .save-feedback').first).to_have_text('已保存')
             assert browser_context.request.get(origin + '/api/projects/1/characters').json()[0]['trigger_words'] == 'retry-draft'
             # 画风手动修改取消切换后保留，保存后允许切换。
-            page.locator('.nav [data-tab="assets"][data-section="style"]').click()
+            page.locator('.nav [data-tab="assets"][data-section="presets"]').click()
             page.locator('.st-w').first.fill('0.55')
             page.once('dialog', lambda dialog: dialog.dismiss())
             page.locator('#project-switch').select_option('2')
@@ -783,7 +799,6 @@ def main():
                 page.screenshot(path=str(screenshots / f'tavern-chat-list-{width}.png'))
             assert not errors, errors
             # 将本次截图复制到调用者指定的独立可写目录，仅用于视觉检查。
-            import os
             target = os.environ.get('COMIC_SMOKE_SCREENSHOTS')
             if target:
                 import shutil
@@ -791,7 +806,7 @@ def main():
                 target.mkdir(parents=True, exist_ok=True)
                 for shot in screenshots.glob('*.png'): shutil.copyfile(shot, target / shot.name)
             browser.close()
-        print(json.dumps({'embedded_med': 'ok', 'auto_place_image': 'ok', 'dirty_save': 'ok',
+        print(json.dumps({'native_editor': 'ok', 'auto_place_image': 'ok', 'dirty_save': 'ok',
                           'save_preview': 'ok', 'resume_canvas': 'ok', 'viewport_widths': [1440, 768, 390],
                           'export_pdf_cbz_download': 'ok',
                           'mobile_menu_and_project_switch': 'ok',

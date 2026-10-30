@@ -42,7 +42,7 @@
 
 - 模板获取与解析脚本：`backend/scripts/fetch_editor.*`、`parse_med_templates.mjs`、`build_template_menu.py`
 - 历史存档兼容：旧 `med_doc`（fabric JSON）仍可读取并转换为新文档（`backend/app/comic/legacy.py`）；
-  无法转换的元素会列在转换摘要里，不会静默丢弃。
+  无法转换的元素会列在转换摘要里；当前旧组合对象等尚未完整兼容，不能视为历史存档已全部迁移，见 `docs/漫画编辑器验收记录-2026-10-30.md`。
 
 ### 分发注意
 

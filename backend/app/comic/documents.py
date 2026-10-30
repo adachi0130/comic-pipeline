@@ -1,12 +1,12 @@
 """编辑文档（editor_doc）的读写与整页快照。
 
 职责边界：
-- ``load_for_edit``：优先返回已保存的新文档；没有新文档时，从项目产物生成默认文档
-  （版式 + 已采用图片）；再没有才退回旧 ``med_doc`` 的转换结果。
+- ``load_for_edit``：优先返回已保存的新文档，其次转换旧 ``med_doc`` 保留手工内容，
+  最后才从项目产物生成默认文档（版式 + 已采用图片）。
 - ``save``：写新版本 ``editor_doc`` + 渲染整页 PNG 写 ``page_image``，两者同时建立血缘，
   保证审核、总览、成册导出与旧链路一致。
 
-服务端是正式存档来源；浏览器只做草稿缓存，避免换浏览器后项目“像丢了”。
+服务端是正式存档来源，换浏览器也可读取正式保存的作品。
 """
 
 from __future__ import annotations
@@ -98,7 +98,8 @@ def load_for_edit(session: Session, project_id: int, page_ref: str) -> tuple[dic
 def image_lookup_for(session: Session, project_id: int):
     """渲染用：画框 → 已采用候选图的本地路径。
 
-    优先用文档内嵌的 dataURL；没有时按 ``panelRef`` 查当前已采用的候选图。
+    内嵌 dataURL 由渲染器直接处理；这里优先解析文档固定的产物与候选编号，
+    只有旧格式没有版本引用时才按 ``panelRef`` 回退到当前已采用图片。
     """
 
     def lookup(panel: dict) -> str | None:

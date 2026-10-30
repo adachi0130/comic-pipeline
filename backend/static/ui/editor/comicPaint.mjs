@@ -82,7 +82,7 @@ export function balloonPageSvg(element) {
     const contours = element.balloonContours || comicBalloonContours(presetId);
     const dash = presetId === 'whisper' ? ' stroke-dasharray="4 3"'
       : presetId === 'whisper-oval' ? ' stroke-dasharray="1 3" stroke-linecap="round"' : '';
-    const paths = contours.map((contour) => comicBalloonPath(contour)).join('');
+    const paths = contours.map((contour) => `<path d="${escapeXml(comicBalloonPath(contour))}"/>`).join('');
     parts.push(`<g transform="scale(${width / 100} ${height / 100})" fill="${fill && fill !== 'none' ? escapeXml(fill) : 'none'}" stroke="${escapeXml(element.stroke || '#111111')}" stroke-width="${Number(element.strokeWidth) || 0}" stroke-linejoin="round" vector-effect="non-scaling-stroke">${paths}</g>`);
   } else if (element.dataUrl) {
     parts.push(`<image href="${escapeXml(element.dataUrl)}" width="${width}" height="${height}" preserveAspectRatio="none"/>`);

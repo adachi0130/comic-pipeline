@@ -1,148 +1,111 @@
-/* 主工作台的编辑会话：宿主只负责选页、会话隔离与保存状态。
- *
- * 编辑器本体在 ``/ui/editor/``（原生 ES module，自研画布），不再依赖 Manga Editor Desu。
- * 之前这里要先探测 ``/editor/`` 是否安装 MED，现在不需要：新编辑器随本项目一起发布。
- */
+/* 主页面漫画工作区，不使用 iframe；会话绑定发起操作的项目与页。 */
+import { createComicEditor } from './editor/comicEditor.mjs';
 
 export function createEditorWorkbench({ state, api, $, toast, switchTab, loadCompose, refreshGates, pageLabel }) {
-  let session = 0;
-  let pagesRequest = 0;
-  let loadTimer;
-  const esc = (value) => String(value ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  let session = 0, pagesRequest = 0, instance = null;
+  const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const editorApi = (path, options = {}) => api(path, { ...options, ...(options.body ? { body: JSON.stringify(options.body) } : {}) });
+  const badgeOf = (p) => p.editor_doc_id ? '已保存' : p.med_doc_id ? '旧存档' : p.ready ? '图片就绪' : '待出图';
+  const current = (key, projectId) => session === key && state.projectId === projectId;
 
   function collapse() {
     document.body.classList.remove('editor-expanded');
-    $('#ed-expand').setAttribute('aria-pressed', 'false');
-    $('#ed-expand').textContent = '扩大画布';
+    $('#ed-expand').setAttribute('aria-pressed', 'false'); $('#ed-expand').textContent = '专注画布';
   }
-
   function reset() {
-    session++; clearTimeout(loadTimer);
-    state.editor = null;
-    state._editorPages = [];
-    const frame = $('#ed-frame'); frame.removeAttribute('src'); frame.classList.add('hidden');
-    $('#ed-empty').classList.remove('hidden');
-    $('#ed-empty').textContent = '选择漫画页后，可在这里编辑图层、气泡、文字和构图。';
+    session++; pagesRequest++; instance?.dispose(); instance = null;
+    state.editor = null; state._editorPages = [];
+    $('#ed-host').classList.add('hidden'); $('#ed-empty').classList.remove('hidden');
+    $('#ed-empty').textContent = '选择漫画页，开始编辑'; $('#ed-pages').innerHTML = '';
     $('#ed-save').disabled = true; $('#ed-window').disabled = true;
-    $('#ed-state').className = 'pill'; $('#ed-state').textContent = '未打开';
-    collapse();
+    $('#ed-state').className = 'pill'; $('#ed-state').textContent = '未打开'; collapse();
   }
-
-  // 「编辑中」的判定：新文档优先，旧 MED 存档也算（打开时会自动转换）
-  const badgeOf = (page) => {
-    if (page.editor_doc_id) return '已保存画布';
-    if (page.med_doc_id) return '旧存档（可转换）';
-    return page.ready ? '图片已就绪' : '可先编辑版式';
-  };
-
+  function renderPages() {
+    const pages = state._editorPages || [];
+    $('#ed-pages').innerHTML = pages.map((p) => `<button type="button" class="ed-page-tab${state.editor?.pageRef === p.page_ref ? ' active' : ''}" data-editor-page="${esc(p.page_ref)}" aria-pressed="${state.editor?.pageRef === p.page_ref}"><span class="ed-page-no">${esc(p.page_ref.split(':')[1].padStart(2, '0'))}</span><span>${esc(pageLabel(p.page_ref))}</span><small>${esc(badgeOf(p))}</small></button>`).join('');
+    $('#ed-page').innerHTML = '<option value="">选择漫画页</option>' + pages.map((p) => `<option value="${esc(p.page_ref)}">${esc(pageLabel(p.page_ref))} · ${esc(badgeOf(p))}</option>`).join('');
+    $('#ed-page').value = state.editor?.pageRef || '';
+    $('#ed-page-count').textContent = `${pages.length} 页`;
+    $('#ed-project-title').textContent = state.project?.title || '漫画编辑器';
+  }
   async function loadPages() {
-    const projectId = state.projectId;
-    const request = ++pagesRequest;
-    const select = $('#ed-page');
-    if (!projectId) {
-      select.innerHTML = '<option value="">先选择项目</option>';
-      $('#ed-message').textContent = '请先到「项目」选择一部漫画，再打开它的漫画页。';
-      return;
-    }
+    const projectId = state.projectId, request = ++pagesRequest;
+    if (!projectId) { $('#ed-message').textContent = '请先选择一部漫画。'; return; }
     try {
       const board = await api(`/api/projects/${projectId}/compose-board`);
       if (state.projectId !== projectId || request !== pagesRequest) return;
-      state._editorPages = board.pages || [];
-      select.innerHTML = '<option value="">选择要编辑的漫画页</option>' + state._editorPages.map((p) =>
-        `<option value="${esc(p.page_ref)}">${esc(pageLabel(p.page_ref))} · ${esc(badgeOf(p))}</option>`).join('');
-      if (state.editor?.projectId === projectId) select.value = state.editor.pageRef;
-      if (!state._editorPages.length) {
-        $('#ed-message').textContent = '当前项目还没有分格页，请先到「分格分页」添加一页。';
-      } else if (!state.editor && !$('#tab-editor').classList.contains('hidden')) {
-        let last = '';
-        try { last = localStorage.getItem(`comic.editor.page.${projectId}`) || ''; } catch { /* 私密浏览 */ }
-        const page = state._editorPages.find((p) => p.page_ref === last) || state._editorPages[0];
-        open(page.page_ref);
+      state._editorPages = board.pages || []; renderPages();
+      if (!state._editorPages.length) $('#ed-message').textContent = '当前项目还没有分格页，请到「分格分页」添加一页。';
+      else if (!state.editor && !$('#tab-editor').classList.contains('hidden')) {
+        let last = ''; try { last = localStorage.getItem(`comic.editor.page.${projectId}`) || ''; } catch {}
+        await open((state._editorPages.find((p) => p.page_ref === last) || state._editorPages[0]).page_ref);
       }
-    } catch (e) {
-      if (state.projectId === projectId && request === pagesRequest) $('#ed-message').textContent = '加载漫画页失败：' + e.message;
+    } catch (error) {
+      if (state.projectId === projectId && request === pagesRequest) $('#ed-message').textContent = `加载漫画页失败：${error.message}`;
     }
   }
-
   async function open(pageRef) {
     const projectId = state.projectId;
-    if (!projectId) { switchTab('projects'); return toast('先选择一个项目', 'err'); }
-    const current = state.editor;
-    if (current?.projectId === projectId && current.pageRef === pageRef && (current.ready || current.loading)) {
-      switchTab('editor'); return;
+    if (!projectId) { switchTab('projects'); toast('先选择一个项目', 'err'); return; }
+    const previous = state.editor;
+    if (previous?.projectId === projectId && previous.pageRef === pageRef && (previous.ready || previous.loading)) {
+      switchTab('editor'); requestAnimationFrame(() => instance?.render()); return;
     }
-    if (current?.dirty && !confirm('当前漫画页有未保存的修改。重新打开或切换页会丢失这些修改，确定继续吗？')) {
-      $('#ed-page').value = current.pageRef; return;
-    }
-    const key = ++session;
-    clearTimeout(loadTimer);
+    if (previous?.dirty && !confirm('当前漫画页有未保存的修改。切换页会丢失这些修改，确定继续吗？')) { $('#ed-page').value = previous.pageRef; return; }
+    const key = ++session; instance?.dispose();
     state.editor = { projectId, pageRef, session: key, dirty: false, ready: false, loading: true };
-    switchTab('editor');
-    try { localStorage.setItem(`comic.editor.page.${projectId}`, pageRef); } catch { /* 私密浏览 */ }
-    const frame = $('#ed-frame');
-    frame.classList.add('hidden');
-    $('#ed-empty').classList.remove('hidden');
-    $('#ed-empty').textContent = '正在加载漫画编辑器…';
+    switchTab('editor'); renderPages();
+    try { localStorage.setItem(`comic.editor.page.${projectId}`, pageRef); } catch {}
+    const host = $('#ed-host'); host.classList.remove('hidden'); $('#ed-empty').classList.add('hidden');
     $('#ed-state').className = 'pill run'; $('#ed-state').textContent = '加载中';
     $('#ed-save').disabled = true; $('#ed-window').disabled = true;
-    $('#ed-message').textContent = `${pageLabel(pageRef)} · 正在打开漫画编辑器…`;
-    // 新编辑器是同源静态页，不需要先探测 MED 是否安装
-    frame.src = `/ui/editor/index.html?page=${encodeURIComponent(pageRef)}&p=${projectId}&embedded=1&session=${key}`;
-    frame.classList.remove('hidden');
-    $('#ed-empty').classList.add('hidden');
-    $('#ed-window').disabled = false;
-    loadTimer = setTimeout(() => {
-      if (key === session && !state.editor?.ready) {
-        $('#ed-message').textContent = '编辑器仍在加载，可以稍等或通过「独立窗口」检查。';
-      }
-    }, 20000);
+    $('#ed-message').textContent = `${pageLabel(pageRef)} · 正在打开…`;
+    const setState = (message, error = false) => {
+      if (!current(key, projectId)) return;
+      $('#ed-state').className = `pill ${error ? 'err' : state.editor.dirty ? 'warn' : 'ok'}`;
+      $('#ed-state').textContent = error ? '操作失败' : state.editor.dirty ? '未保存' : '已就绪';
+      if (message) $('#ed-message').textContent = message;
+    };
+    const editor = createComicEditor({ host, api: editorApi,
+      onDirty(dirty) { if (current(key, projectId)) { state.editor.dirty = dirty; setState(dirty ? '当前页有未保存修改。' : '当前页已保存。'); } },
+      onNotice(message, kind) { setState(message, kind === 'error'); },
+      onSaved(payload) {
+        if (!current(key, projectId)) return;
+        state.editor.dirty = editor.isDirty();
+        setState(payload.has_preview ? `已保存 v${payload.version} · 整页预览已更新` : `画布已保存 v${payload.version}，整页预览未生成，请重试。`);
+        loadCompose(); refreshGates(); loadPages();
+        toast(`${pageLabel(pageRef)} 已保存 v${payload.version}`, payload.has_preview ? 'ok' : '');
+      },
+    });
+    instance = editor;
+    try {
+      await editor.load(projectId, pageRef);
+      if (!current(key, projectId)) return;
+      state.editor.ready = true; $('#ed-save').disabled = false; $('#ed-window').disabled = false; setState();
+    } catch (error) { setState(`打开失败：${error.message}，可重新选择本页重试。`, true); }
+    finally { if (current(key, projectId)) state.editor.loading = false; }
   }
-
-  $('#ed-page').addEventListener('change', (event) => {
-    if (event.target.value) open(event.target.value);
-  });
+  $('#ed-page').addEventListener('change', (e) => { if (e.target.value) open(e.target.value); });
+  $('#ed-pages').addEventListener('click', (e) => { const p = e.target.closest('[data-editor-page]'); if (p) open(p.dataset.editorPage); });
   $('#ed-back').addEventListener('click', () => switchTab('compose'));
+  $('#ed-overview').addEventListener('click', () => switchTab('pipeline'));
+  $('#ed-export').addEventListener('click', () => switchTab('exports'));
   $('#open-editor-workbench').addEventListener('click', () => switchTab('editor'));
   $('#ed-expand').addEventListener('click', () => {
     const expanded = document.body.classList.toggle('editor-expanded');
-    $('#ed-expand').textContent = expanded ? '恢复工作台' : '扩大画布';
-    $('#ed-expand').setAttribute('aria-pressed', String(expanded));
+    $('#ed-expand').textContent = expanded ? '显示面板' : '专注画布'; $('#ed-expand').setAttribute('aria-pressed', String(expanded));
+    requestAnimationFrame(() => instance?.render());
   });
-  $('#ed-save').addEventListener('click', () => {
-    if (!state.editor?.ready) return;
-    $('#ed-save').disabled = true;
-    $('#ed-state').className = 'pill run'; $('#ed-state').textContent = '保存中';
-    $('#ed-frame').contentWindow.postMessage({ type: 'comic-editor:command', command: 'save' }, location.origin);
+  $('#ed-save').addEventListener('click', async () => {
+    if (!state.editor?.ready || !instance) return;
+    const editor = instance; $('#ed-save').disabled = true;
+    try { await editor.save(); } finally { if (editor === instance) $('#ed-save').disabled = false; }
   });
   $('#ed-window').addEventListener('click', () => {
-    const editor = state.editor;
-    if (!editor) return;
-    if (editor.dirty && !confirm('当前页有未保存修改，请先保存以便独立窗口载入。仍要打开已保存的版本吗？')) return;
-    const back = encodeURIComponent('/ui/?tab=compose');
-    window.open(`/ui/editor/index.html?page=${encodeURIComponent(editor.pageRef)}&p=${editor.projectId}&back=${back}`, '_blank', 'noopener');
+    const e = state.editor; if (!e) return;
+    if (e.dirty && !confirm('独立窗口会载入已保存版本，仍要打开吗？')) return;
+    window.open(`/ui/editor/index.html?page=${encodeURIComponent(e.pageRef)}&p=${e.projectId}`, '_blank', 'noopener');
   });
-  window.addEventListener('message', (event) => {
-    const editor = state.editor, data = event.data;
-    if (!editor || event.origin !== location.origin || event.source !== $('#ed-frame').contentWindow
-      || data?.type !== 'comic-editor:state' || String(data.session) !== String(editor.session)
-      || Number(data.projectId) !== editor.projectId || data.pageRef !== editor.pageRef) return;
-    if (data.event === 'ready') {
-      editor.ready = true; editor.loading = false; clearTimeout(loadTimer);
-      $('#ed-save').disabled = false;
-    }
-    if (data.event === 'dirty') editor.dirty = true;
-    if (data.event === 'saved') {
-      editor.dirty = !!data.dirty; $('#ed-save').disabled = false;
-      loadCompose(); refreshGates(); loadPages();
-      toast(`${pageLabel(editor.pageRef)} 已保存 v${data.version}`, 'ok');
-    }
-    if (data.event === 'error') { editor.loading = false; $('#ed-save').disabled = !editor.ready; }
-    $('#ed-state').className = 'pill ' + (data.event === 'error' ? 'err' : (editor.dirty ? 'warn' : 'ok'));
-    $('#ed-state').textContent = data.event === 'error' ? '操作失败' : (editor.dirty ? '未保存修改' : (data.event === 'saved' ? '已保存' : '已就绪'));
-    $('#ed-message').textContent = data.message || (editor.dirty ? '当前页有未保存修改，点击「保存漫画页」写入新版本。' : '可编辑图层、气泡和文字，保存后继续留在当前页。');
-  });
-  window.addEventListener('beforeunload', (event) => {
-    if (state.editor?.dirty) { event.preventDefault(); event.returnValue = ''; }
-  });
-  return { open, reset, collapse, loadPages };
+  window.addEventListener('beforeunload', (e) => { if (state.editor?.dirty) { e.preventDefault(); e.returnValue = ''; } });
+  return { open, reset, collapse, loadPages, refreshLayout: () => requestAnimationFrame(() => instance?.render()) };
 }

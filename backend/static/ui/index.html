@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI 漫画生产线</title>
+<link rel="stylesheet" href="/ui/editor/editor.css">
+<link rel="stylesheet" href="/ui/editor/workspace.css">
 <style>
 :root{
   --bg:#f6f7f9; --bg2:#ffffff; --card:#ffffff; --line:#e6e8ec; --line2:#d3d7de;
@@ -407,7 +409,7 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
       </div></details>
       <details class="nav-group" data-nav-group="tools"><summary>工具与诊断</summary><div class="nav">
         <button id="open-editor-workbench"><span class="ic">✎</span>编辑漫画页</button>
-        <button onclick="window.open('/ui/editor_bridge/index.html','_blank','noopener')"><span class="ic">↗</span>MED 桥自检</button>
+
         <button onclick="window.open('http://localhost:8000','_blank','noopener')"><span class="ic">↗</span>酒馆</button>
       </div><div class="mut" id="ui-version" style="font-size:11px;padding:4px 10px">app.js ?</div></details>
     </div>
@@ -760,22 +762,30 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
       </div>
     </section>
 
-    <section id="tab-editor" class="hidden" aria-label="漫画页编辑工作台">
-      <div class="editor-toolbar">
-        <button class="sm" id="ed-back">← 返回分页合成</button>
-        <label class="fld" for="ed-page" style="margin:0">漫画页</label>
-        <select id="ed-page"><option value="">先选择项目与漫画页</option></select>
+    <section id="tab-editor" class="hidden" aria-label="漫画页编辑工作区">
+      <header class="ed-header">
+        <button class="sm" id="ed-overview" title="返回流水线总览">← 工作台</button>
+        <div class="ed-heading"><b id="ed-project-title">漫画编辑器</b><span>漫画编辑</span></div>
         <span class="pill" id="ed-state" role="status" aria-live="polite">未打开</span>
         <div class="spacer"></div>
-        <button class="sm" id="ed-expand" aria-pressed="false">扩大画布</button>
-        <button class="sm" id="ed-window" disabled>独立窗口</button>
+        <button class="sm" id="ed-back">预览与审核</button>
+        <button class="sm" id="ed-export">整册导出</button>
+        <details class="ed-menu"><summary>视图 ▾</summary><div class="ed-menu-items">
+          <button class="sm" id="ed-expand" aria-pressed="false">专注画布</button>
+          <button class="sm" id="ed-window" disabled>独立窗口</button>
+        </div></details>
         <button class="sm primary" id="ed-save" disabled>保存漫画页</button>
+      </header>
+      <nav class="ed-pagebar" aria-label="漫画页">
+        <span class="ed-page-caption">漫画页 <small id="ed-page-count">0 页</small></span>
+        <div id="ed-pages" class="ed-pages"></div>
+        <label class="ed-page-select">跳转<select id="ed-page" aria-label="跳转漫画页"><option value="">先选择项目与漫画页</option></select></label>
+      </nav>
+      <div class="ed-surface">
+        <div class="editor-empty" id="ed-empty"><b>选择漫画页，开始编辑</b><span>还没有漫画页时，先在工作台完成分格分页。</span></div>
+        <div id="ed-host" class="comic-editor hidden"></div>
       </div>
-      <div class="editor-frame-wrap">
-        <div class="editor-empty" id="ed-empty">选择漫画页后，可在这里编辑图层、气泡、文字和构图。</div>
-        <iframe id="ed-frame" title="漫画页编辑器" class="hidden"></iframe>
-      </div>
-      <div class="editor-feedback"><span id="ed-message" role="status" aria-live="polite">保存后仍停留在编辑器，随时返回查看整页预览。</span></div>
+      <footer class="editor-feedback"><span class="ed-status-dot"></span><span id="ed-message" role="status" aria-live="polite">选择漫画页后开始编辑</span></footer>
     </section>
 
     <section id="tab-exports" class="hidden">
@@ -879,6 +889,6 @@ h2.foldable.closed .fold-ic{transform:rotate(-90deg)}
     </section>
   </main>
 </div>
-<script type="module" src="/ui/app.js?v=93"></script>
+<script type="module" src="/ui/app.js?v=94"></script>
 </body>
 </html>

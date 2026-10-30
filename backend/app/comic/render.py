@@ -119,10 +119,7 @@ def _draw_panel(canvas: Image.Image, panel: dict, *, scale: float, image_source=
 
     image = None
     if image_source is not None:
-        try:
-            image = load_image_source(image_source)
-        except RenderError:
-            raise
+        image = load_image_source(image_source)
     if image is not None:
         spec = panel.get("image") or {}
         x0, x1 = min(p[0] for p in points), max(p[0] for p in points)
