@@ -72,16 +72,37 @@ def handle(session: Session, job: Job) -> dict:
         if prompt_art is not None:
             inputs.append(prompt_art)
 
-    # 有已保存的编辑文档时按文档渲染（含手工图层）；否则用项目产物现场构建
+    # 编辑文档使用策略（不能把旧构图静默当成最新产物）：
+    # - 文档被标 stale（上游换图/换分格使它失效）→ 弃用，按当前产物重新生成；
+    # - 文档记录的分格基准版本与当前分格脚本不一致 → 同样弃用；
+    # - 其余情况按文档渲染，把手工图层带上。
+    # 弃用不删文档：用户仍可打开编辑器继续，只是这次拼页不采用它。
     saved_doc = A.current(session, project_id, ArtifactKind.EDITOR_DOC.value, page_ref)
     document = None
     source = "generated"
+    manual_doc_skipped = ""
     if saved_doc is not None:
         candidate = (saved_doc.payload or {}).get("document")
-        if isinstance(candidate, dict):
-            document = candidate
-            source = "editor_doc"
-            inputs.append(saved_doc)
+        if saved_doc.status == ArtifactStatus.STALE.value:
+            manual_doc_skipped = "editor_doc_stale"
+            saved_doc = None
+        elif isinstance(candidate, dict):
+            binding = candidate.get("binding") or {}
+            recorded = binding.get("scriptVersion")
+            template_changed = binding.get("templateId") not in (None, "", template_id)
+            if recorded is not None and page_art is not None and int(recorded) != int(page_art.version):
+                manual_doc_skipped = f"script_version_mismatch(doc v{recorded} vs current v{page_art.version})"
+                saved_doc = None
+            elif template_changed:
+                manual_doc_skipped = "template_changed"
+                saved_doc = None
+            else:
+                document = candidate
+                source = "editor_doc"
+                inputs.append(saved_doc)
+        else:
+            manual_doc_skipped = "editor_doc_unreadable"
+            saved_doc = None
     if document is None:
         try:
             document = build_from_project(session, project_id, page_ref, page_script=page_art)
@@ -114,6 +135,7 @@ def handle(session: Session, job: Job) -> dict:
             "renderer": "comic/render",
             "source": source,
             **({"editor_doc_id": saved_doc.id} if saved_doc is not None else {}),
+            **({"manual_doc_skipped": manual_doc_skipped} if manual_doc_skipped else {}),
             **({"auto_run": payload["auto_run"]} if "auto_run" in payload else {}),
         },
         path=str(out_path),
@@ -128,5 +150,6 @@ def handle(session: Session, job: Job) -> dict:
         "png": str(out_path),
         "placed": placed,
         "panels": len(document.get("panels") or []),
-        "warnings": [],
+        "warnings": [f"已保存的编辑文档未用于本次拼页（{manual_doc_skipped}），已按当前产物重新贴图"]
+                    if manual_doc_skipped else [],
     }

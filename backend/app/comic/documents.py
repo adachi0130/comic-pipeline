@@ -31,6 +31,18 @@ class DocumentNotFound(DocumentError):
     """该页还没有任何可编辑文档。"""
 
 
+class VersionConflict(DocumentError):
+    """保存基准过期：别人（或另一窗口）已写入更新版本。
+
+    ``current_version`` 是服务端当前版本；调用方据此决定“载入最新”还是“强制覆盖”。
+    """
+
+    def __init__(self, message: str, *, current_version: int, current_artifact_id: int | None = None):
+        super().__init__(message)
+        self.current_version = current_version
+        self.current_artifact_id = current_artifact_id
+
+
 def current_doc(session: Session, project_id: int, page_ref: str):
     return A.current(session, project_id, EDITOR_DOC_KIND, page_ref)
 
@@ -153,11 +165,16 @@ def save(
     *,
     preview_png: str | None = None,
     scale: float = 1.0,
+    base_version: int | None = None,
 ) -> dict:
     """保存编辑文档：写新版本 + 渲染整页 PNG 作为 ``page_image``。
 
     - ``preview_png`` 若是 dataURL，用客户端渲染的像素（所见即所得）；
-    - 否则服务端按文档渲染（与后台 S5 同一套代码）。
+    - 否则服务端按文档渲染（与后台 S5 同一套代码）；
+    - ``base_version`` 是客户端打开/上次保存时看到的文档版本。带上它做并发检查：
+      两个窗口同时编辑同一页时，较旧的窗口会收到 ``VersionConflict``，
+      而不是静默覆盖别人的修改。显式传 ``None`` 表示跳过检查（后台任务、
+      或用户在前端确认过“仍要覆盖”之后重试）。
     """
     validate_ref(page_ref, "page")
     if session.get(Project, project_id) is None:
@@ -171,6 +188,16 @@ def save(
     height = float(document.get("height") or 0)
     if width <= 0 or height <= 0:
         raise DocumentError("文档缺少有效画布尺寸")
+
+    current = current_doc(session, project_id, page_ref)
+    if base_version is not None:
+        current_version = current.version if current is not None else 0
+        if int(base_version) != current_version:
+            raise VersionConflict(
+                f"该页已被其他窗口保存为 v{current_version}（本窗口基于 v{base_version}）",
+                current_version=current_version,
+                current_artifact_id=current.id if current is not None else None,
+            )
 
     upstream = []
     page_script = A.current(session, project_id, ArtifactKind.PAGE_SCRIPT.value, page_ref)

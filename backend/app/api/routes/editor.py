@@ -33,13 +33,28 @@ def get_editor_doc(project_id: int, page_ref: str, session: Session = Depends(ge
 def save_editor_doc(project_id: int, page_ref: str, body: dict, session: Session = Depends(get_session)) -> dict:
     """保存编辑文档，同时生成可审核的整页快照（``page_image``）。
 
-    body: ``{"document": {...}, "png": "data:image/png;base64,..."（可选，客户端像素）}``
+    body: ``{"document": {...}, "png": "data:image/png;base64,..."（可选，客户端像素）,
+    "baseVersion": <打开/上次保存时看到的文档版本>, "force": <冲突时仍要覆盖>}``
+
+    ``baseVersion`` 不匹配当前版本时返回 409（并发保护）；只有前端明确确认覆盖
+    （``force: true``）才会写下去，避免两个窗口互相静默覆盖。
     """
     document = body.get("document")
     if document is None:
         raise HTTPException(400, "缺少 document")
+    base_version = body.get("baseVersion")
+    if base_version is not None and not isinstance(base_version, int):
+        raise HTTPException(400, "baseVersion 必须是整数版本号（没有存档时传 0）")
     try:
-        return D.save(session, project_id, page_ref, document, preview_png=body.get("png"))
+        return D.save(session, project_id, page_ref, document,
+                      preview_png=body.get("png"), base_version=base_version)
+    except D.VersionConflict as exc:
+        raise HTTPException(409, detail={
+            "message": str(exc),
+            "current_version": exc.current_version,
+            "current_artifact_id": exc.current_artifact_id,
+            "hint": "载入最新版本，或确认覆盖后带 force=true 重试",
+        }) from exc
     except DocumentError as exc:
         raise HTTPException(400, str(exc)) from exc
     except RenderError as exc:

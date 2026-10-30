@@ -95,6 +95,9 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
     loading: false,
     revision: 0,
     savedRevision: 0,
+    // 服务端文档版本基准：打开时记录，保存成功后跟进；
+    // 保存请求带上它做并发检查，两个窗口同时编辑同一页时后到者会收到 409。
+    baseVersion: 0,
     status: '',
   };
   let spaceHeld = false;
@@ -407,6 +410,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
     state.dirty = false;
     state.revision = 0;
     state.savedRevision = 0;
+    state.baseVersion = 0;
     history.undo = [];
     history.redo = [];
     setStatus('加载中', 'run');
@@ -414,6 +418,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
       const payload = await api(`/api/projects/${projectId}/editor-doc/${encodeURIComponent(pageRef)}`);
       if (disposed) return;
       state.templateId = payload.document?.layout?.templateId || payload.template_id || '';
+      state.baseVersion = Number(payload.version) || 0;
       state.document = ensureComicLayers(normalizeDocument(payload.document));
       state.selectedPanelId = null;
       state.selectedElementId = null;
@@ -471,7 +476,7 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
     };
   }
 
-  async function save() {
+  async function save({ force = false } = {}) {
     if (!doc() || state.saving) return null;
     state.saving = true;
     updateButtons();
@@ -480,9 +485,14 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
     try {
       const payload = await api(`/api/projects/${state.projectId}/editor-doc/${encodeURIComponent(state.pageRef)}`, {
         method: 'POST',
-        body: { document: documentForSave() },
+        body: {
+          document: documentForSave(),
+          // 强制覆盖表示用户已在冲突提示里确认；此时不再发送旧基准。
+          ...(force ? { force: true } : { baseVersion: state.baseVersion }),
+        },
       });
       if (disposed) return payload;
+      state.baseVersion = Number(payload.version) || state.baseVersion;
       state.savedRevision = captured;
       state.dirty = state.revision !== state.savedRevision;
       setStatus(state.dirty ? '未保存' : `已保存 v${payload.version}`, state.dirty ? 'warn' : 'ok');
@@ -496,6 +506,20 @@ export function createComicEditor({ host, api, onDirty, onNotice, onSaved, onEdi
       onSaved?.(payload);
       return payload;
     } catch (error) {
+      if (error?.status === 409) {
+        const current = Number(error.detail?.current_version) || 0;
+        const message = `该页已在其他窗口保存为 v${current}（本窗口基于 v${state.baseVersion}）。`
+          + '覆盖会丢弃那边保存的内容。';
+        setStatus('保存冲突', 'err');
+        const overwrite = typeof confirm === 'function'
+          && confirm(message + '\n\n确定覆盖吗？（取消可先复制当前内容）');
+        if (overwrite) {
+          state.saving = false;
+          return save({ force: true });
+        }
+        notice(message + ' 已保留你的画布未保存状态。', 'error');
+        return null;
+      }
       setStatus('保存失败', 'err');
       notice(`保存失败：${error.message}`, 'error');
       return null;

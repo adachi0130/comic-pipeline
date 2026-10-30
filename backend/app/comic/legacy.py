@@ -25,6 +25,7 @@ import math
 from typing import Any
 
 from .document import DEFAULT_LAYERS, SCHEMA_VERSION, EDITOR_ID
+from .fabric_paths import is_invisible_object, rasterize_group
 
 
 class LegacyConversionError(ValueError):
@@ -111,9 +112,14 @@ def _image_record(obj: dict) -> dict | None:
 
 
 def _text_element(obj: dict, order: int) -> dict:
-    left, top = _num(obj.get("left")), _num(obj.get("top"))
-    width = max(24.0, _num(obj.get("width"), 240.0))
-    height = max(24.0, _num(obj.get("height"), 80.0))
+    # MED 的 textbox 用 originX/originY = center/center 序列化；新文档的 x/y 是
+    # 左上角。按中心原点折算，否则文字会整体偏右下、跑出手绘气泡。
+    scale_x = _num(obj.get("scaleX"), 1.0) or 1.0
+    scale_y = _num(obj.get("scaleY"), 1.0) or 1.0
+    width = max(24.0, _num(obj.get("width"), 240.0) * scale_x)
+    height = max(24.0, _num(obj.get("height"), 80.0) * scale_y)
+    center_x, center_y = _object_center(obj, width / 2, height / 2)
+    left, top = center_x - width / 2, center_y - height / 2
     font_size = _num(obj.get("fontSize"), 28.0)
     fill = obj.get("fill")
     kind = "text"
@@ -189,6 +195,17 @@ def _infer_canvas(objects: list) -> tuple[float, float]:
     return math.ceil(max_x), math.ceil(max_y)
 
 
+
+def _same_points(a: list, b: list, tolerance: float = 0.5) -> bool:
+    """两多边形顶点数相同且逐点误差在容差内（老快照的浮点噪声可忽略）。"""
+    if len(a) != len(b):
+        return False
+    return all(
+        abs(point_a[0] - point_b[0]) <= tolerance and abs(point_a[1] - point_b[1]) <= tolerance
+        for point_a, point_b in zip(a, b)
+    )
+
+
 def convert_legacy_doc(doc: Any, *, page_ref: str, template_id: str = "") -> dict:
     """把 fabric 存档转成新编辑文档。
 
@@ -223,6 +240,8 @@ def convert_legacy_doc(doc: Any, *, page_ref: str, template_id: str = "") -> dic
     converted_ids: set[int] = set()
     dropped: list[str] = []
     warnings: list[str] = []
+    converted_groups: list[str] = []
+    skipped_invisible: list[str] = []
 
     # 第一遍：画框（polygon 且 isPanel 或名字像 polygonN）
     for obj in objects:
@@ -269,13 +288,18 @@ def convert_legacy_doc(doc: Any, *, page_ref: str, template_id: str = "") -> dic
             related = obj.get("relatedPoly")
             if isinstance(related, dict):
                 target = panel_by_name.get(str(related.get("name") or ""))
-                if target is None:
-                    # 老版本可能存的是完整 fabric 对象，用名字再找一次
-                    target = panel_by_name.get(str(related.get("name") or ""))
             if target is None:
                 name = str(obj.get("name") or "")
                 for panel_name, panel in panel_by_name.items():
                     if panel_name and panel_name in name:
+                        target = panel
+                        break
+            if target is None and isinstance(related, dict) and related.get("points"):
+                # 老版本把 relatedPoly 存成完整对象快照且 name 为空（如 "undefined In Image"）。
+                # 快照的页面顶点应与某个画框完全一致，按几何匹配兜底。
+                related_points = _page_points(related)
+                for panel in panels:
+                    if _same_points(panel["points"], related_points):
                         target = panel
                         break
             if target is None:
@@ -290,7 +314,42 @@ def convert_legacy_doc(doc: Any, *, page_ref: str, template_id: str = "") -> dic
             points = obj.get("path")
             dropped.append(f"path {obj.get('name') or ''}（自由笔迹转换尚未支持）")
             continue
-        if kind in ("group", "rect", "line", "circle", "triangle"):
+        if kind == "group":
+            children = (obj.get("objects") or [])
+            child_kinds = {str(child.get("type") or "").lower() for child in children if isinstance(child, dict)}
+            if child_kinds <= {"path"}:
+                # MED 生成的技法图（集中线/运动线）：整组栅格化为贴纸，
+                # 保留"作为整体移动/缩放/删除"的可用性（MED 里它们同样不可逐点编辑）。
+                sticker = rasterize_group(obj)
+                if sticker is not None:
+                    sticker.update({
+                        "id": str(obj.get("name") or f"technique-{len(elements) + 1}"),
+                        "kind": "sticker",
+                        "layerId": "dialogue",
+                        "order": len(elements) + 1,
+                        "rotation": 0, "skewX": 0, "skewY": 0, "flipX": False, "flipY": False,
+                        "presetId": None, "text": "", "fontFamily": "sans-serif", "fontSize": 24,
+                        "textAlign": "center", "writingMode": "horizontal-tb", "lineHeight": 1.25,
+                        "color": "#111111", "fill": "none", "stroke": "#111111", "strokeWidth": 0,
+                        "feather": 0,
+                        "mask": [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 1}, {"x": 0, "y": 1}],
+                        "legacyName": str(obj.get("name") or ""),
+                    })
+                    elements.append(sticker)
+                    converted_groups.append(str(obj.get("name") or "group"))
+                    warnings.append(
+                        f"技法图 {sticker.get('name')} 已转换为位图贴纸（原为矢量），放大可能轻微模糊。")
+                    continue
+            dropped.append(f"group {obj.get('name') or ''}（组内类型 {','.join(sorted(child_kinds)) or '空'}，未转换）")
+            continue
+        if kind == "rect":
+            if is_invisible_object(obj):
+                # 透明底板在 MED 里也不渲染，转换记录说明即可，不算内容丢失。
+                skipped_invisible.append(f"rect {obj.get('name') or ''}（透明底板，不参与渲染）")
+                continue
+            dropped.append(f"rect {obj.get('name') or ''}（可见矩形底板，未转换）")
+            continue
+        if kind in ("line", "circle", "triangle"):
             dropped.append(f"{kind} {obj.get('name') or ''}（装饰/底板，未转换）")
             continue
         dropped.append(f"{kind or '未知'}（未转换）")
@@ -320,8 +379,15 @@ def convert_legacy_doc(doc: Any, *, page_ref: str, template_id: str = "") -> dic
         },
         "conversion": {
             "from": "med_doc/fabric",
-            "converted": {"panels": len(panels), "images": bound, "elements": len(elements), "strokes": 0},
+            "converted": {
+                "panels": len(panels),
+                "images": bound,
+                "elements": len(elements),
+                "strokes": 0,
+                "groups": len(converted_groups),
+            },
             "dropped": dropped,
+            "skipped_invisible": skipped_invisible,
             "warnings": warnings,
         },
     }

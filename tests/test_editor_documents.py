@@ -24,11 +24,12 @@ with patch.dict(os.environ, {"COMIC_DATA_DIR": str(Path(_import_tmp.name) / "dat
                              "COMIC_DB_URL": "sqlite:///:memory:"}):
     from app import artifacts as A
     from app.comic import documents as D
+    from app.stages import compose
     from app.comic.document import DocumentError, build_from_project
     from app.comic.legacy import LegacyConversionError, convert_legacy_doc
     from app.comic.render import render_png
     from app.comic.template_geometry import TemplateGeometryError, parse_template_svg
-    from app.models import Base, Project, Template
+    from app.models import Base, Job, Project, Template
 
 from PIL import Image
 from sqlalchemy import create_engine
@@ -266,6 +267,155 @@ class EditorDocumentTests(unittest.TestCase):
             convert_legacy_doc({"objects": []}, page_ref="page:1")
 
     # ------------------------------------------------------------ 渲染
+    # ------------------------------------------------------------ P0 回归
+    def test_save_rejects_stale_base_version(self):
+        """两个窗口同时编辑同一页：旧窗口保存必须收到冲突，而不是静默覆盖。"""
+        template = self.install_template(pick_template(1))
+        self.make_page(template)
+        document = build_from_project(self.session, 1, "page:1")
+
+        # 窗口 A 基于版本 0（当前无存档）保存成功
+        first = D.save(self.session, 1, "page:1", document, base_version=0)
+        self.assertEqual(first["version"], 1)
+
+        # 窗口 B 仍基于版本 0 → 冲突，且不产生新版本
+        with self.assertRaises(D.VersionConflict) as caught:
+            D.save(self.session, 1, "page:1", document, base_version=0)
+        self.assertEqual(caught.exception.current_version, 1)
+        versions = D.history(self.session, 1, "page:1")
+        self.assertEqual(len(versions), 1, "冲突的保存不能写入新版本")
+
+        # 窗口 B 改用最新基准后可以保存
+        again = D.save(self.session, 1, "page:1", document, base_version=caught.exception.current_version)
+        self.assertEqual(again["version"], 2)
+
+    def test_save_without_base_version_skips_conflict_check(self):
+        """后台任务或用户确认覆盖后，显式不带 base_version 才允许直接写入。"""
+        template = self.install_template(pick_template(1))
+        self.make_page(template)
+        document = build_from_project(self.session, 1, "page:1")
+        D.save(self.session, 1, "page:1", document, base_version=0)
+        forced = D.save(self.session, 1, "page:1", document)  # 不带 base_version
+        self.assertEqual(forced["version"], 2)
+
+    def _make_manual_document(self, template):
+        self.make_page(template)
+        document = build_from_project(self.session, 1, "page:1")
+        document["elements"] = [{
+            "id": "e1", "kind": "text", "layerId": "dialogue", "order": 1,
+            "x": 10, "y": 10, "width": 80, "height": 40, "rotation": 0,
+            "skewX": 0, "skewY": 0, "flipX": False, "flipY": False, "opacity": 1,
+            "text": "手工标注", "fontFamily": "sans-serif", "fontSize": 12,
+            "textAlign": "center", "writingMode": "horizontal-tb", "lineHeight": 1.25,
+            "color": "#111111", "fill": "none", "stroke": "#111111", "strokeWidth": 0,
+            "feather": 0, "mask": [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 1}, {"x": 0, "y": 1}],
+        }]
+        return document
+
+    def test_compose_skips_stale_editor_doc(self):
+        """上游换图后编辑文档被标 stale：S5 必须弃用它按当前产物重贴，不能静默用旧构图。"""
+        template = self.install_template(pick_template(1))
+        document = self._make_manual_document(template)
+        D.save(self.session, 1, "page:1", document)
+        saved = A.current(self.session, 1, "editor_doc", "page:1")
+        self.assertEqual(saved.status, "review")
+
+        # 模拟上游：重新采用另一张候选图，使编辑文档沿血缘失效
+        target = self.data / "projects" / "1" / "candidates" / "p1_v2.png"
+        target.write_bytes(png_bytes((10, 200, 120)))
+        image = A.current(self.session, 1, "image", "panel:1.1")
+        image.payload = {**image.payload, "candidates": [{"path": str(target)}], "selected_index": 0}
+        A.create(self.session, project_id=1, kind="image", ref="panel:1.1",
+                 payload=image.payload, status="approved")
+        self.session.commit()
+        self.session.refresh(saved)
+        self.assertEqual(saved.status, "stale", "上游换图应沿血缘把编辑文档标 stale")
+
+        result = compose.handle(self.session, Job(project_id=1, kind="compose", payload={"page_ref": "page:1"}))
+        self.assertTrue(any("editor_doc_stale" in w for w in result["warnings"]), result["warnings"])
+        page_image = A.current(self.session, 1, "page_image", "page:1")
+        self.assertEqual(page_image.payload["source"], "generated")
+        self.assertIn("editor_doc_stale", page_image.payload.get("manual_doc_skipped", ""))
+
+    def test_compose_skips_doc_bound_to_older_script(self):
+        """文档记录的分格基准版本落后于当前分格脚本：S5 弃用并说明原因。"""
+        template = self.install_template(pick_template(1))
+        document = self._make_manual_document(template)
+        document["binding"]["scriptVersion"] = 99  # 伪造旧基准
+        D.save(self.session, 1, "page:1", document)
+        result = compose.handle(self.session, Job(project_id=1, kind="compose", payload={"page_ref": "page:1"}))
+        self.assertTrue(any("script_version_mismatch" in w for w in result["warnings"]), result["warnings"])
+        page_image = A.current(self.session, 1, "page_image", "page:1")
+        self.assertEqual(page_image.payload["source"], "generated")
+
+    def test_compose_uses_fresh_editor_doc(self):
+        """基准一致的文档照常使用：手工图层进入 S5 输出。"""
+        template = self.install_template(pick_template(1))
+        document = self._make_manual_document(template)
+        script_version = A.current(self.session, 1, "page_script", "page:1").version
+        document["binding"]["scriptVersion"] = script_version
+        D.save(self.session, 1, "page:1", document)
+        result = compose.handle(self.session, Job(project_id=1, kind="compose", payload={"page_ref": "page:1"}))
+        self.assertEqual(result["warnings"], [])
+        page_image = A.current(self.session, 1, "page_image", "page:1")
+        self.assertEqual(page_image.payload["source"], "editor_doc")
+
+    def test_legacy_converts_path_group_and_skips_invisible_rect(self):
+        """真实旧档样本：手绘气泡（group+path）转贴纸，透明底板单独归类，文字按中心原点落位。"""
+        commands = [["M", 0, 0], ["C", 10, 0, 20, 0, 30, 0], ["C", 30, 10, 20, 20, 0, 20],
+                    ["C", -10, 10, -5, 5, 0, 0], ["z"]]
+        legacy_doc = {
+            "version": "5.3.0", "width": 400, "height": 300,
+            "objects": [
+                {"type": "polygon", "name": "polygon1", "isPanel": True,
+                 "left": 200, "top": 150, "width": 400, "height": 300, "scaleX": 1, "scaleY": 1,
+                 "angle": 0, "strokeWidth": 2,
+                 "points": [{"x": -200, "y": -150}, {"x": 200, "y": -150}, {"x": 200, "y": 150}, {"x": -200, "y": 150}]},
+                {"type": "group", "name": "bubble", "originX": "left", "originY": "top",
+                 "left": 250, "top": 60, "width": 40, "height": 20, "scaleX": 0.5, "scaleY": 0.5, "angle": 0,
+                 "opacity": 1,
+                 "objects": [
+                     {"type": "path", "path": commands, "left": -20, "top": -10,
+                      "width": 40, "height": 20, "scaleX": 1, "scaleY": 1, "angle": 0,
+                      "fill": "rgba(255,255,255,1)", "stroke": "rgba(0,0,0,1)", "strokeWidth": 4},
+                 ]},
+                {"type": "textbox", "name": "caption", "originX": "center", "originY": "center",
+                 "left": 260, "top": 65, "width": 80, "height": 15.8, "scaleX": 1, "scaleY": 1,
+                 "text": "你好", "fontSize": 14, "fill": "#000000"},
+                {"type": "rect", "name": "helper", "left": 10, "top": 10, "width": 50, "height": 40,
+                 "fill": "transparent", "stroke": "transparent"},
+            ],
+        }
+        document = convert_legacy_doc(legacy_doc, page_ref="page:1")
+        conversion = document["conversion"]
+        self.assertEqual(conversion["converted"]["groups"], 1)
+        self.assertEqual(conversion["dropped"], [], "透明底板不算内容丢失，不能出现在 dropped 里")
+        self.assertEqual(len(conversion["skipped_invisible"]), 1)
+
+        stickers = [element for element in document["elements"] if element["kind"] == "sticker"]
+        self.assertEqual(len(stickers), 1)
+        sticker = stickers[0]
+        self.assertTrue(sticker["dataUrl"].startswith("data:image/png;base64,"))
+        # 组中心 = (250 + 40*0.5/2, 60 + 20*0.5/2) = (260, 65)；贴纸外接框应覆盖气泡
+        self.assertLessEqual(sticker["x"], 260)
+        self.assertGreaterEqual(sticker["x"] + sticker["width"], 260)
+        self.assertLessEqual(sticker["y"], 65)
+        self.assertGreaterEqual(sticker["y"] + sticker["height"], 65)
+
+        # textbox center/center 原点 → 元素左上角 = (260-40, 65-12)
+        texts = [element for element in document["elements"] if element["kind"] == "text"]
+        self.assertEqual(len(texts), 1)
+        self.assertAlmostEqual(texts[0]["x"], 260 - 40, delta=0.5)
+        self.assertAlmostEqual(texts[0]["y"], 65 - 12, delta=0.5)
+
+        # 栅格化贴纸要能真正渲染出来
+        png = render_png(document)
+        image = Image.open(io.BytesIO(png)).convert("RGB")
+        self.assertEqual(image.size, (400, 300))
+        # 气泡内部像素应是白色（贴纸画上去了）
+        sample = image.getpixel((260, 65))
+        self.assertGreater(sum(sample), 600, "气泡内部应为白色填充")
+
     def test_render_matches_canvas_size_and_covers_panel(self):
         template = self.install_template(pick_template(1))
         self.make_page(template)

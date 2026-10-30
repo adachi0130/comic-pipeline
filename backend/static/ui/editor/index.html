@@ -37,7 +37,12 @@ async function api(path, { method = 'GET', body } = {}) {
   try { payload = text ? JSON.parse(text) : null; } catch { payload = null; }
   if (!response.ok) {
     const detail = payload?.detail || text || `请求失败（${response.status}）`;
-    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    // 409（保存冲突）等结构化错误要带上状态码与 detail，供上层给出
+    // “载入最新 / 覆盖”的选择，而不是只抛一段文案。
+    const error = new Error(typeof detail === 'string' ? detail : (detail?.message || JSON.stringify(detail)));
+    error.status = response.status;
+    error.detail = typeof detail === 'object' && detail ? detail : null;
+    throw error;
   }
   return payload;
 }
