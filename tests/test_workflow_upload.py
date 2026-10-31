@@ -88,7 +88,7 @@ class WorkflowUploadTests(unittest.TestCase):
         self.assertEqual(store.load_comfy_config().workflow_name, name)
         reopened = self.client.get(f"/api/comfy/workflows/{name}/inspect").json()
         self.assertEqual(reopened["workflow"], WORKFLOW)
-        client = Mock()
+        client = Mock(list_loras=Mock(return_value=['新角色.safetensors']))
         client.collect_images.return_value = []
         service.generate(service.GenRequest(prompt_pos="rainy city", prompt_neg="blur",
                                             loras=[{"name": "新角色.safetensors", "weight": 0.9, "weight_clip": 0.3}]), client=client)

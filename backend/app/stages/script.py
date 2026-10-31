@@ -24,8 +24,13 @@ from ..comic.templates import geometry_for
 KIND = "script"
 
 
-def _template_menu(session: Session) -> str:
-    rows = session.scalars(select(Template).order_by(Template.dir, Template.panels_count)).all()
+def _template_menu(session: Session, orientation: str | None = None) -> str:
+    query = select(Template)
+    if orientation in ('vertical', 'landscape'):
+        query = query.where(Template.dir == orientation)
+    rows = session.scalars(query.order_by(Template.dir, Template.panels_count)).all()
+    if not rows:
+        raise ValueError('当前方向没有可用分格模板，请先导入对应模板。')
     return json.dumps(
         [{"id": t.id, "dir": t.dir, "panels": t.panels_count, "desc": t.layout_desc} for t in rows],
         ensure_ascii=False,
@@ -56,7 +61,7 @@ def handle(session: Session, job: Job) -> dict:
     provider, cfg = promptlib.resolve_provider(session, "S2")
     client = LLMClient(cfg)
     system, user_tpl = promptlib.get_prompt(session, "s2_script")
-    menu = _template_menu(session)
+    menu = _template_menu(session, (project.style_config or {}).get('page_orientation'))
     techs = _techniques(session)
 
     log = LLMLogContext(session=session, stage="S2", project_id=project_id, provider_id=provider.id)

@@ -1,12 +1,13 @@
 """自动漫画编排的隔离回归：不调用模型、出图或真实数据库。"""
 import atexit
+import json
 import os
 import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 _tmp = tempfile.TemporaryDirectory(prefix='auto-import-', dir=Path(__file__).parent)
@@ -269,6 +270,22 @@ class AutoComicTests(unittest.TestCase):
         result, loras = auto_comic.prompt.scenery_prompt('moonlit lake', [{'name':'style'}], [])
         self.assertEqual(result, 'moonlit lake, no humans')
         self.assertEqual(loras, [{'name':'style'}])
+
+    def test_missing_lora_is_rejected_before_queueing(self):
+        from app.comfy import service
+        from app.comfy.client import ComfyError
+        client = Mock()
+        client.list_loras.return_value = ['style.safetensors']
+        with self.assertRaisesRegex(ComfyError, '找不到 LoRA'):
+            service.generate(service.GenRequest(prompt_pos='test', loras=[{'name':'missing.safetensors'}]), client=client)
+        client.queue_prompt.assert_not_called()
+
+    def test_vertical_template_menu_excludes_landscape(self):
+        self.session.add_all([Template(id='vertical:2', dir='vertical', panels_count=2),
+                              Template(id='landscape:2', dir='landscape', panels_count=2)])
+        self.session.commit()
+        menu = json.loads(auto_comic.script._template_menu(self.session, 'vertical'))
+        self.assertEqual([t['id'] for t in menu], ['vertical:2'])
 
     def test_invalid_preset_does_not_create_prose(self):
         self.session.delete(self.job)

@@ -18,7 +18,7 @@ from ..config import (
 )
 from ..storage import write_new
 from . import store
-from .client import ComfyClient, GeneratedImage
+from .client import ComfyClient, GeneratedImage, ComfyError
 from .workflow import apply
 
 _params_cache: WorkflowParams | None = None
@@ -104,6 +104,12 @@ def generate(
 ) -> list[GeneratedImage]:
     """按请求出图，返回所有候选图的字节。"""
     client = client or get_client()
+    if req.loras:
+        available = set(client.list_loras())
+        missing = [lora['name'] for lora in req.loras if lora.get('name') not in available]
+        if missing:
+            raise ComfyError('当前 ComfyUI 找不到 LoRA 文件：' + '、'.join(missing)
+                             + '；请上传到当前实例并刷新模型列表后重试，已阻止无 LoRA 出图。')
     params = get_workflow_params()
     if not params.bindings and not params.prompt_placeholder:
         raise RuntimeError(
