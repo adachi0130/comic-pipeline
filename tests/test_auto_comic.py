@@ -253,6 +253,23 @@ class AutoComicTests(unittest.TestCase):
         self.assertEqual(auto_comic.prompt.with_preset('blur', ''), 'blur')
         self.assertEqual(auto_comic.prompt.with_preset('quality', 'quality, city'), 'quality, city')
 
+    def test_scenery_removes_preset_character_without_removing_style(self):
+        trigger = r'adachi \(oc\), blue hair, purple eyes'
+        positive = auto_comic.prompt.with_preset('masterpiece, @style, ' + trigger,
+                                                'foggy bridge, no humans')
+        loras = [{'name':'style.safetensors', 'weight':0.5},
+                 {'name':r'people\adachi.safetensors', 'weight':1}]
+        result, filtered = auto_comic.prompt.scenery_prompt(positive, loras,
+            [{'trigger_words':trigger, 'lora_name':'people/adachi.safetensors'}])
+        self.assertEqual(result, 'masterpiece, @style, foggy bridge, no humans')
+        self.assertEqual(filtered, [loras[0]])
+        self.assertEqual(len(loras), 2)  # 原预设留给有人物的画格使用。
+
+    def test_scenery_without_character_assets_keeps_style_loras(self):
+        result, loras = auto_comic.prompt.scenery_prompt('moonlit lake', [{'name':'style'}], [])
+        self.assertEqual(result, 'moonlit lake, no humans')
+        self.assertEqual(loras, [{'name':'style'}])
+
     def test_invalid_preset_does_not_create_prose(self):
         self.session.delete(self.job)
         self.session.delete(A.current(self.session, 1, 'prose', 'seg:1'))

@@ -67,6 +67,20 @@ def with_preset(base: str, generated: str) -> str:
     return generated if not base or base in generated else ', '.join(filter(None, [base, generated]))
 
 
+def scenery_prompt(positive: str, loras: list[dict], characters: list[dict]) -> tuple[str, list[dict]]:
+    """空镜保留画风，但不从项目固定预设重新注入角色外观或角色 LoRA。"""
+    character_tags = {tag.strip().casefold() for char in characters
+                      for tag in (char.get('trigger_words') or '').split(',') if tag.strip()}
+    tags = [tag.strip() for tag in positive.split(',')
+            if tag.strip() and tag.strip().casefold() not in character_tags]
+    if 'no humans' not in {tag.casefold() for tag in tags}:
+        tags.append('no humans')
+    character_loras = {(char.get('lora_name') or '').replace('\\', '/').casefold()
+                       for char in characters if char.get('lora_name')}
+    return ', '.join(tags), [lora for lora in loras
+        if (lora.get('name') or '').replace('\\', '/').casefold() not in character_loras]
+
+
 def _default_presets(session: Session, project_id: int) -> tuple[str, str]:
     presets = preset_snapshot(session, project_id)
     return presets['positive']['text'], presets['negative']['text']
@@ -377,6 +391,10 @@ def handle(session: Session, job: Job) -> dict:
             char_loras = _character_loras(session, project_id, script_panel.get("characters") or [])
             # LoRA 合并顺序：预设 → 项目默认 → 出场角色 → 模型给的角色 LoRA（后者覆盖权重）
             loras = _merge_loras(preset_loras, default_loras, char_loras, item.loras)
+            positive = with_preset(preset_pos, item.prompt_pos)
+            # 缺失 characters 的旧脚本保持原行为，显式空列表才表示无人画格。
+            if script_panel.get('characters') == []:
+                positive, loras = scenery_prompt(positive, loras, list(json.loads(chars).values()))
 
             # 尺寸：按该格排版（模板几何）算出，保证与画框一致；几何缺失才退回模型给的
             gpan = geometry_by_order.get(str(order)) or {}
@@ -391,7 +409,7 @@ def handle(session: Session, job: Job) -> dict:
                 ref=item.panel_ref,
                 payload={
                     **({"auto_run": payload["auto_run"]} if payload.get("auto_run") else {}),
-                    "prompt_pos": with_preset(preset_pos, item.prompt_pos),
+                    "prompt_pos": positive,
                     "prompt_neg": with_preset(preset_neg, item.prompt_neg),
                     "preset_ids": {kind: presets[kind].get('id') for kind in ('positive', 'negative')},
                     "loras": loras,
